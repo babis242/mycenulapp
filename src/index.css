@@ -1,0 +1,17 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'Nunito', ui-sans-serif, system-ui, sans-serif;
+
+  --color-brand: #dc2626;
+  --color-brand-dark: #b91c1c;
+  --color-brand-light: #fca5a5;
+  --color-brand-pale: #fff5f5;
+}
+
+@layer base {
+  body {
+    @apply antialiased;
+    background-color: #f7f7f7;
+  }
+}
