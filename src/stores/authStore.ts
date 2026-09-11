@@ -18,31 +18,74 @@ interface AuthState {
 // Supabase Auth actuellement connecté. Pour un Responsable, va aussi
 // chercher son périmètre de spécialités assignées (règle transversale,
 // journal.md) — utilisé pour restreindre les écrans à ce périmètre.
+//
+// Hors ligne (ou requête échouée) : retombe sur le dernier profil chargé
+// avec succès pour ce même utilisateur, mis en cache dans localStorage à
+// chaque chargement réussi. Sans ça, toute coupure réseau faisait passer
+// l'utilisateur pour déconnecté et le renvoyait vers /login, alors que sa
+// session reste valide.
+const CLE_CACHE_COMPTE = 'gestion-pedagogique:dernier-compte';
+
+function lireCompteEnCache(): AuthUser | null {
+  try {
+    const brut = localStorage.getItem(CLE_CACHE_COMPTE);
+    return brut ? (JSON.parse(brut) as AuthUser) : null;
+  } catch {
+    return null;
+  }
+}
+
+function ecrireCompteEnCache(compte: AuthUser) {
+  try {
+    localStorage.setItem(CLE_CACHE_COMPTE, JSON.stringify(compte));
+  } catch {
+    // Stockage indisponible (mode privé, quota...) — pas bloquant, le
+    // repli offline sera juste indisponible pour ce compte.
+  }
+}
+
 async function chargerCompte(userId: string): Promise<AuthUser | null> {
-  const { data, error } = await supabase
-    .from('comptes_utilisateurs')
-    .select('id, matricule, nom, email, role')
-    .eq('id', userId)
-    .maybeSingle();
-
-  if (error || !data) return null;
-
-  if (data.role === 'responsable') {
-    const { data: responsable } = await supabase
-      .from('responsables')
-      .select('id, responsables_specialites(specialite_id)')
-      .eq('matricule', data.matricule)
-      .maybeSingle();
-    const perimetreSpecialiteIds = (
-      (responsable as any)?.responsables_specialites ?? []
-    ).map((rs: any) => rs.specialite_id);
-    return {
-      ...data,
-      perimetre_specialite_ids: perimetreSpecialiteIds,
-    } as AuthUser;
+  if (!navigator.onLine) {
+    const local = lireCompteEnCache();
+    return local && local.id === userId ? local : null;
   }
 
-  return data as AuthUser;
+  try {
+    const { data, error } = await supabase
+      .from('comptes_utilisateurs')
+      .select('id, matricule, nom, email, role')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (error || !data) throw error ?? new Error('Compte introuvable.');
+
+    let compte: AuthUser;
+    if (data.role === 'responsable') {
+      const { data: responsable } = await supabase
+        .from('responsables')
+        .select('id, responsables_specialites(specialite_id)')
+        .eq('matricule', data.matricule)
+        .maybeSingle();
+      const perimetreSpecialiteIds = (
+        (responsable as any)?.responsables_specialites ?? []
+      ).map((rs: any) => rs.specialite_id);
+      compte = {
+        ...data,
+        perimetre_specialite_ids: perimetreSpecialiteIds,
+      } as AuthUser;
+    } else {
+      compte = data as AuthUser;
+    }
+
+    ecrireCompteEnCache(compte);
+    return compte;
+  } catch {
+    // Réseau instable en cours de session (pas juste au démarrage) : même
+    // repli, pour ne pas déconnecter quelqu'un en plein milieu d'un trou
+    // de connexion.
+    const local = lireCompteEnCache();
+    return local && local.id === userId ? local : null;
+  }
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
