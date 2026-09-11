@@ -13,6 +13,7 @@ import {
   KeyRound,
   BarChart3,
   ClipboardEdit,
+  UserPlus,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { ROLE_LABELS } from '@/constants/roles';
@@ -64,13 +65,16 @@ function StatCard({
 }) {
   return (
     <div
-      className="bg-white rounded-[20px] p-5 border-t-[3px]"
+      className="bg-white rounded-2xl sm:rounded-[20px] p-3 sm:p-5 border-t-[3px]"
       style={{ borderTopColor: accent }}
     >
-      <p className="text-xs font-bold text-gray-400 uppercase tracking-wide mb-2">
+      <p className="text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wide mb-1 sm:mb-2 truncate">
         {label}
       </p>
-      <p className="text-3xl font-black" style={{ color: accent }}>
+      <p
+        className="text-xl sm:text-3xl font-black"
+        style={{ color: accent }}
+      >
         {value}
       </p>
     </div>
@@ -91,14 +95,18 @@ function ActionCard({
   return (
     <button
       onClick={onClick}
-      className="w-full bg-white rounded-[20px] p-5 flex items-center gap-4 text-left hover:shadow-md transition-shadow"
+      className="w-full bg-white rounded-2xl sm:rounded-[20px] p-3 sm:p-5 flex items-center gap-2.5 sm:gap-4 text-left hover:shadow-md transition-shadow"
     >
-      <div className="w-12 h-12 rounded-2xl bg-red-50 flex items-center justify-center flex-shrink-0 text-red-600">
+      <div className="w-9 h-9 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-red-50 flex items-center justify-center flex-shrink-0 text-red-600 [&>svg]:w-4 [&>svg]:h-4 sm:[&>svg]:w-5 sm:[&>svg]:h-5">
         {icon}
       </div>
       <div className="min-w-0">
-        <p className="font-bold text-base text-gray-900">{label}</p>
-        <p className="text-sm text-gray-400 mt-0.5 truncate">{sub}</p>
+        <p className="font-bold text-xs sm:text-base text-gray-900 truncate">
+          {label}
+        </p>
+        <p className="text-[11px] sm:text-sm text-gray-400 mt-0.5 truncate">
+          {sub}
+        </p>
       </div>
     </button>
   );
@@ -137,15 +145,19 @@ function Topbar({
   sousTitre: string;
 }) {
   return (
-    <div className="flex items-center justify-between mb-6 gap-3">
+    <div className="flex items-center justify-between mb-4 sm:mb-6 gap-3">
       <div className="min-w-0">
-        <p className="font-extrabold text-2xl text-gray-900 truncate">
+        <p className="font-extrabold text-lg sm:text-2xl text-gray-900 truncate">
           Tableau de bord
         </p>
-        <p className="text-sm text-gray-400 mt-0.5 truncate">{sousTitre}</p>
+        <p className="text-xs sm:text-sm text-gray-400 mt-0.5 truncate">
+          {sousTitre}
+        </p>
       </div>
-      <div className="w-10 h-10 rounded-full bg-red-600 flex items-center justify-center flex-shrink-0">
-        <span className="text-white font-black text-sm">{initials}</span>
+      <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-red-600 flex items-center justify-center flex-shrink-0">
+        <span className="text-white font-black text-xs sm:text-sm">
+          {initials}
+        </span>
       </div>
     </div>
   );
@@ -177,10 +189,10 @@ function DashboardAdmin({
       <Topbar initials={initials} sousTitre={sousTitre} />
       {depuisCache && <CacheBadge />}
 
-      <p className="text-xs font-extrabold text-gray-400 uppercase tracking-wide mb-2 mt-1">
+      <p className="text-[11px] sm:text-xs font-extrabold text-gray-400 uppercase tracking-wide mb-2 mt-1">
         Référentiel
       </p>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 sm:gap-3 mb-4">
         <StatCard label="UEs" value={stats.ues} accent="#0ea5e9" />
         <StatCard
           label="Enseignants"
@@ -195,43 +207,45 @@ function DashboardAdmin({
         />
       </div>
 
-      <div className="grid md:grid-cols-2 gap-4">
-        <div className="bg-white rounded-[20px] p-5">
-          <p className="font-extrabold text-base text-gray-900 mb-4">
-            Actions rapides
-          </p>
-          <div className="flex flex-col gap-3">
-            <ActionCard
-              icon={<BookOpen size={20} />}
-              label="Ajouter une UE"
-              sub="Manuel ou import Excel"
-              onClick={() => navigate('/referentiel/ues/nouvelle')}
-            />
-            <ActionCard
-              icon={<Users size={20} />}
-              label="Ajouter un enseignant"
-              sub="Manuel ou import Excel"
-              onClick={() => navigate('/referentiel/enseignants/nouveau')}
-            />
-            <ActionCard
-              icon={<DoorOpen size={20} />}
-              label="Ajouter une salle"
-              sub="Manuel ou import Excel"
-              onClick={() => navigate('/referentiel/salles/nouvelle')}
-            />
-          </div>
-        </div>
+      <p className="text-[11px] sm:text-xs font-extrabold text-gray-400 uppercase tracking-wide mb-2">
+        Actions rapides
+      </p>
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-4">
+        <ActionCard
+          icon={<BookOpen size={20} />}
+          label="Ajouter une UE"
+          sub="Manuel ou Excel"
+          onClick={() => navigate('/referentiel/ues/nouvelle')}
+        />
+        <ActionCard
+          icon={<Users size={20} />}
+          label="Ajouter un enseignant"
+          sub="Manuel ou Excel"
+          onClick={() => navigate('/referentiel/enseignants/nouveau')}
+        />
+        <ActionCard
+          icon={<DoorOpen size={20} />}
+          label="Ajouter une salle"
+          sub="Manuel ou Excel"
+          onClick={() => navigate('/referentiel/salles/nouvelle')}
+        />
+        <ActionCard
+          icon={<UserPlus size={20} />}
+          label="Inscriptions"
+          sub="Lien public enseignants"
+          onClick={() => navigate('/referentiel/inscriptions')}
+        />
+      </div>
 
-        <div className="bg-white rounded-[20px] p-5">
-          <p className="font-extrabold text-base text-gray-900 mb-3">
-            Activité récente
-          </p>
-          <ActivityRow
-            text="Aucune activité pour l'instant"
-            time=""
-            accent={ACCENT}
-          />
-        </div>
+      <div className="bg-white rounded-2xl sm:rounded-[20px] p-3 sm:p-5">
+        <p className="font-extrabold text-sm sm:text-base text-gray-900 mb-1 sm:mb-3">
+          Activité récente
+        </p>
+        <ActivityRow
+          text="Aucune activité pour l'instant"
+          time=""
+          accent={ACCENT}
+        />
       </div>
     </div>
   );
@@ -262,16 +276,16 @@ function DashboardEnseignant({
       {seanceDuMoment && (
         <button
           onClick={() => navigate('/ma-seance')}
-          className="w-full bg-red-600 rounded-[20px] p-5 flex items-center justify-between gap-4 text-left mb-4 hover:bg-red-700 transition-colors"
+          className="w-full bg-red-600 rounded-2xl sm:rounded-[20px] p-3.5 sm:p-5 flex items-center justify-between gap-4 text-left mb-3 sm:mb-4 hover:bg-red-700 transition-colors"
         >
           <div className="min-w-0">
-            <p className="text-xs font-bold text-white/70 uppercase mb-1">
+            <p className="text-[10px] sm:text-xs font-bold text-white/70 uppercase mb-0.5 sm:mb-1">
               Cours en ce moment
             </p>
-            <p className="font-extrabold text-white truncate">
+            <p className="font-extrabold text-sm sm:text-base text-white truncate">
               {seanceDuMoment.ueNom}
             </p>
-            <p className="text-sm text-white/80">
+            <p className="text-xs sm:text-sm text-white/80">
               {seanceDuMoment.creneau} ·{' '}
               {seanceDuMoment.salleCode ?? 'Salle à confirmer'}
             </p>
@@ -280,13 +294,13 @@ function DashboardEnseignant({
             {!seanceDuMoment.heureOuverture
               ? 'Ouvrir'
               : !seanceDuMoment.heureFermeture
-              ? 'Fermer'
-              : 'Terminée'}
+                ? 'Fermer'
+                : 'Terminée'}
           </span>
         </button>
       )}
 
-      <div className="grid grid-cols-2 gap-3 mb-4">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3 mb-3 sm:mb-4">
         <StatCard label="Heures ce mois" value={heuresMois} accent="#16a34a" />
         <StatCard
           label="Cours à venir"
@@ -296,11 +310,11 @@ function DashboardEnseignant({
       </div>
 
       {prochainsCours.length > 0 && (
-        <div className="bg-white rounded-[20px] p-5 mb-4">
-          <p className="font-extrabold text-base text-gray-900 mb-3">
+        <div className="bg-white rounded-2xl sm:rounded-[20px] p-3 sm:p-5 mb-3 sm:mb-4">
+          <p className="font-extrabold text-sm sm:text-base text-gray-900 mb-1 sm:mb-3">
             Prochains cours
           </p>
-          {prochainsCours.slice(0, 4).map((c) => (
+          {prochainsCours.slice(0, 3).map((c) => (
             <ActivityRow
               key={c.id}
               text={c.ueNom}
@@ -311,7 +325,7 @@ function DashboardEnseignant({
         </div>
       )}
 
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3">
         <ActionCard
           icon={<PlayCircle size={20} />}
           label="Ma séance"
@@ -356,7 +370,7 @@ function DashboardResponsable({
     <div className="max-w-2xl mx-auto">
       <Topbar initials={initials} sousTitre={sousTitre} />
 
-      <div className="mb-4">
+      <div className="mb-3 sm:mb-4">
         <StatCard
           label="Spécialités sous ta responsabilité"
           value={nbSpecialites}
@@ -364,13 +378,13 @@ function DashboardResponsable({
         />
       </div>
       {nbSpecialites === 0 && (
-        <p className="text-xs font-semibold text-amber-600 -mt-2 mb-4">
+        <p className="text-xs font-semibold text-amber-600 -mt-2 mb-3 sm:mb-4">
           Aucune spécialité ne t'est encore assignée — contacte
           l'administrateur.
         </p>
       )}
 
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3">
         <ActionCard
           icon={<CalendarClock size={20} />}
           label="Disponibilités"
@@ -415,7 +429,7 @@ function DashboardSecretaire({
     <div className="max-w-2xl mx-auto">
       <Topbar initials={initials} sousTitre={sousTitre} />
 
-      <div className="mb-4">
+      <div className="mb-3 sm:mb-4">
         <StatCard
           label="Séances aujourd'hui"
           value={seancesAujourdhui}
@@ -423,7 +437,7 @@ function DashboardSecretaire({
         />
       </div>
 
-      <div className="grid sm:grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 gap-2 sm:gap-3">
         <ActionCard
           icon={<KeyRound size={20} />}
           label="Codes journaliers"
@@ -433,7 +447,7 @@ function DashboardSecretaire({
         <ActionCard
           icon={<ClipboardEdit size={20} />}
           label="Saisie manuelle"
-          sub="Enregistrer une heure à la main"
+          sub="Heure à la main"
           onClick={() => navigate('/seances/saisie-manuelle')}
         />
       </div>
@@ -531,7 +545,10 @@ export default function DashboardPage() {
           /* pas de cours en ce moment, ou hors ligne */
         }
         try {
-          const heures = await listMesHeuresMois(user.matricule, moisEnCours());
+          const heures = await listMesHeuresMois(
+            user.matricule,
+            moisEnCours()
+          );
           if (!annule) {
             setHeuresMois(heures.reduce((acc, h) => acc + h.heures, 0));
           }
@@ -562,10 +579,9 @@ export default function DashboardPage() {
 
     function filtrerAVenir(liste: MonCours[]): MonCours[] {
       const auj = new Date();
-      const ajISO = `${auj.getFullYear()}-${String(auj.getMonth() + 1).padStart(
-        2,
-        '0'
-      )}-${String(auj.getDate()).padStart(2, '0')}`;
+      const ajISO = `${auj.getFullYear()}-${String(
+        auj.getMonth() + 1
+      ).padStart(2, '0')}-${String(auj.getDate()).padStart(2, '0')}`;
       return liste
         .map((c) => ({ c, date: dateReelleDuJour(c.semaine, c.jour) }))
         .filter(({ date }) => date >= ajISO)

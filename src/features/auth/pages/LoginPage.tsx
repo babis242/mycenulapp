@@ -168,6 +168,16 @@ export default function LoginPage() {
             'Se connecter'
           )}
         </button>
+
+        <p className="text-center text-xs text-gray-400">
+          Tu es enseignant et tu n'as pas encore de compte ?{' '}
+          <Link
+            to="/inscription-enseignant"
+            className="font-bold text-red-600 hover:text-red-700"
+          >
+            T'inscrire ici
+          </Link>
+        </p>
       </form>
     </div>
   );

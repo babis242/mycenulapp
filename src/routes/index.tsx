@@ -7,6 +7,8 @@ import RoleRoute from './RoleRoute';
 
 import LoginPage from '@/features/auth/pages/LoginPage';
 import MotDePasseOubliePage from '@/features/auth/pages/MotDePasseOubliePage';
+import InscriptionEnseignantPage from '@/features/inscriptions/pages/InscriptionEnseignantPage';
+import ListeInscriptionsPage from '@/features/inscriptions/pages/ListeInscriptionsPage';
 import DashboardPage from '@/features/dashboard/pages/DashboardPage';
 
 import ReferentielLayout from '@/features/referentiel/ReferentielLayout';
@@ -47,7 +49,14 @@ export default function AppRoutes() {
     <Routes>
       <Route element={<AuthLayout />}>
         <Route path="/login" element={<LoginPage />} />
-        <Route path="/mot-de-passe-oublie" element={<MotDePasseOubliePage />} />
+        <Route
+          path="/mot-de-passe-oublie"
+          element={<MotDePasseOubliePage />}
+        />
+        <Route
+          path="/inscription-enseignant"
+          element={<InscriptionEnseignantPage />}
+        />
       </Route>
 
       <Route element={<ProtectedRoute />}>
@@ -72,6 +81,10 @@ export default function AppRoutes() {
               <Route
                 path="enseignants/importer"
                 element={<ImporterEnseignantsPage />}
+              />
+              <Route
+                path="inscriptions"
+                element={<ListeInscriptionsPage />}
               />
 
               <Route path="responsables" element={<ListeResponsablesPage />} />
