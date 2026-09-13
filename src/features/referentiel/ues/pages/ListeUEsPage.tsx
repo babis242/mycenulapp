@@ -91,6 +91,7 @@ export default function ListeUEsPage() {
                 <th className="px-5 py-3">Volume horaire</th>
                 <th className="px-5 py-3">Spécialité</th>
                 <th className="px-5 py-3">Semestre</th>
+                <th className="px-5 py-3">Syllabus</th>
               </tr>
             </thead>
             <tbody>
@@ -114,6 +115,17 @@ export default function ListeUEsPage() {
                   </td>
                   <td className="px-5 py-3.5 text-gray-500">
                     {ue.offre?.semestre ?? '—'}
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <span
+                      className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                        ue.syllabus_key
+                          ? 'bg-green-50 text-green-600'
+                          : 'bg-amber-50 text-amber-600'
+                      }`}
+                    >
+                      {ue.syllabus_key ? 'Présent' : 'Manquant'}
+                    </span>
                   </td>
                 </tr>
               ))}

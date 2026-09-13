@@ -6,7 +6,8 @@ import { listMesCours, lireMesCoursDepuisCache, type MonCours } from '../api';
 
 // Écran Scénario 6, étape 10 — l'enseignant consulte ses propres cours
 // (jour, créneau, salle) une fois l'emploi du temps validé, ainsi que le
-// document signé.
+// document signé. Le syllabus et le support de cours (Scénario 12) ont
+// leur propre écran dédié : "Mes UEs".
 export default function MesCoursPage() {
   const user = useAuthStore((s) => s.user);
 
@@ -57,7 +58,8 @@ export default function MesCoursPage() {
       </p>
       {depuisCache && (
         <p className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mb-4">
-          <WifiOff size={12} /> Données locales — en attente de rafraîchissement
+          <WifiOff size={12} /> Données locales — en attente de
+          rafraîchissement
         </p>
       )}
 
@@ -90,12 +92,10 @@ export default function MesCoursPage() {
                       {c.ueNom}
                     </p>
                     <p className="text-xs text-gray-400">
-                      {c.salleCode ?? 'Salle à confirmer'}
+                      {c.salleCode ?? 'Salle à confirmer'} · {c.jour} ·{' '}
+                      {c.creneau}
                     </p>
                   </div>
-                  <p className="text-xs font-bold text-gray-500 shrink-0">
-                    {c.jour} · {c.creneau}
-                  </p>
                 </div>
               ))}
             </div>

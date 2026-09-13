@@ -1,6 +1,7 @@
 // src/features/referentiel/troncs-communs/pages/ListeTroncsCommunsPage.tsx
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Loader2, Trash2, WifiOff } from 'lucide-react';
+import { Plus, Loader2, Trash2, WifiOff, Search } from 'lucide-react';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
 import {
   listTroncsCommuns,
@@ -14,6 +15,7 @@ import {
 // enseigné ensemble à plusieurs spécialités par le même enseignant.
 export default function ListeTroncsCommunsPage() {
   const navigate = useNavigate();
+  const [recherche, setRecherche] = useState('');
   const {
     data: troncsCommuns,
     loading,
@@ -22,6 +24,16 @@ export default function ListeTroncsCommunsPage() {
     lireTroncsCommunsDepuisCache,
     listTroncsCommuns
   );
+
+  const filtres = troncsCommuns.filter((t) => {
+    const q = recherche.trim().toLowerCase();
+    if (!q) return true;
+    return (
+      t.nom.toLowerCase().includes(q) ||
+      (t.enseignant_nom?.toLowerCase().includes(q) ?? false) ||
+      t.ues.some((ue) => ue.nom.toLowerCase().includes(q))
+    );
+  });
 
   async function handleDelete(id: string) {
     if (
@@ -60,22 +72,38 @@ export default function ListeTroncsCommunsPage() {
         </button>
       </div>
 
+      <div className="flex mb-4">
+        <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
+          <Search size={15} className="text-gray-300 shrink-0" />
+          <input
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            placeholder="Rechercher un tronc commun, un enseignant, une UE..."
+            className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
+          />
+        </div>
+      </div>
+
       {loading ? (
         <div className="flex items-center justify-center py-16 text-gray-300">
           <Loader2 size={22} className="animate-spin" />
         </div>
-      ) : troncsCommuns.length === 0 ? (
+      ) : filtres.length === 0 ? (
         <div className="bg-white rounded-[20px] p-10 text-center">
           <p className="font-bold text-gray-900 mb-1">
-            Aucun tronc commun pour l'instant
+            {recherche
+              ? 'Aucun résultat'
+              : "Aucun tronc commun pour l'instant"}
           </p>
           <p className="text-sm text-gray-400">
-            Regroupe des UEs existantes qui doivent être enseignées ensemble.
+            {recherche
+              ? 'Essaie un autre nom.'
+              : 'Regroupe des UEs existantes qui doivent être enseignées ensemble.'}
           </p>
         </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {troncsCommuns.map((t) => (
+          {filtres.map((t) => (
             <div
               key={t.id}
               onClick={() => navigate(`/referentiel/troncs-communs/${t.id}`)}

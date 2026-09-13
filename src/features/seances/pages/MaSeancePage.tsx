@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import { Loader2, RefreshCw, CheckCircle2, KeyRound } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
+import RapportSeanceForm from '../components/RapportSeanceForm';
 import {
   getSeanceDuMoment,
   ouvrirSeance,
@@ -110,69 +111,86 @@ export default function MaSeancePage() {
           </p>
         </div>
       ) : (
-        <div className="bg-white rounded-[20px] p-6">
-          <p className="font-extrabold text-lg text-gray-900">{seance.ueNom}</p>
-          <p className="text-sm text-gray-400 mb-4">
-            {seance.jour} · {seance.creneau} ·{' '}
-            {seance.salleCode ?? 'Salle à confirmer'}
-          </p>
+        <>
+          <div className="bg-white rounded-[20px] p-6 mb-4">
+            <p className="font-extrabold text-lg text-gray-900">
+              {seance.ueNom}
+            </p>
+            <p className="text-sm text-gray-400 mb-4">
+              {seance.jour} · {seance.creneau} ·{' '}
+              {seance.salleCode ?? 'Salle à confirmer'}
+            </p>
 
-          {seance.heureOuverture && (
-            <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
-              <CheckCircle2 size={14} /> Ouverte à{' '}
-              {formatHeure(seance.heureOuverture)}
-            </p>
-          )}
-          {seance.heureFermeture && (
-            <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
-              <CheckCircle2 size={14} /> Fermée à{' '}
-              {formatHeure(seance.heureFermeture)}
-            </p>
-          )}
+            {seance.heureOuverture && (
+              <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
+                <CheckCircle2 size={14} /> Ouverte à{' '}
+                {formatHeure(seance.heureOuverture)}
+              </p>
+            )}
+            {seance.heureFermeture && (
+              <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
+                <CheckCircle2 size={14} /> Fermée à{' '}
+                {formatHeure(seance.heureFermeture)}
+              </p>
+            )}
 
-          {seance.heureOuverture && seance.heureFermeture ? (
-            <p className="text-sm font-bold text-gray-500 text-center py-2">
-              Séance terminée.
-            </p>
-          ) : (
-            <>
-              <div className="flex items-center gap-2 bg-gray-50 rounded-full px-4 py-2.5 mb-3">
-                <KeyRound size={15} className="text-gray-300 shrink-0" />
-                <input
-                  value={code}
-                  onChange={(e) => setCode(e.target.value.toUpperCase())}
-                  placeholder={
-                    seance.heureOuverture
-                      ? 'Code de fermeture'
-                      : "Code d'ouverture"
-                  }
-                  className="w-full text-sm font-bold tracking-widest outline-none bg-transparent placeholder:text-gray-300 placeholder:tracking-normal placeholder:font-semibold"
-                />
-              </div>
-              <button
-                onClick={seance.heureOuverture ? handleFermer : handleOuvrir}
-                disabled={envoi || !code.trim()}
-                className="w-full flex items-center justify-center gap-2 bg-red-600 rounded-full px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                {envoi && <Loader2 size={15} className="animate-spin" />}
-                {seance.heureOuverture
-                  ? 'Fermer la séance'
-                  : 'Ouvrir la séance'}
-              </button>
-            </>
-          )}
+            {seance.heureOuverture && seance.heureFermeture ? (
+              <p className="text-sm font-bold text-gray-500 text-center py-2">
+                Séance terminée — le rapport n'est plus modifiable.
+              </p>
+            ) : (
+              <>
+                <div className="flex items-center gap-2 bg-gray-50 rounded-full px-4 py-2.5 mb-3">
+                  <KeyRound size={15} className="text-gray-300 shrink-0" />
+                  <input
+                    value={code}
+                    onChange={(e) => setCode(e.target.value.toUpperCase())}
+                    placeholder={
+                      seance.heureOuverture
+                        ? "Code de fermeture"
+                        : "Code d'ouverture"
+                    }
+                    className="w-full text-sm font-bold tracking-widest outline-none bg-transparent placeholder:text-gray-300 placeholder:tracking-normal placeholder:font-semibold"
+                  />
+                </div>
+                <button
+                  onClick={seance.heureOuverture ? handleFermer : handleOuvrir}
+                  disabled={envoi || !code.trim()}
+                  className="w-full flex items-center justify-center gap-2 bg-red-600 rounded-full px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {envoi && <Loader2 size={15} className="animate-spin" />}
+                  {seance.heureOuverture
+                    ? 'Fermer la séance'
+                    : 'Ouvrir la séance'}
+                </button>
+              </>
+            )}
 
-          {erreur && (
-            <p className="text-xs font-semibold text-red-600 mt-3 text-center">
-              {erreur}
-            </p>
+            {erreur && (
+              <p className="text-xs font-semibold text-red-600 mt-3 text-center">
+                {erreur}
+              </p>
+            )}
+            {messageSucces && !erreur && (
+              <p className="text-xs font-semibold text-green-600 mt-3 text-center">
+                {messageSucces}
+              </p>
+            )}
+          </div>
+
+          {seance.heureOuverture && !seance.heureFermeture && user && (
+            <RapportSeanceForm
+              seanceId={seance.id}
+              ueId={seance.ueId}
+              troncCommunId={seance.troncCommunId}
+              specialiteId={seance.specialiteId}
+              specialiteNom={seance.specialiteNom}
+              typeCursus={seance.typeCursus}
+              semestre={seance.semestre}
+              enseignantMatricule={user.matricule}
+            />
           )}
-          {messageSucces && !erreur && (
-            <p className="text-xs font-semibold text-green-600 mt-3 text-center">
-              {messageSucces}
-            </p>
-          )}
-        </div>
+        </>
       )}
     </div>
   );

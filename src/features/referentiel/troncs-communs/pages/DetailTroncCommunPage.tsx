@@ -9,8 +9,16 @@ import {
   Search,
   AlertTriangle,
   X,
+  FileText,
+  UploadCloud,
+  Download,
+  Pencil,
+  ListChecks,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
+import { extraireTextePdf } from '@/lib/pdfExtraction';
+import { extraireSyllabusPdf } from '@/features/referentiel/ues/api';
 import {
   getTroncCommun,
   updateTroncCommun,
@@ -18,8 +26,11 @@ import {
   retirerUEDuTroncCommun,
   ajouterUEsAuTroncCommun,
   listUEsPourTroncCommun,
+  listPointsClesTronc,
+  enregistrerPointsClesTronc,
   type TroncCommunDetail,
   type UEOption,
+  type PointCleTronc,
 } from '../api';
 
 interface EnseignantOption {
@@ -51,6 +62,13 @@ export default function DetailTroncCommunPage() {
   const [rechercheAjout, setRechercheAjout] = useState('');
   const [ueIdsAAjouter, setUeIdsAAjouter] = useState<Set<string>>(new Set());
 
+  const [envoiSyllabus, setEnvoiSyllabus] = useState(false);
+  const [analyseEnCours, setAnalyseEnCours] = useState(false);
+  const [erreurSyllabus, setErreurSyllabus] = useState<string | null>(null);
+  const [pointsCles, setPointsCles] = useState<PointCleTronc[]>([]);
+  const [editionPoints, setEditionPoints] = useState<string[] | null>(null);
+  const [savingPoints, setSavingPoints] = useState(false);
+
   function recharger() {
     if (!id) return;
     setLoading(true);
@@ -60,6 +78,7 @@ export default function DetailTroncCommunPage() {
         if (data) {
           setNom(data.nom);
           setEnseignantId(data.enseignant_id ?? '');
+          if (data.syllabus_key) listPointsClesTronc(id).then(setPointsCles);
         }
       })
       .finally(() => setLoading(false));
@@ -143,6 +162,87 @@ export default function DetailTroncCommunPage() {
       recharger();
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleUploadSyllabus(e: React.ChangeEvent<HTMLInputElement>) {
+    const fichier = e.target.files?.[0];
+    if (!fichier || !id) return;
+    setEnvoiSyllabus(true);
+    setErreurSyllabus(null);
+    try {
+      const { nom: nomFichier } = await televerserFichier(
+        'syllabus-tronc-commun',
+        id,
+        fichier
+      );
+      setTroncCommun((prev) =>
+        prev
+          ? {
+              ...prev,
+              syllabus_key: `syllabus-tronc-commun/${id}/${nomFichier}`,
+              syllabus_nom: nomFichier,
+              syllabus_uploaded_at: new Date().toISOString(),
+            }
+          : prev
+      );
+      setEnvoiSyllabus(false);
+
+      // Points clés obligatoires dès qu'un syllabus est envoyé — extraction
+      // automatique juste après l'upload, partagée par tout le groupe.
+      setAnalyseEnCours(true);
+      try {
+        const texte = await extraireTextePdf(fichier);
+        const extraction = await extraireSyllabusPdf(texte);
+        if (extraction.points_cles.length === 0) {
+          setErreurSyllabus(
+            "L'IA n'a trouvé aucun point clé — ajoute-les manuellement ci-dessous (obligatoire)."
+          );
+          setEditionPoints(['']);
+        } else {
+          await enregistrerPointsClesTronc(id, extraction.points_cles);
+          listPointsClesTronc(id).then(setPointsCles);
+        }
+      } catch (err) {
+        setErreurSyllabus(
+          (err instanceof Error ? err.message : "Échec de l'extraction IA.") +
+            ' — ajoute les points clés manuellement ci-dessous (obligatoire).'
+        );
+        setEditionPoints(['']);
+      } finally {
+        setAnalyseEnCours(false);
+      }
+    } catch (err) {
+      setErreurSyllabus(
+        err instanceof Error ? err.message : "Erreur lors de l'envoi."
+      );
+      setEnvoiSyllabus(false);
+    } finally {
+      e.target.value = '';
+    }
+  }
+
+  function ouvrirEditionPoints() {
+    setEditionPoints(
+      pointsCles.length > 0 ? pointsCles.map((p) => p.libelle) : ['']
+    );
+  }
+
+  async function handleEnregistrerPoints() {
+    if (!id || !editionPoints) return;
+    const nettoyes = editionPoints.map((p) => p.trim()).filter(Boolean);
+    if (nettoyes.length === 0) {
+      setErreurSyllabus('Au moins un point clé est obligatoire.');
+      return;
+    }
+    setSavingPoints(true);
+    try {
+      await enregistrerPointsClesTronc(id, nettoyes);
+      listPointsClesTronc(id).then(setPointsCles);
+      setEditionPoints(null);
+      setErreurSyllabus(null);
+    } finally {
+      setSavingPoints(false);
     }
   }
 
@@ -263,6 +363,200 @@ export default function DetailTroncCommunPage() {
             Annuler
           </button>
         </div>
+      )}
+
+      {!editing && (
+        <>
+          <div className="mb-6">
+            <p className="font-extrabold text-sm text-gray-900 mb-2.5">
+              Syllabus (partagé par tout le groupe)
+            </p>
+            <div className="bg-white rounded-[20px] p-5">
+              {troncCommun.syllabus_key ? (
+                <div className="flex items-center justify-between gap-3 flex-wrap">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center shrink-0">
+                      <FileText size={18} className="text-green-600" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-bold text-gray-900 truncate">
+                        {troncCommun.syllabus_nom}
+                      </p>
+                      <p className="text-xs text-gray-400">
+                        Envoyé le{' '}
+                        {troncCommun.syllabus_uploaded_at
+                          ? new Date(
+                              troncCommun.syllabus_uploaded_at
+                            ).toLocaleDateString('fr-FR')
+                          : '—'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <a
+                      href={urlPubliqueR2(troncCommun.syllabus_key)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 bg-gray-50 rounded-full px-3.5 py-2 text-xs font-bold text-gray-700 hover:bg-gray-100"
+                    >
+                      <Download size={14} /> Télécharger
+                    </a>
+                    <label className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-full px-3.5 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 cursor-pointer">
+                      {envoiSyllabus || analyseEnCours ? (
+                        <Loader2 size={14} className="animate-spin" />
+                      ) : (
+                        <UploadCloud size={14} />
+                      )}
+                      Remplacer
+                      <input
+                        type="file"
+                        accept="application/pdf"
+                        onChange={handleUploadSyllabus}
+                        disabled={envoiSyllabus || analyseEnCours}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : (
+                <div>
+                  <p className="text-sm font-semibold text-amber-600 mb-3">
+                    Aucun syllabus — impossible d'attribuer une UE de ce
+                    groupe à un enseignant tant qu'il manque.
+                  </p>
+                  <label className="inline-flex items-center gap-2 bg-red-600 rounded-full px-4 py-2 text-sm font-bold text-white hover:bg-red-700 cursor-pointer">
+                    {envoiSyllabus || analyseEnCours ? (
+                      <Loader2 size={15} className="animate-spin" />
+                    ) : (
+                      <UploadCloud size={15} />
+                    )}
+                    Envoyer le syllabus (PDF)
+                    <input
+                      type="file"
+                      accept="application/pdf"
+                      onChange={handleUploadSyllabus}
+                      disabled={envoiSyllabus || analyseEnCours}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+              )}
+              {analyseEnCours && (
+                <p className="text-xs font-semibold text-gray-400 mt-3 flex items-center gap-1.5">
+                  <Loader2 size={12} className="animate-spin" /> Extraction
+                  des points clés en cours...
+                </p>
+              )}
+              {erreurSyllabus && (
+                <p className="text-xs font-semibold text-red-600 mt-3">
+                  {erreurSyllabus}
+                </p>
+              )}
+            </div>
+          </div>
+
+          {troncCommun.syllabus_key && (
+            <div className="mb-6">
+              <div className="flex items-center justify-between mb-2.5">
+                <p className="font-extrabold text-sm text-gray-900 flex items-center gap-1.5">
+                  <ListChecks size={15} className="text-red-600" />
+                  Points clés du contenu
+                </p>
+                {editionPoints === null && (
+                  <button
+                    onClick={ouvrirEditionPoints}
+                    className="flex items-center gap-1 text-xs font-bold text-red-600"
+                  >
+                    <Pencil size={12} /> Modifier
+                  </button>
+                )}
+              </div>
+              <div className="bg-white rounded-[20px] p-5">
+                {editionPoints !== null ? (
+                  <>
+                    <div className="flex flex-col gap-1.5 mb-3">
+                      {editionPoints.map((p, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <input
+                            value={p}
+                            onChange={(e) =>
+                              setEditionPoints((prev) =>
+                                prev
+                                  ? prev.map((v, idx) =>
+                                      idx === i ? e.target.value : v
+                                    )
+                                  : prev
+                              )
+                            }
+                            className="flex-1 border border-gray-200 rounded-xl px-3 py-1.5 text-sm font-semibold outline-none focus:border-red-600"
+                          />
+                          <button
+                            onClick={() =>
+                              setEditionPoints((prev) =>
+                                prev
+                                  ? prev.filter((_, idx) => idx !== i)
+                                  : prev
+                              )
+                            }
+                            className="text-gray-300 hover:text-red-600 shrink-0"
+                          >
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <button
+                        onClick={() =>
+                          setEditionPoints((prev) => [...(prev ?? []), ''])
+                        }
+                        className="flex items-center gap-1 text-xs font-bold text-red-600"
+                      >
+                        <Plus size={12} /> Ajouter
+                      </button>
+                      <div className="ml-auto flex items-center gap-2">
+                        <button
+                          onClick={handleEnregistrerPoints}
+                          disabled={savingPoints}
+                          className="flex items-center gap-2 bg-red-600 rounded-full px-4 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-50"
+                        >
+                          {savingPoints && (
+                            <Loader2 size={12} className="animate-spin" />
+                          )}
+                          Enregistrer
+                        </button>
+                        <button
+                          onClick={() => setEditionPoints(null)}
+                          className="text-xs font-bold text-gray-400"
+                        >
+                          <X size={14} />
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : pointsCles.length === 0 ? (
+                  <p className="text-sm text-gray-400">
+                    Aucun point clé pour l'instant.
+                  </p>
+                ) : (
+                  <ul className="flex flex-col gap-1.5">
+                    {pointsCles.map((p) => (
+                      <li
+                        key={p.id}
+                        className="flex items-start gap-2 text-sm text-gray-700"
+                      >
+                        <span className="text-red-600 font-bold shrink-0">
+                          ·
+                        </span>
+                        {p.libelle}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            </div>
+          )}
+        </>
       )}
 
       <div className="flex items-center justify-between mb-2.5">

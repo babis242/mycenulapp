@@ -1,6 +1,7 @@
 // src/features/seances/api.ts
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
+import type { TypeCursus } from '@/types';
 
 function lundiDeLaSemaine(reference = new Date()): string {
   const d = new Date(reference);
@@ -23,14 +24,16 @@ function decalerSemaine(semaineISO: string, nbSemaines: number): string {
   )}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
+// Les N dernières semaines (lundis), semaine actuelle incluse — utilisé
+// pour la Saisie manuelle, dont la fenêtre de recherche doit couvrir
+// large (jusqu'à 1 mois en arrière).
+function dernieresSemaines(nb: number): string[] {
+  const actuelle = lundiDeLaSemaine();
+  return Array.from({ length: nb }, (_, i) => decalerSemaine(actuelle, -i));
+}
+
 const NOMS_JOURS = [
-  'Dimanche',
-  'Lundi',
-  'Mardi',
-  'Mercredi',
-  'Jeudi',
-  'Vendredi',
-  'Samedi',
+  'Dimanche', 'Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi',
 ];
 
 function jourDAujourdhui(): string | null {
@@ -47,12 +50,18 @@ function creneauActuel(): '08h-12h' | '14h-17h' {
 
 export interface SeanceDuMoment {
   id: string;
+  ueId: string | null;
+  troncCommunId: string | null;
   ueNom: string;
   salleCode: string | null;
   jour: string;
   creneau: string;
   heureOuverture: string | null;
   heureFermeture: string | null;
+  specialiteId: string | null;
+  specialiteNom: string | null;
+  typeCursus: TypeCursus | null;
+  semestre: string | null;
 }
 
 // Le cours du moment pour l'enseignant connecté : celui prévu aujourd'hui,
@@ -76,18 +85,29 @@ export async function getSeanceDuMoment(
 
   const { data: emplois } = await supabase
     .from('emplois_du_temps')
-    .select('id')
+    .select('id, specialite_id, specialite:specialites(nom, type_cursus)')
     .eq('semaine', semaine)
     .eq('statut', 'valide');
   const emploiIds = (emplois ?? []).map((e) => e.id);
   if (emploiIds.length === 0) return null;
+  const specialiteParEmploi = new Map(
+    (emplois ?? []).map((e: any) => [
+      e.id,
+      {
+        specialiteId: e.specialite_id as string,
+        specialiteNom: (e.specialite?.nom as string) ?? null,
+        typeCursus: (e.specialite?.type_cursus as TypeCursus) ?? null,
+      },
+    ])
+  );
 
   const { data, error } = await supabase
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau, heure_ouverture, heure_fermeture,
-      offre:offres(ue:ues(nom)),
+      id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps_id,
+      tronc_commun_id,
+      offre:offres(semestre, ue:ues(id, nom)),
       tronc_commun:troncs_communs(nom),
       salle:salles(code_salle)
     `
@@ -101,9 +121,16 @@ export async function getSeanceDuMoment(
   if (!data) return null;
 
   const s = data as any;
+  const specialiteInfo = specialiteParEmploi.get(s.emploi_du_temps_id);
   return {
     id: s.id,
+    ueId: s.offre?.ue?.id ?? null,
+    troncCommunId: s.tronc_commun_id ?? null,
     ueNom: s.tronc_commun?.nom ?? s.offre?.ue?.nom ?? '',
+    specialiteId: specialiteInfo?.specialiteId ?? null,
+    specialiteNom: specialiteInfo?.specialiteNom ?? null,
+    typeCursus: specialiteInfo?.typeCursus ?? null,
+    semestre: s.offre?.semestre ?? null,
     salleCode: s.salle?.code_salle ?? null,
     jour: s.jour,
     creneau: s.creneau,
@@ -144,8 +171,15 @@ export async function fermerSeance(
 
 export interface SeanceRecherche {
   id: string;
+  ueId: string | null;
+  troncCommunId: string | null;
   ueNom: string;
   enseignantNom: string;
+  enseignantMatricule: string | null;
+  specialiteId: string | null;
+  specialiteNom: string | null;
+  typeCursus: TypeCursus | null;
+  semestre: string | null;
   jour: string;
   creneau: string;
   semaine: string;
@@ -163,14 +197,13 @@ export interface SeanceRecherche {
 export async function lireSeancesPourSaisieManuelleDepuisCache(
   recherche: string
 ): Promise<SeanceRecherche[]> {
-  const semaineActuelle = lundiDeLaSemaine();
-  const semainePrecedente = decalerSemaine(semaineActuelle, -1);
+  const semaines = dernieresSemaines(5);
 
-  const [emplois, seancesToutes, offres, ues, enseignants, troncsCommuns] =
+  const [emplois, seancesToutes, offres, ues, enseignants, troncsCommuns, specialites] =
     await Promise.all([
       db.emploisDuTemps
         .where('semaine')
-        .anyOf([semainePrecedente, semaineActuelle])
+        .anyOf(semaines)
         .and((e: any) => e.statut === 'valide')
         .toArray(),
       db.seancesEDT.toArray(),
@@ -178,6 +211,7 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
       db.ues.toArray(),
       db.enseignants.toArray(),
       db.troncsCommuns.toArray(),
+      db.specialites.toArray(),
     ]);
   if (emplois.length === 0) return [];
 
@@ -186,6 +220,7 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
   const ueParId = new Map(ues.map((u: any) => [u.id, u]));
   const enseignantParId = new Map(enseignants.map((e: any) => [e.id, e]));
   const troncCommunParId = new Map(troncsCommuns.map((t: any) => [t.id, t]));
+  const specialiteParId = new Map(specialites.map((s: any) => [s.id, s]));
 
   const q = recherche.trim().toLowerCase();
   return (seancesToutes as any[])
@@ -200,10 +235,20 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
       const enseignant = s.enseignant_id
         ? enseignantParId.get(s.enseignant_id)
         : null;
+      const specialite = emploi?.specialite_id
+        ? specialiteParId.get(emploi.specialite_id)
+        : null;
       return {
         id: s.id,
+        ueId: ue?.id ?? null,
+        troncCommunId: s.tronc_commun_id ?? null,
         ueNom: troncCommun?.nom ?? ue?.nom ?? '',
         enseignantNom: enseignant?.nom ?? '',
+        enseignantMatricule: enseignant?.matricule ?? null,
+        specialiteId: emploi?.specialite_id ?? null,
+        specialiteNom: specialite?.nom ?? null,
+        typeCursus: specialite?.type_cursus ?? null,
+        semestre: offre?.semestre ?? null,
         jour: s.jour,
         creneau: s.creneau,
         semaine: emploi?.semaine ?? '',
@@ -220,21 +265,163 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
     );
 }
 
+// ── Rapport de séance (Scénario 13) ────────────────────────────
+
+export interface RapportSeance {
+  id: string;
+  seanceId: string;
+  niveau: string;
+  contenu: string | null;
+  cahierTexteKey: string | null;
+  cahierTexteNom: string | null;
+}
+
+export async function getRapportPourSeance(
+  seanceId: string
+): Promise<RapportSeance | null> {
+  const { data } = await supabase
+    .from('rapports_seances')
+    .select(
+      'id, seance_edt_id, niveau, contenu, cahier_texte_key, cahier_texte_nom'
+    )
+    .eq('seance_edt_id', seanceId)
+    .maybeSingle();
+  if (!data) return null;
+  return {
+    id: data.id,
+    seanceId: data.seance_edt_id,
+    niveau: data.niveau,
+    contenu: data.contenu,
+    cahierTexteKey: data.cahier_texte_key,
+    cahierTexteNom: data.cahier_texte_nom,
+  };
+}
+
+// Crée le rapport s'il n'existe pas encore pour cette séance, ou renvoie
+// celui déjà en place (en mettant à jour le niveau si l'enseignant l'a
+// changé entre-temps).
+export async function creerOuRecupererRapport(
+  seanceId: string,
+  matricule: string,
+  niveau: string
+): Promise<string> {
+  const { data: enseignant } = await supabase
+    .from('enseignants')
+    .select('id')
+    .eq('matricule', matricule)
+    .maybeSingle();
+  if (!enseignant) throw new Error('Enseignant introuvable.');
+
+  const existant = await getRapportPourSeance(seanceId);
+  if (existant) {
+    if (existant.niveau !== niveau) {
+      await supabase
+        .from('rapports_seances')
+        .update({ niveau })
+        .eq('id', existant.id);
+    }
+    return existant.id;
+  }
+
+  const { data, error } = await supabase
+    .from('rapports_seances')
+    .insert({ seance_edt_id: seanceId, enseignant_id: enseignant.id, niveau })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return data.id;
+}
+
+export async function getAppelExistant(
+  rapportId: string
+): Promise<Record<string, boolean>> {
+  const { data } = await supabase
+    .from('appels_etudiants')
+    .select('etudiant_id, present')
+    .eq('rapport_id', rapportId);
+  const map: Record<string, boolean> = {};
+  for (const ligne of data ?? []) map[ligne.etudiant_id] = ligne.present;
+  return map;
+}
+
+// Remplace l'appel existant par le nouveau — simple et robuste vu le
+// faible volume (une classe par séance).
+export async function enregistrerAppel(
+  rapportId: string,
+  presences: { etudiantId: string; present: boolean }[]
+): Promise<void> {
+  await supabase.from('appels_etudiants').delete().eq('rapport_id', rapportId);
+  if (presences.length === 0) return;
+  const { error } = await supabase.from('appels_etudiants').insert(
+    presences.map((p) => ({
+      rapport_id: rapportId,
+      etudiant_id: p.etudiantId,
+      present: p.present,
+    }))
+  );
+  if (error) throw error;
+}
+
+export async function getPointsAbordesExistants(
+  rapportId: string
+): Promise<Set<string>> {
+  const { data } = await supabase
+    .from('rapports_points_abordes')
+    .select('point_cle_id')
+    .eq('rapport_id', rapportId);
+  return new Set((data ?? []).map((l) => l.point_cle_id));
+}
+
+// Remplace intégralement les points abordés — même principe que l'appel :
+// chaque enregistrement fournit la liste complète, jamais un ajout partiel.
+export async function enregistrerPointsAbordes(
+  rapportId: string,
+  pointIds: string[]
+): Promise<void> {
+  await supabase
+    .from('rapports_points_abordes')
+    .delete()
+    .eq('rapport_id', rapportId);
+  if (pointIds.length === 0) return;
+  const { error } = await supabase.from('rapports_points_abordes').insert(
+    pointIds.map((point_cle_id) => ({ rapport_id: rapportId, point_cle_id }))
+  );
+  if (error) throw error;
+}
+
+export async function enregistrerContenuRapport(
+  rapportId: string,
+  contenu: string
+): Promise<void> {
+  const { error } = await supabase
+    .from('rapports_seances')
+    .update({ contenu })
+    .eq('id', rapportId);
+  if (error) throw error;
+}
+
 export async function rechercherSeancesPourSaisieManuelle(
   recherche: string
 ): Promise<SeanceRecherche[]> {
-  const semaineActuelle = lundiDeLaSemaine();
-  const semainePrecedente = decalerSemaine(semaineActuelle, -1);
+  const semaines = dernieresSemaines(5);
 
   const { data: emplois } = await supabase
     .from('emplois_du_temps')
-    .select('id, semaine')
-    .in('semaine', [semainePrecedente, semaineActuelle])
+    .select('id, semaine, specialite_id, specialite:specialites(nom, type_cursus)')
+    .in('semaine', semaines)
     .eq('statut', 'valide');
   const emploiIds = (emplois ?? []).map((e) => e.id);
   if (emploiIds.length === 0) return [];
-  const semaineParEmploi = new Map(
-    (emplois ?? []).map((e) => [e.id, e.semaine])
+  const infosParEmploi = new Map(
+    (emplois ?? []).map((e: any) => [
+      e.id,
+      {
+        semaine: e.semaine as string,
+        specialiteId: e.specialite_id as string,
+        specialiteNom: (e.specialite?.nom as string) ?? null,
+        typeCursus: (e.specialite?.type_cursus as TypeCursus) ?? null,
+      },
+    ])
   );
 
   const { data, error } = await supabase
@@ -242,9 +429,10 @@ export async function rechercherSeancesPourSaisieManuelle(
     .select(
       `
       id, jour, creneau, emploi_du_temps_id, heure_ouverture, heure_fermeture,
-      offre:offres(ue:ues(nom)),
+      tronc_commun_id,
+      offre:offres(semestre, ue:ues(id, nom)),
       tronc_commun:troncs_communs(nom),
-      enseignant:enseignants(nom)
+      enseignant:enseignants(nom, matricule)
     `
     )
     .in('emploi_du_temps_id', emploiIds);
@@ -252,16 +440,26 @@ export async function rechercherSeancesPourSaisieManuelle(
 
   const q = recherche.trim().toLowerCase();
   return ((data ?? []) as any[])
-    .map((s) => ({
-      id: s.id,
-      ueNom: s.tronc_commun?.nom ?? s.offre?.ue?.nom ?? '',
-      enseignantNom: s.enseignant?.nom ?? '',
-      jour: s.jour,
-      creneau: s.creneau,
-      semaine: semaineParEmploi.get(s.emploi_du_temps_id) ?? '',
-      heureOuverture: s.heure_ouverture,
-      heureFermeture: s.heure_fermeture,
-    }))
+    .map((s) => {
+      const infos = infosParEmploi.get(s.emploi_du_temps_id);
+      return {
+        id: s.id,
+        ueId: s.offre?.ue?.id ?? null,
+        troncCommunId: s.tronc_commun_id ?? null,
+        ueNom: s.tronc_commun?.nom ?? s.offre?.ue?.nom ?? '',
+        enseignantNom: s.enseignant?.nom ?? '',
+        enseignantMatricule: s.enseignant?.matricule ?? null,
+        specialiteId: infos?.specialiteId ?? null,
+        specialiteNom: infos?.specialiteNom ?? null,
+        typeCursus: infos?.typeCursus ?? null,
+        semestre: s.offre?.semestre ?? null,
+        jour: s.jour,
+        creneau: s.creneau,
+        semaine: infos?.semaine ?? '',
+        heureOuverture: s.heure_ouverture,
+        heureFermeture: s.heure_fermeture,
+      };
+    })
     .filter(
       (s) =>
         !q ||

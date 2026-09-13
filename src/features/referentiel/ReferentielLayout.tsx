@@ -4,6 +4,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 const TABS = [
   { to: '/referentiel/ues', label: 'UEs' },
   { to: '/referentiel/enseignants', label: 'Enseignants' },
+  { to: '/referentiel/etudiants', label: 'Étudiants' },
   { to: '/referentiel/inscriptions', label: 'Inscriptions' },
   { to: '/referentiel/responsables', label: 'Responsables' },
   { to: '/referentiel/secretaires', label: 'Secrétaires' },

@@ -7,12 +7,26 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['favicon.svg', 'icons.svg', 'icons/apple-touch-icon.png'],
+      // injectManifest (au lieu de generateSW) — nécessaire pour écrire
+      // notre propre service worker (src/sw.ts) qui gère les
+      // notifications push, en plus du précache habituel.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.ts',
+      injectManifest: {
+        // Même règle qu'avant : précache tout le shell de l'app.
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+      },
+      includeAssets: [
+        'favicon.svg',
+        'icons.svg',
+        'icons/apple-touch-icon.png',
+      ],
       manifest: {
         name: 'Cenulape — Centre Universitaire La Perle',
         short_name: 'Cenulape',
         description:
-          'Gestion pédagogique — emplois du temps, disponibilités, codes journaliers et heures des enseignants du Cenulape.',
+          "Gestion pédagogique — emplois du temps, disponibilités, codes journaliers et heures des enseignants du Cenulape.",
         theme_color: '#dc2626',
         background_color: '#ffffff',
         display: 'standalone',
@@ -41,21 +55,9 @@ export default defineConfig({
           },
         ],
       },
-      workbox: {
-        // Précache tout le shell de l'app (JS/CSS/HTML/polices/images) —
-        // c'est ce qui évite de re-télécharger l'appli à chaque ouverture.
-        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        // Les appels Supabase (données, auth, edge functions) NE sont PAS
-        // mis en cache ici : c'est la couche Dexie (src/lib/db.ts +
-        // src/lib/sync.ts) qui gère les données hors ligne, avec un
-        // contrôle fin (péremption, file de synchronisation). Les laisser
-        // à Workbox risquerait de servir des données obsolètes sans qu'on
-        // le maîtrise.
-        navigateFallback: '/index.html',
-        cleanupOutdatedCaches: true,
-      },
       devOptions: {
         enabled: false,
+        type: 'module',
       },
     }),
   ],

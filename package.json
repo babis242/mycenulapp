@@ -21,7 +21,10 @@
     "react-router-dom": "^7.18.3",
     "tailwind-merge": "^3.6.0",
     "xlsx": "^0.18.5",
-    "zustand": "^5.0.15"
+    "zustand": "^5.0.15",
+    "pdfjs-dist": "^6.3.289",
+    "workbox-precaching": "^7.4.1",
+    "workbox-routing": "^7.4.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

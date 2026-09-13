@@ -40,6 +40,7 @@ class AppDatabase extends Dexie {
   troncsCommuns!: EntityTable<any, 'id'>;
   troncsCommunsUes!: EntityTable<any, 'id'>;
   campagneEnseignants!: EntityTable<any, 'id'>;
+  etudiants!: EntityTable<any, 'id'>;
   syncQueue!: EntityTable<SyncAction, 'id'>;
 
   constructor() {
@@ -77,6 +78,11 @@ class AppDatabase extends Dexie {
     // ligne).
     this.version(3).stores({
       campagneEnseignants: '++localId, campagne_id, enseignant_id',
+    });
+
+    // v4 — étudiants (Scénario 11).
+    this.version(4).stores({
+      etudiants: 'id, matricule, specialite_id, niveau',
     });
   }
 }

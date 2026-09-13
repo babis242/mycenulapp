@@ -69,6 +69,9 @@ export default function RepartitionPage() {
   const [modal, setModal] = useState<ModalAttribution | null>(null);
   const [recherche, setRecherche] = useState('');
   const [attribution, setAttribution] = useState(false);
+  const [erreurAttribution, setErreurAttribution] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     supabase
@@ -160,6 +163,7 @@ export default function RepartitionPage() {
   function ouvrirModale(c: CoursAAttribuer) {
     setModal(c);
     setRecherche('');
+    setErreurAttribution(null);
   }
 
   async function handleAttribuer(enseignant: EnseignantOption) {
@@ -181,6 +185,7 @@ export default function RepartitionPage() {
     }
 
     setAttribution(true);
+    setErreurAttribution(null);
     try {
       await attribuerCoursEtGroupe(modal, enseignant.id);
       const misAJour = await listCoursPourSpecialiteSemestre(
@@ -189,6 +194,10 @@ export default function RepartitionPage() {
       );
       setCours(misAJour);
       setModal(null);
+    } catch (err) {
+      setErreurAttribution(
+        err instanceof Error ? err.message : "Erreur lors de l'attribution."
+      );
     } finally {
       setAttribution(false);
     }
@@ -401,6 +410,14 @@ export default function RepartitionPage() {
                   <p className="text-[11px] text-purple-500 mt-0.5">
                     L'enseignant choisi sera appliqué à toutes les UEs :{' '}
                     {modal.troncCommun.ues.map((u) => u.nom).join(', ')}
+                  </p>
+                </div>
+              )}
+
+              {erreurAttribution && (
+                <div className="bg-red-50 rounded-xl px-3.5 py-2.5 mb-3 shrink-0">
+                  <p className="text-xs font-bold text-red-600">
+                    {erreurAttribution}
                   </p>
                 </div>
               )}

@@ -25,6 +25,7 @@ const TABLES_A_SYNCHRONISER: Record<string, string> = {
   troncsCommuns: 'troncs_communs',
   troncsCommunsUes: 'troncs_communs_ues',
   campagneEnseignants: 'campagne_enseignants',
+  etudiants: 'etudiants',
 };
 
 export type EtatSync = 'idle' | 'syncing' | 'error';
@@ -56,7 +57,9 @@ export async function syncReferenceData(): Promise<void> {
     TABLES_A_SYNCHRONISER
   )) {
     try {
-      const { data, error } = await supabase.from(tableSupabase).select('*');
+      const { data, error } = await supabase
+        .from(tableSupabase)
+        .select('*');
       if (error) throw error;
       if (!data) continue;
 
@@ -132,23 +135,16 @@ async function rejouerAction(action: SyncAction): Promise<void> {
     }
     case 'ues': {
       if (action.operation === 'create') {
-        const {
-          id,
-          nom,
-          code,
-          volume_horaire,
-          coefficient,
-          specialite_id,
-          semestre,
-        } = payload as {
-          id: string;
-          nom: string;
-          code: string | null;
-          volume_horaire: number | null;
-          coefficient: number | null;
-          specialite_id: string;
-          semestre: string;
-        };
+        const { id, nom, code, volume_horaire, coefficient, specialite_id, semestre } =
+          payload as {
+            id: string;
+            nom: string;
+            code: string | null;
+            volume_horaire: number | null;
+            coefficient: number | null;
+            specialite_id: string;
+            semestre: string;
+          };
         // upsert (pas insert) : rejouer la même action deux fois ne doit
         // jamais produire de conflit d'id.
         const { error: ueError } = await supabase
@@ -208,13 +204,14 @@ async function rejouerAction(action: SyncAction): Promise<void> {
     }
     case 'responsables': {
       if (action.operation === 'create') {
-        const { id, nom, email, numero_telephone, specialiteIds } = payload as {
-          id: string;
-          nom: string;
-          email: string;
-          numero_telephone: string | null;
-          specialiteIds?: string[];
-        };
+        const { id, nom, email, numero_telephone, specialiteIds } =
+          payload as {
+            id: string;
+            nom: string;
+            email: string;
+            numero_telephone: string | null;
+            specialiteIds?: string[];
+          };
         const { error } = await supabase
           .from('responsables')
           .upsert({ id, nom, email, numero_telephone });
@@ -294,7 +291,9 @@ async function rejouerAction(action: SyncAction): Promise<void> {
         if (aLier.length > 0) {
           const { error: liaisonError } = await supabase
             .from('troncs_communs_ues')
-            .insert(aLier.map((ue_id) => ({ tronc_commun_id: id, ue_id })));
+            .insert(
+              aLier.map((ue_id) => ({ tronc_commun_id: id, ue_id }))
+            );
           if (liaisonError) throw liaisonError;
         }
       }
@@ -303,7 +302,9 @@ async function rejouerAction(action: SyncAction): Promise<void> {
     default:
       // Entité pas encore câblée pour le rejeu automatique — laissée en
       // 'pending' volontairement (voir note dans le composant OfflineBanner).
-      throw new Error(`Rejeu non implémenté pour l'entité "${action.entity}".`);
+      throw new Error(
+        `Rejeu non implémenté pour l'entité "${action.entity}".`
+      );
   }
 }
 
@@ -334,10 +335,7 @@ export async function processSyncQueue(): Promise<{
         message,
         action.payload
       );
-      await db.syncQueue.update(action.id!, {
-        status: 'error',
-        error: message,
-      });
+      await db.syncQueue.update(action.id!, { status: 'error', error: message });
     }
   }
 

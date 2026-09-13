@@ -3,10 +3,80 @@ import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import type { UE, Offre, Specialite, Filiere, Ecole } from '@/types';
 
+// ── Extraction IA du syllabus (nom, code, volume, points clés) ────
+// N'écrit rien : renvoie juste l'extraction, à valider/corriger côté
+// client avant tout enregistrement (aucune donnée publiée sans
+// validation humaine).
+export interface ExtractionSyllabus {
+  nom: string | null;
+  code: string | null;
+  volume_horaire: number | null;
+  coefficient: number | null;
+  points_cles: string[];
+}
+
+export async function extraireSyllabusPdf(
+  texte: string
+): Promise<ExtractionSyllabus> {
+  const { data, error } = await supabase.functions.invoke(
+    'extraire-syllabus-pdf',
+    { body: { texte } }
+  );
+  if (error) {
+    let detail = error.message;
+    try {
+      const contexte = (error as any).context;
+      if (contexte && typeof contexte.json === 'function') {
+        const corps = await contexte.json();
+        if (corps?.error) detail = corps.error;
+      }
+    } catch {
+      // Pas grave, on garde le message générique.
+    }
+    throw new Error(detail);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data;
+}
+
+// Remplace intégralement les points clés d'une UE — l'envoi d'un syllabus
+// (création ou sur une UE existante) fournit toujours la liste complète,
+// jamais un ajout partiel.
+export async function enregistrerPointsCles(
+  ueId: string,
+  points: string[]
+): Promise<void> {
+  await supabase.from('ue_points_cles').delete().eq('ue_id', ueId);
+  if (points.length === 0) return;
+  const { error } = await supabase.from('ue_points_cles').insert(
+    points.map((libelle, i) => ({ ue_id: ueId, ordre: i, libelle }))
+  );
+  if (error) throw error;
+}
+
+export interface PointCle {
+  id: string;
+  ordre: number;
+  libelle: string;
+}
+
+export async function listPointsCles(ueId: string): Promise<PointCle[]> {
+  const { data, error } = await supabase
+    .from('ue_points_cles')
+    .select('id, ordre, libelle')
+    .eq('ue_id', ueId)
+    .order('ordre');
+  if (error) throw error;
+  return data ?? [];
+}
+
 // Une UE = une spécialité désormais (plus de multi-offres à la création —
 // le tronc commun se gère via un Jumelage créé a posteriori, cf.
 // src/features/referentiel/jumelages/api.ts).
 export interface UEAvecOffre extends UE {
+  syllabus_key: string | null;
+  syllabus_nom: string | null;
+  syllabus_uploaded_at: string | null;
   offre:
     | (Offre & {
         specialite: Pick<Specialite, 'id' | 'nom' | 'cycle'> & {
@@ -43,9 +113,7 @@ export async function lireUEsDepuisCache(): Promise<UEAvecOffre[]> {
       const offre = offreParUeId.get(ue.id);
       if (!offre) return { ...ue, offre: null } as UEAvecOffre;
       const specialite = specialiteParId.get(offre.specialite_id);
-      const filiere = specialite
-        ? filiereParId.get(specialite.filiere_id)
-        : null;
+      const filiere = specialite ? filiereParId.get(specialite.filiere_id) : null;
       const ecole = filiere ? ecoleParId.get(filiere.ecole_id) : null;
       return {
         ...ue,
@@ -75,6 +143,7 @@ export async function listUEsAvecOffre(): Promise<UEAvecOffre[]> {
     .select(
       `
       id, nom, code, volume_horaire, coefficient,
+      syllabus_key, syllabus_nom, syllabus_uploaded_at,
       offres (
         id, semestre, specialite_id,
         specialite:specialites (
@@ -205,6 +274,7 @@ export async function getUE(id: string): Promise<UEAvecOffre | null> {
     .select(
       `
       id, nom, code, volume_horaire, coefficient,
+      syllabus_key, syllabus_nom, syllabus_uploaded_at,
       offres (
         id, semestre, specialite_id,
         specialite:specialites (

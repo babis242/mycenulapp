@@ -278,31 +278,22 @@ export async function lireEmploiExistantDepuisCache(
     .equals(specialiteId)
     .and((e: any) => e.semaine === semaine)
     .first();
-  return emploi
-    ? { id: (emploi as any).id, statut: (emploi as any).statut }
-    : null;
+  return emploi ? { id: (emploi as any).id, statut: (emploi as any).statut } : null;
 }
 
 export async function lireSeancesDepuisCache(
   emploiId: string
 ): Promise<SeanceDetail[]> {
-  const [
-    seances,
-    offres,
-    ues,
-    troncsCommuns,
-    troncsCommunsUes,
-    enseignants,
-    salles,
-  ] = await Promise.all([
-    db.seancesEDT.where('emploi_du_temps_id').equals(emploiId).toArray(),
-    db.offres.toArray(),
-    db.ues.toArray(),
-    db.troncsCommuns.toArray(),
-    db.troncsCommunsUes.toArray(),
-    db.enseignants.toArray(),
-    db.salles.toArray(),
-  ]);
+  const [seances, offres, ues, troncsCommuns, troncsCommunsUes, enseignants, salles] =
+    await Promise.all([
+      db.seancesEDT.where('emploi_du_temps_id').equals(emploiId).toArray(),
+      db.offres.toArray(),
+      db.ues.toArray(),
+      db.troncsCommuns.toArray(),
+      db.troncsCommunsUes.toArray(),
+      db.enseignants.toArray(),
+      db.salles.toArray(),
+    ]);
 
   const offreParId = new Map(offres.map((o: any) => [o.id, o]));
   const ueParId = new Map(ues.map((u: any) => [u.id, u]));
@@ -731,6 +722,9 @@ export async function validerEDT(emploiId: string) {
 
 export interface MonCours {
   id: string;
+  ueId: string | null;
+  syllabusKey: string | null;
+  attributionId: string | null;
   ueNom: string;
   jour: string;
   creneau: string;
@@ -751,7 +745,7 @@ export async function lireMesCoursDepuisCache(
     .first();
   if (!enseignant) return [];
 
-  const [seances, offres, ues, salles, emplois, troncsCommuns] =
+  const [seances, offres, ues, salles, emplois, troncsCommuns, attributions] =
     await Promise.all([
       db.seancesEDT.where('enseignant_id').equals(enseignant.id).toArray(),
       db.offres.toArray(),
@@ -759,6 +753,11 @@ export async function lireMesCoursDepuisCache(
       db.salles.toArray(),
       db.emploisDuTemps.toArray(),
       db.troncsCommuns.toArray(),
+      db.attributions
+        .where('enseignant_id')
+        .equals(enseignant.id)
+        .and((a: any) => a.statut === 'actif')
+        .toArray(),
     ]);
 
   const offreParId = new Map(offres.map((o: any) => [o.id, o]));
@@ -766,6 +765,9 @@ export async function lireMesCoursDepuisCache(
   const salleParId = new Map(salles.map((s: any) => [s.id, s]));
   const emploiParId = new Map(emplois.map((e: any) => [e.id, e]));
   const troncCommunParId = new Map(troncsCommuns.map((t: any) => [t.id, t]));
+  const attributionParOffre = new Map(
+    (attributions as any[]).map((a) => [a.offre_id, a.id])
+  );
 
   return (seances as any[])
     .map((s) => {
@@ -779,6 +781,11 @@ export async function lireMesCoursDepuisCache(
       const salle = s.salle_id ? salleParId.get(s.salle_id) : null;
       return {
         id: s.id,
+        ueId: ue?.id ?? null,
+        syllabusKey: ue?.syllabus_key ?? null,
+        attributionId: s.offre_id
+          ? (attributionParOffre.get(s.offre_id) ?? null)
+          : null,
         ueNom: troncCommun?.nom ?? ue?.nom ?? '(tronc commun)',
         jour: s.jour,
         creneau: s.creneau,
@@ -803,8 +810,8 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau,
-      offre:offres(ue:ues(nom)),
+      id, jour, creneau, offre_id,
+      offre:offres(ue:ues(id, nom, syllabus_key)),
       salle:salles(code_salle),
       emploi_du_temps:emplois_du_temps(semaine, statut, pdf_signe_url)
     `
@@ -812,10 +819,26 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
     .eq('enseignant_id', enseignant.id);
   if (error) throw error;
 
+  // Attribution active de cet enseignant, par offre — nécessaire pour
+  // retrouver l'espace "support de cours" de chaque UE (Scénario 12).
+  const { data: attributions } = await supabase
+    .from('attributions')
+    .select('id, offre_id')
+    .eq('enseignant_id', enseignant.id)
+    .eq('statut', 'actif');
+  const attributionParOffre = new Map(
+    (attributions ?? []).map((a) => [a.offre_id, a.id])
+  );
+
   return ((data ?? []) as any[])
     .filter((s) => s.emploi_du_temps?.statut === 'valide')
     .map((s) => ({
       id: s.id,
+      ueId: s.offre?.ue?.id ?? null,
+      syllabusKey: s.offre?.ue?.syllabus_key ?? null,
+      attributionId: s.offre_id
+        ? (attributionParOffre.get(s.offre_id) ?? null)
+        : null,
       ueNom: s.offre?.ue?.nom ?? '(tronc commun)',
       jour: s.jour,
       creneau: s.creneau,

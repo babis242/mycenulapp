@@ -26,6 +26,9 @@ export default function AttributionTroncsCommunsPage() {
   const [modal, setModal] = useState<TroncCommunAvecUEs | null>(null);
   const [recherche, setRecherche] = useState('');
   const [attribution, setAttribution] = useState(false);
+  const [erreurAttribution, setErreurAttribution] = useState<string | null>(
+    null
+  );
 
   function reload() {
     setLoading(true);
@@ -42,6 +45,7 @@ export default function AttributionTroncsCommunsPage() {
   function ouvrirModale(t: TroncCommunAvecUEs) {
     setModal(t);
     setRecherche('');
+    setErreurAttribution(null);
   }
 
   async function handleAttribuer(enseignant: EnseignantOption) {
@@ -55,6 +59,7 @@ export default function AttributionTroncsCommunsPage() {
     }
 
     setAttribution(true);
+    setErreurAttribution(null);
     try {
       await attribuerCoursEtGroupe(
         {
@@ -70,6 +75,10 @@ export default function AttributionTroncsCommunsPage() {
       );
       reload();
       setModal(null);
+    } catch (err) {
+      setErreurAttribution(
+        err instanceof Error ? err.message : "Erreur lors de l'attribution."
+      );
     } finally {
       setAttribution(false);
     }
@@ -173,6 +182,14 @@ export default function AttributionTroncsCommunsPage() {
               <p className="text-xs text-gray-400 mb-3 shrink-0">
                 UEs concernées : {modal.ues.map((u) => u.nom).join(', ')}
               </p>
+
+              {erreurAttribution && (
+                <div className="bg-red-50 rounded-xl px-3.5 py-2.5 mb-3 shrink-0">
+                  <p className="text-xs font-bold text-red-600">
+                    {erreurAttribution}
+                  </p>
+                </div>
+              )}
 
               <div className="flex items-center gap-2 bg-gray-50 rounded-full px-3.5 py-2.5 mb-3 shrink-0">
                 <Search size={15} className="text-gray-300" />

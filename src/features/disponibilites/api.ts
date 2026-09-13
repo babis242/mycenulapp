@@ -65,6 +65,64 @@ export async function listUEsPourCampagne(
   // offre est propre à une spécialité+semestre).
   const vues = new Map<string, UEPourCampagne>();
   for (const r of resultats) vues.set(r.offreId, r);
+
+  // Auto-inclusion des UEs sœurs d'un tronc commun : si l'une des UEs
+  // trouvées appartient à un groupe, les autres UEs du même groupe sont
+  // concernées elles aussi, même si leur spécialité/semestre n'a pas été
+  // ajouté explicitement par l'admin — un tronc commun se demande/se
+  // programme toujours en bloc.
+  const idsDejaVus = new Set(Array.from(vues.values()).map((r) => r.ueId));
+  const troncsDejaTraites = new Set<string>();
+  for (const r of Array.from(vues.values())) {
+    if (!r.troncCommunNom) continue;
+
+    const { data: lien } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id')
+      .eq('ue_id', r.ueId)
+      .maybeSingle();
+    const troncId = lien?.tronc_commun_id;
+    if (!troncId || troncsDejaTraites.has(troncId)) continue;
+    troncsDejaTraites.add(troncId);
+
+    const { data: liaisonsGroupe } = await supabase
+      .from('troncs_communs_ues')
+      .select(
+        `
+        ue:ues(
+          id, nom,
+          offres(id, semestre, specialite:specialites(nom))
+        )
+      `
+      )
+      .eq('tronc_commun_id', troncId);
+
+    for (const l of (liaisonsGroupe ?? []) as any[]) {
+      const ue = l.ue;
+      const offre = ue?.offres?.[0];
+      if (!ue || !offre || idsDejaVus.has(ue.id)) continue;
+
+      const { data: attribution } = await supabase
+        .from('attributions')
+        .select('enseignant_id, enseignant:enseignants(nom)')
+        .eq('offre_id', offre.id)
+        .eq('statut', 'actif')
+        .maybeSingle();
+
+      idsDejaVus.add(ue.id);
+      vues.set(offre.id, {
+        ueId: ue.id,
+        ueNom: ue.nom,
+        offreId: offre.id,
+        specialiteNom: offre.specialite?.nom ?? '',
+        semestre: offre.semestre,
+        enseignantId: attribution?.enseignant_id ?? null,
+        enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
+        troncCommunNom: r.troncCommunNom,
+      });
+    }
+  }
+
   return Array.from(vues.values());
 }
 

@@ -1,6 +1,7 @@
 // src/features/referentiel/troncs-communs/api.ts
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
+import type { TypeCursus } from '@/types';
 
 export interface UEDeTroncCommunResume {
   id: string;
@@ -86,7 +87,7 @@ export async function lireTroncsCommunsDepuisCache(): Promise<
         nom: t.nom,
         enseignant_id: t.enseignant_id,
         enseignant_nom: t.enseignant_id
-          ? enseignantParId.get(t.enseignant_id)?.nom ?? null
+          ? (enseignantParId.get(t.enseignant_id)?.nom ?? null)
           : null,
         ues: uesDuTronc,
       } as TroncCommunAvecUEs;
@@ -142,7 +143,9 @@ export interface UEOption {
 // un autre groupe (une UE ne devrait appartenir qu'à un seul groupe à la
 // fois, pour éviter les doubles comptages en emploi du temps).
 // Reconstruit la même liste depuis Dexie — utilisée hors ligne.
-export async function lireUEsPourTroncCommunDepuisCache(): Promise<UEOption[]> {
+export async function lireUEsPourTroncCommunDepuisCache(): Promise<
+  UEOption[]
+> {
   const [ues, offres, specialites, liaisons] = await Promise.all([
     db.ues.toArray(),
     db.offres.toArray(),
@@ -154,7 +157,9 @@ export async function lireUEsPourTroncCommunDepuisCache(): Promise<UEOption[]> {
   for (const o of offres as any[]) {
     if (!offreParUeId.has(o.ue_id)) offreParUeId.set(o.ue_id, o);
   }
-  const dejaGroupees = new Set((liaisons as any[]).map((l) => l.ue_id));
+  const dejaGroupees = new Set(
+    (liaisons as any[]).map((l) => l.ue_id)
+  );
 
   return (ues as any[]).map((u) => {
     const offre = offreParUeId.get(u.id);
@@ -278,6 +283,47 @@ export async function setEnseignantTroncCommun(
 
 // ── Détail / Modification (écran détail tronc commun) ────────────
 
+export interface GroupeSpecialiteTronc {
+  specialiteId: string;
+  specialiteNom: string;
+  typeCursus: TypeCursus;
+  semestre: string | null;
+}
+
+// Une spécialité par UE membre (dédupliquées) — nécessaire pour le
+// rapport de séance : chaque UE du tronc commun garde sa propre offre
+// (spécialité + semestre), donc un cours en tronc commun concerne
+// potentiellement plusieurs spécialités à la fois.
+export async function getGroupesSpecialitesTronc(
+  troncCommunId: string
+): Promise<GroupeSpecialiteTronc[]> {
+  const { data, error } = await supabase
+    .from('troncs_communs_ues')
+    .select(
+      `
+      ue:ues(
+        offres(semestre, specialite:specialites(id, nom, type_cursus))
+      )
+    `
+    )
+    .eq('tronc_commun_id', troncCommunId);
+  if (error) throw error;
+
+  const vus = new Map<string, GroupeSpecialiteTronc>();
+  for (const ligne of (data ?? []) as any[]) {
+    const offre = ligne.ue?.offres?.[0];
+    const specialite = offre?.specialite;
+    if (!specialite) continue;
+    vus.set(specialite.id, {
+      specialiteId: specialite.id,
+      specialiteNom: specialite.nom,
+      typeCursus: specialite.type_cursus,
+      semestre: offre.semestre ?? null,
+    });
+  }
+  return Array.from(vus.values());
+}
+
 export interface UEDuTroncCommun {
   id: string;
   nom: string;
@@ -292,6 +338,9 @@ export interface TroncCommunDetail {
   nom: string;
   enseignant_id: string | null;
   enseignant_nom: string | null;
+  syllabus_key: string | null;
+  syllabus_nom: string | null;
+  syllabus_uploaded_at: string | null;
   ues: UEDuTroncCommun[];
 }
 
@@ -303,6 +352,7 @@ export async function getTroncCommun(
     .select(
       `
       id, nom, enseignant_id,
+      syllabus_key, syllabus_nom, syllabus_uploaded_at,
       enseignant:enseignants ( nom ),
       troncs_communs_ues (
         ue:ues (
@@ -323,6 +373,9 @@ export async function getTroncCommun(
     nom: t.nom,
     enseignant_id: t.enseignant_id,
     enseignant_nom: t.enseignant?.nom ?? null,
+    syllabus_key: t.syllabus_key,
+    syllabus_nom: t.syllabus_nom,
+    syllabus_uploaded_at: t.syllabus_uploaded_at,
     ues: (t.troncs_communs_ues ?? []).map((tu: any) => {
       const offre = tu.ue.offres?.[0];
       return {
@@ -335,6 +388,42 @@ export async function getTroncCommun(
       };
     }),
   };
+}
+
+export interface PointCleTronc {
+  id: string;
+  ordre: number;
+  libelle: string;
+}
+
+export async function listPointsClesTronc(
+  troncCommunId: string
+): Promise<PointCleTronc[]> {
+  const { data, error } = await supabase
+    .from('troncs_communs_points_cles')
+    .select('id, ordre, libelle')
+    .eq('tronc_commun_id', troncCommunId)
+    .order('ordre');
+  if (error) throw error;
+  return data ?? [];
+}
+
+// Remplace intégralement les points clés — même principe que pour une UE
+// simple (ue_points_cles) : un envoi de syllabus fournit toujours la
+// liste complète.
+export async function enregistrerPointsClesTronc(
+  troncCommunId: string,
+  points: string[]
+): Promise<void> {
+  await supabase
+    .from('troncs_communs_points_cles')
+    .delete()
+    .eq('tronc_commun_id', troncCommunId);
+  if (points.length === 0) return;
+  const { error } = await supabase.from('troncs_communs_points_cles').insert(
+    points.map((libelle, i) => ({ tronc_commun_id: troncCommunId, ordre: i, libelle }))
+  );
+  if (error) throw error;
 }
 
 export async function updateTroncCommun(

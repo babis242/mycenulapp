@@ -9,6 +9,7 @@ import LoginPage from '@/features/auth/pages/LoginPage';
 import MotDePasseOubliePage from '@/features/auth/pages/MotDePasseOubliePage';
 import InscriptionEnseignantPage from '@/features/inscriptions/pages/InscriptionEnseignantPage';
 import ListeInscriptionsPage from '@/features/inscriptions/pages/ListeInscriptionsPage';
+import EtudiantsPage from '@/features/referentiel/etudiants/pages/EtudiantsPage';
 import DashboardPage from '@/features/dashboard/pages/DashboardPage';
 
 import ReferentielLayout from '@/features/referentiel/ReferentielLayout';
@@ -17,6 +18,8 @@ import AjouterUEPage from '@/features/referentiel/ues/pages/AjouterUEPage';
 import DetailUEPage from '@/features/referentiel/ues/pages/DetailUEPage';
 import ImporterUEsPage from '@/features/referentiel/ues/pages/ImporterUEsPage';
 import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
+import SuiviSupportsCoursPage from '@/features/repartition/pages/SuiviSupportsCoursPage';
+import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
 import ImporterAttributionsPage from '@/features/repartition/pages/ImporterAttributionsPage';
 import AttributionTroncsCommunsPage from '@/features/repartition/pages/AttributionTroncsCommunsPage';
 import LancerDemandePage from '@/features/disponibilites/pages/LancerDemandePage';
@@ -25,6 +28,7 @@ import EtatDisponibilitesPage from '@/features/disponibilites/pages/EtatDisponib
 import GenererEDTPage from '@/features/emploi-du-temps/pages/GenererEDTPage';
 import ValidationEDTPage from '@/features/emploi-du-temps/pages/ValidationEDTPage';
 import MesCoursPage from '@/features/emploi-du-temps/pages/MesCoursPage';
+import MesUEsPage from '@/features/mes-ues/pages/MesUEsPage';
 import ListeEnseignantsPage from '@/features/referentiel/enseignants/pages/ListeEnseignantsPage';
 import AjouterEnseignantPage from '@/features/referentiel/enseignants/pages/AjouterEnseignantPage';
 import ImporterEnseignantsPage from '@/features/referentiel/enseignants/pages/ImporterEnseignantsPage';
@@ -86,6 +90,7 @@ export default function AppRoutes() {
                 path="inscriptions"
                 element={<ListeInscriptionsPage />}
               />
+              <Route path="etudiants" element={<EtudiantsPage />} />
 
               <Route path="responsables" element={<ListeResponsablesPage />} />
               <Route
@@ -123,6 +128,11 @@ export default function AppRoutes() {
             }
           >
             <Route path="/repartition" element={<RepartitionPage />} />
+            <Route
+              path="/repartition/supports-cours"
+              element={<SuiviSupportsCoursPage />}
+            />
+            <Route path="/rapports" element={<ListeRapportsPage />} />
             <Route
               path="/repartition/importer"
               element={<ImporterAttributionsPage />}
@@ -165,6 +175,7 @@ export default function AppRoutes() {
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>
             <Route path="/mes-cours" element={<MesCoursPage />} />
+            <Route path="/mes-ues" element={<MesUEsPage />} />
             <Route path="/ma-seance" element={<MaSeancePage />} />
           </Route>
 

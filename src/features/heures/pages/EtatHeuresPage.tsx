@@ -1,7 +1,7 @@
 // src/features/heures/pages/EtatHeuresPage.tsx
 import { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
-import { Loader2, FileSpreadsheet, WifiOff } from 'lucide-react';
+import { Loader2, FileSpreadsheet, WifiOff, Search } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
 import {
@@ -47,6 +47,7 @@ export default function EtatHeuresPage() {
   const [chargement, setChargement] = useState(true);
   const [erreur, setErreur] = useState<string | null>(null);
   const [depuisCache, setDepuisCache] = useState(false);
+  const [recherche, setRecherche] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -110,16 +111,7 @@ export default function EtatHeuresPage() {
 
   function exporterDetail() {
     const feuille = XLSX.utils.aoa_to_sheet([
-      [
-        'Enseignant',
-        'Date',
-        'Jour',
-        'Créneau',
-        'UE',
-        "Heure d'ouverture",
-        'Heure de fermeture',
-        'Heures',
-      ],
+      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'ouverture", 'Heure de fermeture', 'Heures'],
       ...detail.map((d) => [
         d.enseignantNom,
         formatDate(d.heureOuverture),
@@ -145,6 +137,12 @@ export default function EtatHeuresPage() {
     XLSX.utils.book_append_sheet(classeur, feuille, 'Totaux');
     XLSX.writeFile(classeur, `heures_totaux_${mois}.xlsx`);
   }
+
+  const totauxFiltres = totaux.filter((t) =>
+    recherche.trim()
+      ? t.enseignantNom.toLowerCase().includes(recherche.trim().toLowerCase())
+      : true
+  );
 
   return (
     <div className="max-w-4xl mx-auto">
@@ -188,6 +186,18 @@ export default function EtatHeuresPage() {
         </button>
       </div>
 
+      <div className="flex mb-4">
+        <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
+          <Search size={15} className="text-gray-300 shrink-0" />
+          <input
+            value={recherche}
+            onChange={(e) => setRecherche(e.target.value)}
+            placeholder="Rechercher un enseignant..."
+            className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
+          />
+        </div>
+      </div>
+
       <div className="bg-white rounded-[20px] overflow-hidden">
         <div className="px-5 py-3 border-b border-gray-50">
           <p className="text-xs font-bold text-gray-400 uppercase">
@@ -202,9 +212,11 @@ export default function EtatHeuresPage() {
           <div className="p-6 text-sm font-semibold text-red-600">
             Impossible de charger les heures : {erreur}
           </div>
-        ) : totaux.length === 0 ? (
+        ) : totauxFiltres.length === 0 ? (
           <div className="p-10 text-center text-sm font-semibold text-gray-300">
-            Aucune heure effectuée sur ce mois pour l'instant.
+            {recherche
+              ? 'Aucun enseignant ne correspond à cette recherche.'
+              : "Aucune heure effectuée sur ce mois pour l'instant."}
           </div>
         ) : (
           <table className="w-full text-sm">
@@ -215,7 +227,7 @@ export default function EtatHeuresPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-50">
-              {totaux.map((t) => (
+              {totauxFiltres.map((t) => (
                 <tr key={t.enseignantId}>
                   <td className="px-5 py-3 font-bold">{t.enseignantNom}</td>
                   <td className="px-5 py-3 font-mono font-bold text-red-600">
