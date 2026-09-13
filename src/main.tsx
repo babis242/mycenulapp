@@ -1,3 +1,9 @@
+// Polyfill du global "Iterator" (Iterator Helpers) — trop récent pour
+// les anciennes versions d'iOS/Safari. pdfjs-dist (et potentiellement
+// d'autres dépendances) s'appuie dessus dès le chargement du module,
+// donc ce polyfill doit être le tout premier import de l'app.
+import 'core-js/actual/iterator/index.js';
+
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
