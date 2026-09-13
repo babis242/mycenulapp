@@ -7,18 +7,13 @@
       content="width=device-width, initial-scale=1.0, viewport-fit=cover, maximum-scale=1.0"
     />
     <meta name="theme-color" content="#dc2626" />
-    <meta
-      name="description"
-      content="Gestion pédagogique du Cenulape — emplois du temps, disponibilités, codes journaliers, heures des enseignants."
-    />
+    <meta name="description" content="Gestion pédagogique du Cenulape — emplois du temps, disponibilités, codes journaliers, heures des enseignants." />
 
     <!-- PWA / installation -->
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta
-      name="apple-mobile-web-app-status-bar-style"
-      content="black-translucent"
-    />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Cenulape" />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
 
@@ -32,6 +27,32 @@
   </head>
   <body>
     <div id="root"></div>
+    <script>
+      // Filet de secours : si l'app ne démarre pas (page blanche), affiche
+      // l'erreur exacte directement à l'écran plutôt que de laisser une
+      // page vide sans indice — utile pour déboguer sans outils de
+      // développement (ex: iPhone sans Mac à disposition).
+      (function () {
+        var erreurs = [];
+        window.addEventListener('error', function (e) {
+          erreurs.push((e.message || 'Erreur') + ' — ' + (e.filename || '') + ':' + (e.lineno || ''));
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          erreurs.push('Promesse rejetée : ' + (e.reason && e.reason.message ? e.reason.message : String(e.reason)));
+        });
+        setTimeout(function () {
+          var root = document.getElementById('root');
+          if (root && root.childElementCount === 0) {
+            root.innerHTML =
+              '<div style="font-family: sans-serif; padding: 24px; color: #b91c1c;">' +
+              '<p style="font-weight: bold; margin-bottom: 12px;">L\'application n\'a pas pu démarrer. Détail technique (à copier/envoyer) :</p>' +
+              '<pre style="white-space: pre-wrap; font-size: 12px; background: #fef2f2; padding: 12px; border-radius: 8px;">' +
+              (erreurs.length ? erreurs.join('\n\n') : 'Aucune erreur JavaScript détectée — le script principal ne s\'est peut-être pas chargé du tout (souci réseau ou service worker).') +
+              '</pre></div>';
+          }
+        }, 6000);
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
