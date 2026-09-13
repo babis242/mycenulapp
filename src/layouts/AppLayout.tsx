@@ -23,6 +23,7 @@ import NotificationBell from '@/components/shared/NotificationBell';
 import OfflineBanner from '@/components/shared/OfflineBanner';
 import UpdateBanner from '@/components/shared/UpdateBanner';
 import PushNotificationPrompt from '@/components/shared/PushNotificationPrompt';
+import NotificationsToggle from '@/components/shared/NotificationsToggle';
 import type { Role } from '@/types';
 
 // Navigation par rôle — chaque module ajoutera son rôle autorisé au fur et
@@ -229,6 +230,7 @@ export default function AppLayout() {
               <p className="text-white/50 text-[10px] truncate">{user.role}</p>
             </div>
           </div>
+          <NotificationsToggle />
           <button
             onClick={() => useAuthStore.getState().logout()}
             className="flex items-center gap-3 px-3.5 py-2.5 rounded-2xl text-sm font-bold text-white/75 hover:bg-white/10 transition-colors w-full text-left"
