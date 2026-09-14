@@ -175,7 +175,7 @@ export async function getSeances(emploiId: string): Promise<SeanceDetail[]> {
       `
       id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
       offre:offres(semestre, ue:ues(nom, volume_horaire)),
-      tronc_commun:troncs_communs(nom, troncs_communs_ues(ue:ues(nom))),
+      tronc_commun:troncs_communs(nom),
       enseignant:enseignants(nom),
       salle:salles(code_salle)
     `
@@ -185,14 +185,11 @@ export async function getSeances(emploiId: string): Promise<SeanceDetail[]> {
 
   return ((data ?? []) as any[]).map((s) => {
     if (s.tronc_commun) {
-      const nomsUEs = (s.tronc_commun.troncs_communs_ues ?? [])
-        .map((tu: any) => tu.ue?.nom)
-        .join(' + ');
       return {
         id: s.id,
         offreId: null,
         troncCommunId: s.tronc_commun_id,
-        ueNom: `${s.tronc_commun.nom} (${nomsUEs})`,
+        ueNom: s.tronc_commun.nom,
         volumeHoraire: null,
         semestre: null,
         enseignantNom: s.enseignant?.nom ?? '',
@@ -284,13 +281,12 @@ export async function lireEmploiExistantDepuisCache(
 export async function lireSeancesDepuisCache(
   emploiId: string
 ): Promise<SeanceDetail[]> {
-  const [seances, offres, ues, troncsCommuns, troncsCommunsUes, enseignants, salles] =
+  const [seances, offres, ues, troncsCommuns, enseignants, salles] =
     await Promise.all([
       db.seancesEDT.where('emploi_du_temps_id').equals(emploiId).toArray(),
       db.offres.toArray(),
       db.ues.toArray(),
       db.troncsCommuns.toArray(),
-      db.troncsCommunsUes.toArray(),
       db.enseignants.toArray(),
       db.salles.toArray(),
     ]);
@@ -309,16 +305,11 @@ export async function lireSeancesDepuisCache(
 
     if (s.tronc_commun_id) {
       const tronc = troncCommunParId.get(s.tronc_commun_id);
-      const nomsUEs = (troncsCommunsUes as any[])
-        .filter((tu) => tu.tronc_commun_id === s.tronc_commun_id)
-        .map((tu) => ueParId.get(tu.ue_id)?.nom)
-        .filter(Boolean)
-        .join(' + ');
       return {
         id: s.id,
         offreId: null,
         troncCommunId: s.tronc_commun_id,
-        ueNom: `${tronc?.nom ?? ''} (${nomsUEs})`,
+        ueNom: tronc?.nom ?? '',
         volumeHoraire: null,
         semestre: null,
         enseignantNom: enseignant?.nom ?? '',
@@ -489,6 +480,8 @@ async function propagerVersGroupe(
       .select('id')
       .eq('emploi_du_temps_id', emploi.id)
       .eq('tronc_commun_id', troncCommunId)
+      .eq('jour', jour)
+      .eq('creneau', creneau)
       .maybeSingle();
 
     if (seanceExistante) {

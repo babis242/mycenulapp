@@ -1,6 +1,6 @@
 // src/features/emploi-du-temps/pages/GenererEDTPage.tsx
 import { useEffect, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Loader2,
   Plus,
@@ -81,6 +81,43 @@ function lundiDeLaSemaine(): string {
   return `${y}-${m}-${day}`;
 }
 
+// Applique un changement (pas encore en base) à une liste de séances —
+// utilisée à la fois pour l'affichage optimiste immédiat et pour rejouer
+// un brouillon retrouvé dans le navigateur au rechargement de la page.
+function appliquerChangement(
+  liste: SeanceDetail[],
+  c: ChangementCellule,
+  offres: OffreDeSpecialite[],
+  salles: Salle[]
+): SeanceDetail[] {
+  if (c.action === 'delete') {
+    return liste.filter((s) => s.id !== c.seanceId);
+  }
+  const offre = offres.find((o) => o.offreId === c.offreId);
+  const salle = c.salleId ? salles.find((s) => s.id === c.salleId) : null;
+  const nouvelle: SeanceDetail = {
+    id: c.seanceIdExistante ?? `local-${c.jour}-${c.creneau}-${c.offreId}`,
+    offreId: c.offreId,
+    troncCommunId: null,
+    ueNom: offre?.ueNom ?? '',
+    volumeHoraire: offre?.volumeHoraire ?? null,
+    semestre: null,
+    enseignantNom: offre?.enseignantAttribueNom ?? '',
+    salleCode: salle?.code_salle ?? null,
+    salleId: c.salleId,
+    jour: c.jour,
+    creneau: c.creneau,
+    statut: 'ok',
+  };
+  // Ne retire l'ancienne occupation de la case que si on modifiait
+  // vraiment une entrée précise (sinon, une autre UE pourrait déjà être
+  // là en conflit volontaire — on ne l'efface pas).
+  const sansAncienne = c.seanceIdExistante
+    ? liste.filter((s) => s.id !== c.seanceIdExistante)
+    : liste;
+  return [...sansAncienne, nouvelle];
+}
+
 interface ModalCellule {
   jour: string;
   creneau: string;
@@ -89,12 +126,27 @@ interface ModalCellule {
   salleId: string;
 }
 
+// Une modification pas encore envoyée en base — "set" pour remplir/
+// modifier une case, "delete" pour en retirer une déjà confirmée.
+type ChangementCellule =
+  | {
+      action: 'set';
+      jour: string;
+      creneau: string;
+      offreId: string;
+      enseignantId: string;
+      salleId: string | null;
+      seanceIdExistante: string | null;
+    }
+  | { action: 'delete'; seanceId: string; jour: string; creneau: string };
+
 // Écran Scénario 5 — Construction manuelle de l'emploi du temps
 // (journal.md). Nouvelle procédure : pas d'algorithme automatique, l'EDT
 // démarre vierge. Pour chaque créneau, on affiche les enseignants
 // disponibles (facultatif — on peut aussi en choisir un autre, ou une UE
 // différente), une salle est suggérée mais modifiable.
 export default function GenererEDTPage() {
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const enLigne = useOnlineStatus();
@@ -125,12 +177,18 @@ export default function GenererEDTPage() {
   const [toutesSalles, setToutesSalles] = useState<Salle[]>([]);
   const [salleParDefaut, setSalleParDefaut] = useState<Salle | null>(null);
 
+  // Construction 100% locale : chaque case remplie ne part pas en base
+  // tout de suite (trop lent case par case) — juste gardée ici, et dans
+  // le navigateur (localStorage) pour survivre à une fermeture. Tout part
+  // en base d'un coup au clic sur "Aller à la validation".
+  const [changements, setChangements] = useState<ChangementCellule[]>([]);
+  const [envoiEnCours, setEnvoiEnCours] = useState(false);
+
   const [modal, setModal] = useState<ModalCellule | null>(null);
   const [enregistre, setEnregistre] = useState(false);
   const [enseignantsDispoModal, setEnseignantsDispoModal] = useState<
     EnseignantDisponible[]
   >([]);
-  const [enregistrement, setEnregistrement] = useState(false);
   const [erreurChargement, setErreurChargement] = useState<string | null>(
     null
   );
@@ -154,6 +212,20 @@ export default function GenererEDTPage() {
       lireToutesLesSallesDepuisCache().then(setToutesSalles);
     }
   }, []);
+
+  // Sauvegarde silencieuse du brouillon dans le navigateur à chaque
+  // changement — rapide (écriture locale, pas de réseau), permet de
+  // retrouver son travail même après une fermeture avant d'avoir cliqué
+  // "Aller à la validation".
+  useEffect(() => {
+    if (!specialiteId || !semaine) return;
+    const cleDraft = `edt-brouillon:${specialiteId}:${semaine}`;
+    if (changements.length === 0) {
+      localStorage.removeItem(cleDraft);
+    } else {
+      localStorage.setItem(cleDraft, JSON.stringify(changements));
+    }
+  }, [changements, specialiteId, semaine]);
 
   useEffect(() => {
     const specialiteParam = searchParams.get('specialite');
@@ -297,9 +369,33 @@ export default function GenererEDTPage() {
           listOffresDeSpecialite(specialiteId),
           getSalleParDefautSpecialite(specialiteId),
         ]);
-        setSeances(s);
         setOffresSpecialite(offres);
         setSalleParDefaut(defaut);
+
+        // Rejoue un éventuel brouillon local pas encore envoyé en base
+        // (fermeture du navigateur avant d'avoir cliqué "Aller à la
+        // validation") — l'admin retrouve exactement où il en était.
+        const cleDraft = `edt-brouillon:${specialiteId}:${semaine}`;
+        const brut = localStorage.getItem(cleDraft);
+        let seancesAffichees = s;
+        let changementsCharges: ChangementCellule[] = [];
+        if (brut) {
+          try {
+            changementsCharges = JSON.parse(brut);
+            for (const c of changementsCharges) {
+              seancesAffichees = appliquerChangement(
+                seancesAffichees,
+                c,
+                offres,
+                toutesSalles
+              );
+            }
+          } catch {
+            localStorage.removeItem(cleDraft);
+          }
+        }
+        setSeances(seancesAffichees);
+        setChangements(changementsCharges);
       } else {
         // Hors ligne : consultation uniquement. Si cet EDT n'a jamais été
         // synchronisé sur cet appareil, impossible de savoir s'il existe
@@ -354,53 +450,148 @@ export default function GenererEDTPage() {
     return offresSpecialite.find((o) => o.offreId === modal?.offreId) ?? null;
   }
 
-  async function handleEnregistrerModal() {
+  function handleEnregistrerModal() {
     const offre = offreChoisie();
     if (!modal || !emploi || !modal.offreId || !offre?.enseignantAttribueId)
       return;
-    setEnregistrement(true);
-    try {
-      await assignerSeance({
-        emploiId: emploi.id,
-        specialiteId,
-        semaine,
-        seanceIdExistante: modal.seanceIdExistante,
-        offreId: modal.offreId,
-        enseignantId: offre.enseignantAttribueId,
-        salleId: modal.salleId || null,
-        jour: modal.jour,
-        creneau: modal.creneau,
-      });
-      const s = await getSeances(emploi.id);
-      setSeances(s);
-      setModal(null);
-    } finally {
-      setEnregistrement(false);
-    }
+
+    const changement: ChangementCellule = {
+      action: 'set',
+      jour: modal.jour,
+      creneau: modal.creneau,
+      offreId: modal.offreId,
+      enseignantId: offre.enseignantAttribueId,
+      salleId: modal.salleId || null,
+      seanceIdExistante: modal.seanceIdExistante,
+    };
+
+    setSeances((prev) =>
+      appliquerChangement(prev, changement, offresSpecialite, toutesSalles)
+    );
+    setChangements((prev) => [
+      // Un seul changement "set" en attente par case à la fois — le
+      // dernier écrase le précédent, pas la peine de garder l'historique.
+      ...prev.filter(
+        (c) =>
+          !(
+            c.action === 'set' &&
+            c.jour === modal.jour &&
+            c.creneau === modal.creneau
+          )
+      ),
+      changement,
+    ]);
+    setModal(null);
   }
 
-  async function handleSupprimer() {
+  function handleSupprimer() {
     if (!modal?.seanceIdExistante || !emploi) return;
     if (!window.confirm('Retirer cette séance ?')) return;
-    await supprimerSeance(modal.seanceIdExistante);
-    const s = await getSeances(emploi.id);
-    setSeances(s);
+
+    const idCible = modal.seanceIdExistante;
+    const estLocalePasEncoreEnvoyee = idCible.startsWith('local-');
+
+    setChangements((prev) => {
+      const sansCelleCi = prev.filter(
+        (c) =>
+          !(
+            c.action === 'set' &&
+            c.jour === modal.jour &&
+            c.creneau === modal.creneau
+          )
+      );
+      // Si rien n'avait encore été envoyé pour cette case, annuler le
+      // changement en attente suffit — pas besoin d'un "delete" en plus.
+      return estLocalePasEncoreEnvoyee
+        ? sansCelleCi
+        : [
+            ...sansCelleCi,
+            {
+              action: 'delete',
+              seanceId: idCible,
+              jour: modal.jour,
+              creneau: modal.creneau,
+            },
+          ];
+    });
+    setSeances((prev) => prev.filter((s) => s.id !== idCible));
     setModal(null);
   }
 
   const nbConflits = seances.filter((s) => s.statut === 'conflit').length;
 
+  // Envoie tous les changements en attente en base d'un coup, puis
+  // navigue vers la validation — c'est le seul moment où la construction
+  // de l'EDT touche vraiment le réseau.
+  async function handleAllerValidation() {
+    if (changements.length === 0 || !emploi) {
+      navigate(
+        `/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`
+      );
+      return;
+    }
+    setEnvoiEnCours(true);
+    try {
+      for (const c of changements) {
+        if (c.action === 'delete') {
+          await supprimerSeance(c.seanceId);
+        } else {
+          await assignerSeance({
+            emploiId: emploi.id,
+            specialiteId,
+            semaine,
+            seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
+              ? null
+              : c.seanceIdExistante,
+            offreId: c.offreId,
+            enseignantId: c.enseignantId,
+            salleId: c.salleId,
+            jour: c.jour,
+            creneau: c.creneau,
+          });
+        }
+      }
+      localStorage.removeItem(`edt-brouillon:${specialiteId}:${semaine}`);
+      setChangements([]);
+      navigate(
+        `/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`
+      );
+    } catch (err) {
+      window.alert(
+        err instanceof Error
+          ? `Erreur lors de l'enregistrement : ${err.message}`
+          : "Erreur lors de l'enregistrement."
+      );
+      const s = await getSeances(emploi.id);
+      setSeances(s);
+    } finally {
+      setEnvoiEnCours(false);
+    }
+  }
+
   return (
     <div className="max-w-4xl mx-auto">
       <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
         <p className="font-extrabold text-2xl text-gray-900">Emploi du temps</p>
-        <Link
-          to={`/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`}
-          className="text-red-600 font-bold hover:underline text-sm"
+        <button
+          onClick={handleAllerValidation}
+          disabled={envoiEnCours || !enLigne}
+          className="flex items-center gap-2 text-red-600 font-bold hover:underline text-sm disabled:opacity-50 disabled:no-underline"
         >
-          Aller à la validation →
-        </Link>
+          {envoiEnCours && <Loader2 size={14} className="animate-spin" />}
+          {changements.length > 0
+            ? `Enregistrer et aller à la validation (${changements.length}) →`
+            : 'Aller à la validation →'}
+        </button>
       </div>
+      {changements.length > 0 && (
+        <p className="text-xs font-semibold text-amber-600 mb-4">
+          {changements.length} modification{changements.length > 1 ? 's' : ''}{' '}
+          non enregistrée{changements.length > 1 ? 's' : ''} — gardée
+          {changements.length > 1 ? 's' : ''} sur cet appareil, envoyée
+          {changements.length > 1 ? 's' : ''} en base au clic ci-dessus.
+        </p>
+      )}
       <p className="text-sm text-gray-400 mb-6">
         Choisis la spécialité et la semaine, puis remplis chaque créneau à la
         main.
@@ -565,11 +756,20 @@ export default function GenererEDTPage() {
                       const seancesCellule = seances.filter(
                         (s) => s.jour === jour && s.creneau === creneau
                       );
+                      const modifieeEnAttente = changements.some(
+                        (c) => c.jour === jour && c.creneau === creneau
+                      );
                       return (
                         <td
                           key={creneau}
-                          className="px-2 py-2 border-b border-gray-50 align-top"
+                          className="px-2 py-2 border-b border-gray-50 align-top relative"
                         >
+                          {modifieeEnAttente && (
+                            <span
+                              title="Modification non encore enregistrée"
+                              className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400"
+                            />
+                          )}
                           {seancesCellule.length === 0 ? (
                             <button
                               onClick={() => ouvrirModal(jour, creneau)}
@@ -781,12 +981,9 @@ export default function GenererEDTPage() {
             <div className="flex items-center gap-3">
               <button
                 onClick={handleEnregistrerModal}
-                disabled={!modal.offreId || enregistrement || !enLigne}
+                disabled={!modal.offreId || !enLigne}
                 className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {enregistrement && (
-                  <Loader2 size={15} className="animate-spin" />
-                )}
                 Enregistrer
               </button>
               {modal.seanceIdExistante && (
