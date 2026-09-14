@@ -6,10 +6,10 @@
 // sur l'appareil, ce qui peut afficher une heure fausse même quand
 // l'horloge elle-même (l'instant absolu) est parfaitement correcte.
 export function formatHeureCameroun(iso: string | null): string {
-    if (!iso) return '';
-    return new Date(iso).toLocaleTimeString('fr-FR', {
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: 'Africa/Douala',
-    });
-  }
+  if (!iso) return '';
+  return new Date(iso).toLocaleTimeString('fr-FR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Africa/Douala',
+  });
+}

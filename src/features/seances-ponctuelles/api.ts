@@ -207,12 +207,34 @@ export async function programmerCoursVolant(
     heure_fermeture: null,
   };
 
+  // Toujours vérifier s'il existe déjà une séance sur ce créneau exact
+  // (même sans passer par "Programmer un remplacement") — on la
+  // remplace au lieu d'en créer une deuxième en double.
+  let idCible = input.remplaceSeanceEdtId ?? null;
+  if (!idCible) {
+    const { data: existantes } = await supabase
+      .from('seances_edt')
+      .select('id')
+      .eq('emploi_du_temps_id', emploi.id)
+      .eq('jour', jour)
+      .eq('creneau', input.creneau);
+    if (existantes && existantes.length > 0) {
+      idCible = existantes[0].id;
+      // Doublons déjà présents (bug passé, ou créneau saisi deux fois) —
+      // on n'en garde qu'une, les autres sont supprimées.
+      const doublons = existantes.slice(1).map((e) => e.id);
+      if (doublons.length > 0) {
+        await supabase.from('seances_edt').delete().in('id', doublons);
+      }
+    }
+  }
+
   let seanceId: string;
-  if (input.remplaceSeanceEdtId) {
+  if (idCible) {
     const { data: seance, error } = await supabase
       .from('seances_edt')
       .update(donneesSeance)
-      .eq('id', input.remplaceSeanceEdtId)
+      .eq('id', idCible)
       .select('id')
       .single();
     if (error) throw error;

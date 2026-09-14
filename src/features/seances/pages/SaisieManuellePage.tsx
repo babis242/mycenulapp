@@ -41,6 +41,15 @@ function dateAttendue(semaine: string, jour: string): Date {
   return date;
 }
 
+// Format court (ex: "14/09") pour distinguer d'un coup d'œil deux
+// séances du même jour/créneau mais de semaines différentes — sans ça,
+// deux "Mardi · 08h-12h" de semaines distinctes sont indiscernables.
+function formatDateCourte(date: Date): string {
+  return `${String(date.getDate()).padStart(2, '0')}/${String(
+    date.getMonth() + 1
+  ).padStart(2, '0')}`;
+}
+
 // Extrait les bornes (en minutes depuis minuit) d'un créneau du type
 // "08h-12h" ou "14h30-17h".
 function bornesCreneau(creneau: string): { debut: number; fin: number } {
@@ -288,7 +297,8 @@ export default function SaisieManuellePage() {
               </div>
               <div className="text-right shrink-0">
                 <p className="text-xs font-bold text-gray-500">
-                  {s.jour} · {s.creneau}
+                  {s.jour} {formatDateCourte(dateAttendue(s.semaine, s.jour))}{' '}
+                  · {s.creneau}
                 </p>
                 {s.heureOuverture && s.heureFermeture && (
                   <p className="text-[11px] font-semibold text-green-600">
@@ -307,13 +317,17 @@ export default function SaisieManuellePage() {
             {selection.ueNom}
           </p>
           <p className="text-xs text-gray-400 mb-4">
-            {selection.enseignantNom} · {selection.jour} · {selection.creneau}
+            {selection.enseignantNom} · {selection.jour}{' '}
+            {formatDateCourte(dateAttendue(selection.semaine, selection.jour))} ·{' '}
+            {selection.creneau}
           </p>
 
           <p className="text-xs text-gray-400 mb-3">
             Créneau programmé :{' '}
             <span className="font-bold text-gray-600">
-              {selection.jour} · {selection.creneau}
+              {selection.jour}{' '}
+              {formatDateCourte(dateAttendue(selection.semaine, selection.jour))}{' '}
+              · {selection.creneau}
             </span>{' '}
             (±{MARGE_TOLERANCE_MIN} min tolérés)
           </p>
