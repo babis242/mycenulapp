@@ -16,6 +16,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { filtrerParPerimetre, estDansLePerimetre } from '@/lib/perimetre';
 import { JOURS, CRENEAUX } from '@/constants/enums';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   getSeances,
   getHeuresEffectuees,
@@ -252,6 +254,15 @@ export default function ValidationEDTPage() {
     }
   }
 
+  // Raccourci : sélectionne directement une spécialité trouvée par
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    await handleEcoleChange(s.ecoleId);
+    await handleFiliereChange(s.filiereId);
+    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
+    setSpecialiteId(s.id);
+  }
+
   const filieres = filieresByEcole[ecoleId] ?? [];
   const specialitesDeFiliere = filtrerParPerimetre(
     specialitesByFiliere[filiereId] ?? [],
@@ -332,7 +343,9 @@ export default function ValidationEDTPage() {
         setHeuresIndisponibles(true);
       }
     } catch (err) {
-      setErreur(err instanceof Error ? err.message : 'Erreur de chargement.');
+      setErreur(
+        err instanceof Error ? err.message : 'Erreur de chargement.'
+      );
     } finally {
       setChargement(false);
     }
@@ -409,10 +422,19 @@ export default function ValidationEDTPage() {
           <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-5">
             <WifiOff size={15} className="text-amber-600 shrink-0" />
             <p className="text-xs font-bold text-amber-700">
-              Hors ligne — consultation uniquement. La validation, l'envoi du
-              document signé et les heures déjà effectuées nécessitent une
-              connexion.
+              Hors ligne — consultation uniquement. La validation, l'envoi
+              du document signé et les heures déjà effectuées nécessitent
+              une connexion.
             </p>
+          </div>
+        )}
+
+        {enLigne && (
+          <div className="bg-white rounded-[20px] p-5 mb-4">
+            <RechercheSpecialite
+              onSelect={handleSelectionRecherche}
+              placeholder="Rechercher directement une spécialité..."
+            />
           </div>
         )}
 
@@ -790,7 +812,7 @@ export default function ValidationEDTPage() {
                             );
                           const total = s.volumeHoraire ?? 0;
                           const faites = s.offreId
-                            ? heuresEffectuees.get(s.offreId) ?? 0
+                            ? (heuresEffectuees.get(s.offreId) ?? 0)
                             : 0;
                           const restant = total - faites;
                           return (

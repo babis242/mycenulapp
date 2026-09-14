@@ -26,6 +26,7 @@ import LancerDemandePage from '@/features/disponibilites/pages/LancerDemandePage
 import SaisieDisponibilitesPage from '@/features/disponibilites/pages/SaisieDisponibilitesPage';
 import EtatDisponibilitesPage from '@/features/disponibilites/pages/EtatDisponibilitesPage';
 import GenererEDTPage from '@/features/emploi-du-temps/pages/GenererEDTPage';
+import ProgrammationVoleePage from '@/features/seances-ponctuelles/pages/ProgrammationVoleePage';
 import ValidationEDTPage from '@/features/emploi-du-temps/pages/ValidationEDTPage';
 import MesCoursPage from '@/features/emploi-du-temps/pages/MesCoursPage';
 import MesUEsPage from '@/features/mes-ues/pages/MesUEsPage';
@@ -170,6 +171,10 @@ export default function AppRoutes() {
             <Route
               path="/emploi-du-temps/validation"
               element={<ValidationEDTPage />}
+            />
+            <Route
+              path="/emploi-du-temps/programmation-volee"
+              element={<ProgrammationVoleePage />}
             />
           </Route>
 

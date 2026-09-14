@@ -17,6 +17,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { filtrerParPerimetre, estDansLePerimetre } from '@/lib/perimetre';
 import { JOURS, CRENEAUX } from '@/constants/enums';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   creerOuChargerEDT,
   getSeances,
@@ -129,7 +131,9 @@ export default function GenererEDTPage() {
     EnseignantDisponible[]
   >([]);
   const [enregistrement, setEnregistrement] = useState(false);
-  const [erreurChargement, setErreurChargement] = useState<string | null>(null);
+  const [erreurChargement, setErreurChargement] = useState<string | null>(
+    null
+  );
 
   useEffect(() => {
     if (navigator.onLine) {
@@ -252,6 +256,15 @@ export default function GenererEDTPage() {
         }));
       }
     }
+  }
+
+  // Raccourci : sélectionne directement une spécialité trouvée par
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    await handleEcoleChange(s.ecoleId);
+    await handleFiliereChange(s.filiereId);
+    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
+    setSpecialiteId(s.id);
   }
 
   const filieres = filieresByEcole[ecoleId] ?? [];
@@ -396,11 +409,20 @@ export default function GenererEDTPage() {
         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-5">
           <WifiOff size={15} className="text-amber-600 shrink-0" />
           <p className="text-xs font-bold text-amber-700">
-            Hors ligne — consultation uniquement. Un emploi du temps déjà ouvert
-            sur cet appareil peut être consulté, mais aucune création ni
-            modification n'est possible sans réseau (conflits de salle vérifiés
-            en direct).
+            Hors ligne — consultation uniquement. Un emploi du temps déjà
+            ouvert sur cet appareil peut être consulté, mais aucune
+            création ni modification n'est possible sans réseau (conflits
+            de salle vérifiés en direct).
           </p>
+        </div>
+      )}
+
+      {enLigne && (
+        <div className="bg-white rounded-[20px] p-5 mb-4">
+          <RechercheSpecialite
+            onSelect={handleSelectionRecherche}
+            placeholder="Rechercher directement une spécialité..."
+          />
         </div>
       )}
 
@@ -779,8 +801,9 @@ export default function GenererEDTPage() {
             </div>
             {!enLigne && (
               <p className="text-xs font-semibold text-amber-600 mt-3 flex items-center gap-1.5">
-                <WifiOff size={13} /> Hors ligne — la sauvegarde nécessite une
-                connexion (vérification des conflits de salle en direct).
+                <WifiOff size={13} /> Hors ligne — la sauvegarde nécessite
+                une connexion (vérification des conflits de salle en
+                direct).
               </p>
             )}
           </div>

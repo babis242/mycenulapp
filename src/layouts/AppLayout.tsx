@@ -4,6 +4,8 @@ import { NavLink, useLocation } from 'react-router-dom';
 import {
   LayoutDashboard,
   BookOpen,
+  Zap,
+  Search,
   Users2,
   CalendarClock,
   Table2,
@@ -15,6 +17,7 @@ import {
   FileCheck,
   LogOut,
   Menu,
+  Home,
   X,
 } from 'lucide-react';
 import { Outlet } from 'react-router-dom';
@@ -77,6 +80,12 @@ const NAV_ITEMS: {
     roles: ['administrateur', 'responsable'],
   },
   {
+    to: '/emploi-du-temps/programmation-volee',
+    label: 'Programmation à la volée',
+    icon: Zap,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
     to: '/codes-journaliers',
     label: 'Codes journaliers',
     icon: KeyRound,
@@ -118,6 +127,7 @@ const NAV_ITEMS: {
 
 export default function AppLayout() {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [rechercheMenu, setRechercheMenu] = useState('');
   const user = useAuthStore((s) => s.user);
   const location = useLocation();
 
@@ -126,18 +136,32 @@ export default function AppLayout() {
   const navItems = NAV_ITEMS.filter((item) => item.roles.includes(user.role));
 
   return (
-    <div className="h-screen w-full flex flex-col bg-[#f7f7f7] print:h-auto print:block">
+    <div className="min-h-screen w-full flex flex-col bg-[#f7f7f7] print:h-auto print:block">
       <OfflineBanner />
       <UpdateBanner />
-      <div className="flex-1 w-full flex md:p-4 md:gap-4 overflow-hidden print:h-auto print:block print:overflow-visible print:bg-white print:p-0 print:m-0">
-      <button
-        onClick={() => setMenuOpen(true)}
-        className="md:hidden fixed top-4 left-4 z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden"
+      <div className="flex-1 w-full flex md:p-4 md:gap-4 print:h-auto print:block print:overflow-visible print:bg-white print:p-0 print:m-0">
+      <div
+        className="md:hidden fixed left-4 z-30 flex items-center gap-2 print:hidden"
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 1.5rem)' }}
       >
-        <Menu size={20} className="text-red-600" />
-      </button>
+        <button
+          onClick={() => setMenuOpen(true)}
+          className="w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center"
+        >
+          <Menu size={20} className="text-red-600" />
+        </button>
+        <NavLink
+          to="/"
+          className="w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center"
+        >
+          <Home size={20} className="text-red-600" />
+        </NavLink>
+      </div>
 
-      <NotificationBell className="fixed top-4 right-4 z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden" />
+      <NotificationBell
+        className="fixed right-4 z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden"
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 1.5rem)' }}
+      />
 
       {menuOpen && (
         <div
@@ -149,7 +173,7 @@ export default function AppLayout() {
       <div
         className={`
           fixed md:static inset-y-0 left-0 z-50
-          w-[248px] flex-shrink-0 h-full
+          w-[280px] flex-shrink-0
           bg-red-600 md:rounded-3xl p-5 flex flex-col
           transform transition-transform duration-200
           md:translate-x-0
@@ -170,6 +194,18 @@ export default function AppLayout() {
           >
             <X size={20} />
           </button>
+        </div>
+
+        <div className="mb-3">
+          <div className="flex items-center gap-2 bg-white/10 rounded-2xl px-3.5 py-2.5 shrink-0">
+            <Search size={15} className="text-white/50 shrink-0" />
+            <input
+              value={rechercheMenu}
+              onChange={(e) => setRechercheMenu(e.target.value)}
+              placeholder="Rechercher une fonction..."
+              className="w-full bg-transparent text-sm font-semibold text-white outline-none placeholder:text-white/40"
+            />
+          </div>
         </div>
 
         <style>{`
@@ -194,13 +230,33 @@ export default function AppLayout() {
               (a, b) => b.to.length - a.to.length
             )[0];
 
-            return navItems.map((item) => {
+            // La recherche filtre uniquement l'affichage — le calcul de
+            // l'onglet actif ci-dessus reste basé sur navItems au complet.
+            const q = rechercheMenu.trim().toLowerCase();
+            const navItemsAffiches = q
+              ? navItems.filter((item) =>
+                  item.label.toLowerCase().includes(q)
+                )
+              : navItems;
+
+            if (navItemsAffiches.length === 0) {
+              return (
+                <p className="text-xs font-semibold text-white/40 px-3.5 py-3">
+                  Aucune fonction ne correspond à "{rechercheMenu}".
+                </p>
+              );
+            }
+
+            return navItemsAffiches.map((item) => {
               const active = item.to === meilleureCorrespondance?.to;
               return (
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  onClick={() => setMenuOpen(false)}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setRechercheMenu('');
+                  }}
                   className={`
                     flex items-center gap-3 px-3.5 py-3 rounded-2xl text-sm font-bold text-left transition-colors whitespace-nowrap
                     ${

@@ -1,13 +1,6 @@
 // src/features/codes-journaliers/pages/ListeCodesPage.tsx
 import { Fragment, useEffect, useState } from 'react';
-import {
-  Loader2,
-  Search,
-  Printer,
-  ChevronLeft,
-  ChevronRight,
-  WifiOff,
-} from 'lucide-react';
+import { Loader2, Search, Printer, ChevronLeft, ChevronRight, WifiOff } from 'lucide-react';
 import { JOURS, CRENEAUX } from '@/constants/enums';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
@@ -19,18 +12,8 @@ import {
 } from '../api';
 
 const MOIS_FR = [
-  'janvier',
-  'février',
-  'mars',
-  'avril',
-  'mai',
-  'juin',
-  'juillet',
-  'août',
-  'septembre',
-  'octobre',
-  'novembre',
-  'décembre',
+  'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
+  'juillet', 'août', 'septembre', 'octobre', 'novembre', 'décembre',
 ];
 
 function lundiDeLaSemaine(reference = new Date()): string {
@@ -300,8 +283,8 @@ export default function ListeCodesPage() {
             </div>
           ) : filtres.length === 0 ? (
             <div className="p-10 text-center text-sm font-semibold text-gray-300">
-              Aucun code pour cette sélection. Les codes n'apparaissent que pour
-              les emplois du temps déjà validés (Scénario 6).
+              Aucun code pour cette sélection. Les codes n'apparaissent que
+              pour les emplois du temps déjà validés (Scénario 6).
             </div>
           ) : (
             <table className="w-full text-sm">
@@ -403,7 +386,7 @@ function PageCodes({
   return (
     <div style={{ breakAfter: 'page', pageBreakAfter: 'always' }}>
       <p className="text-center text-red-600 font-extrabold text-lg">
-        CODES DE {type === 'ouverture' ? 'OUVERTURE' : 'FERMETURE'}
+        CODES DE {type === 'ouverture' ? "OUVERTURE" : 'FERMETURE'}
       </p>
       <p className="text-center font-bold text-sm mb-4">
         {jour.toUpperCase()} — {creneau}

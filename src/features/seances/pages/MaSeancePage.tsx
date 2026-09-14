@@ -1,6 +1,6 @@
 // src/features/seances/pages/MaSeancePage.tsx
 import { useEffect, useState } from 'react';
-import { Loader2, RefreshCw, CheckCircle2, KeyRound } from 'lucide-react';
+import { Loader2, RefreshCw, CheckCircle2, KeyRound, Ban, X, AlertTriangle } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import RapportSeanceForm from '../components/RapportSeanceForm';
 import {
@@ -9,19 +9,15 @@ import {
   fermerSeance,
   type SeanceDuMoment,
 } from '../api';
-
-function formatHeure(iso: string | null): string {
-  if (!iso) return '';
-  return new Date(iso).toLocaleTimeString('fr-FR', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+import { annulerMaSeance } from '@/features/seances-ponctuelles/api';
+import { ecartHorlogeMinutes } from '@/lib/horlogeAppareil';
+import { formatHeureCameroun as formatHeure } from '@/lib/formatHeureCameroun';
 
 // Écrans 6.1 et 6.2 (ecrans_ui.md) — Scénario 8, flux normal enseignant :
 // saisie du code d'ouverture au début du cours, puis du code de fermeture
-// à la fin. Le code n'est jamais transmis ni affiché côté app avant
-// saisie : l'enseignant le récupère auprès de la secrétaire.
+// à la fin. Un cours programmé à la volée par l'admin (remplacement d'un
+// cours annulé, etc.) est une vraie séance de la grille — même flux,
+// rien de spécial à gérer ici.
 export default function MaSeancePage() {
   const user = useAuthStore((s) => s.user);
   const [seance, setSeance] = useState<SeanceDuMoment | null>(null);
@@ -30,6 +26,15 @@ export default function MaSeancePage() {
   const [envoi, setEnvoi] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
   const [messageSucces, setMessageSucces] = useState<string | null>(null);
+
+  const [annulationOuverte, setAnnulationOuverte] = useState(false);
+  const [motifAnnulation, setMotifAnnulation] = useState('');
+  const [annulationEnCours, setAnnulationEnCours] = useState(false);
+  const [ecartHorloge, setEcartHorloge] = useState<number | null>(null);
+
+  useEffect(() => {
+    ecartHorlogeMinutes().then(setEcartHorloge);
+  }, []);
 
   function charger() {
     if (!user) return;
@@ -79,6 +84,23 @@ export default function MaSeancePage() {
     }
   }
 
+  async function handleAnnuler() {
+    if (!seance) return;
+    setAnnulationEnCours(true);
+    try {
+      await annulerMaSeance(seance.id, motifAnnulation.trim());
+      setAnnulationOuverte(false);
+      setMotifAnnulation('');
+      setSeance(null);
+    } catch (err) {
+      setErreur(
+        err instanceof Error ? err.message : "Erreur lors de l'annulation."
+      );
+    } finally {
+      setAnnulationEnCours(false);
+    }
+  }
+
   return (
     <div className="max-w-md mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -96,6 +118,19 @@ export default function MaSeancePage() {
           <RefreshCw size={16} />
         </button>
       </div>
+
+      {ecartHorloge !== null && Math.abs(ecartHorloge) > 3 && (
+        <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+          <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
+          <p className="text-xs font-semibold text-amber-700">
+            L'horloge de cet appareil semble décalée d'environ{' '}
+            {Math.abs(ecartHorloge)} min par rapport à l'heure réelle —
+            vérifie les réglages date/heure de ton téléphone. Ça n'empêche
+            rien : les heures d'ouverture/fermeture enregistrées restent
+            toujours celles du serveur, pas celles de l'appareil.
+          </p>
+        </div>
+      )}
 
       {chargement ? (
         <div className="flex items-center justify-center py-16 text-gray-300">
@@ -122,9 +157,16 @@ export default function MaSeancePage() {
             </p>
 
             {seance.heureOuverture && (
-              <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
+              <p className="text-xs font-bold text-green-600 mb-1 flex items-center gap-1.5">
                 <CheckCircle2 size={14} /> Ouverte à{' '}
                 {formatHeure(seance.heureOuverture)}
+              </p>
+            )}
+            {seance.heureOuverture && (
+              <p className="text-[11px] text-gray-400 mb-3">
+                Le décompte des heures démarre à l'heure programmée du
+                cours ({seance.creneau.split('-')[0]}), pas avant — même si
+                tu as ouvert en avance.
               </p>
             )}
             {seance.heureFermeture && (
@@ -147,7 +189,7 @@ export default function MaSeancePage() {
                     onChange={(e) => setCode(e.target.value.toUpperCase())}
                     placeholder={
                       seance.heureOuverture
-                        ? "Code de fermeture"
+                        ? 'Code de fermeture'
                         : "Code d'ouverture"
                     }
                     className="w-full text-sm font-bold tracking-widest outline-none bg-transparent placeholder:text-gray-300 placeholder:tracking-normal placeholder:font-semibold"
@@ -163,6 +205,15 @@ export default function MaSeancePage() {
                     ? 'Fermer la séance'
                     : 'Ouvrir la séance'}
                 </button>
+
+                {!seance.heureOuverture && (
+                  <button
+                    onClick={() => setAnnulationOuverte(true)}
+                    className="w-full flex items-center justify-center gap-2 mt-2 text-xs font-bold text-gray-400 hover:text-red-600 py-1.5"
+                  >
+                    <Ban size={13} /> Je ne peux pas assurer ce cours
+                  </button>
+                )}
               </>
             )}
 
@@ -191,6 +242,56 @@ export default function MaSeancePage() {
             />
           )}
         </>
+      )}
+
+      {annulationOuverte && (
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[20px] p-6 w-full max-w-sm">
+            <div className="flex items-center justify-between mb-3">
+              <p className="font-extrabold text-gray-900">
+                Annuler ce cours ?
+              </p>
+              <button
+                onClick={() => setAnnulationOuverte(false)}
+                className="text-gray-300 hover:text-gray-500"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-3">
+              L'admin et le/la responsable seront prévenus immédiatement et
+              pourront organiser un remplacement.
+            </p>
+            <label className="text-xs font-bold text-gray-500 mb-1.5 block">
+              Motif (optionnel)
+            </label>
+            <textarea
+              value={motifAnnulation}
+              onChange={(e) => setMotifAnnulation(e.target.value)}
+              rows={3}
+              placeholder="Ex : empêchement de dernière minute..."
+              className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:border-red-600 mb-4 resize-none"
+            />
+            <div className="flex gap-2">
+              <button
+                onClick={handleAnnuler}
+                disabled={annulationEnCours}
+                className="flex-1 flex items-center justify-center gap-2 bg-red-600 rounded-full px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {annulationEnCours && (
+                  <Loader2 size={15} className="animate-spin" />
+                )}
+                Confirmer l'annulation
+              </button>
+              <button
+                onClick={() => setAnnulationOuverte(false)}
+                className="px-4 py-2.5 text-sm font-bold text-gray-500"
+              >
+                Retour
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -1,27 +1,41 @@
 // src/features/seances/api.ts
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
-import type { TypeCursus } from '@/types';
+import type { TypeCursus, Creneau } from '@/types';
 
-function lundiDeLaSemaine(reference = new Date()): string {
-  const d = new Date(reference);
-  const jour = d.getDay();
+// Le Cameroun est en UTC+1 (WAT) toute l'année, pas de changement
+// d'heure — donc un simple décalage fixe suffit, pas besoin d'une
+// bibliothèque de fuseaux horaires. TOUJOURS utiliser cette heure pour
+// "maintenant", jamais l'heure/date de l'appareil (souvent mal réglée,
+// ou dans un autre fuseau si l'enseignant est en déplacement).
+function maintenantCameroun(): Date {
+  return new Date(Date.now() + 60 * 60 * 1000);
+}
+
+// À utiliser avec les méthodes getUTCxxx() du Date renvoyé ci-dessus
+// (jamais getHours()/getDay() "locaux", qui réinterprètent selon le
+// fuseau de l'appareil et annuleraient le décalage qu'on vient d'ajouter).
+
+function lundiDeLaSemaine(reference = maintenantCameroun()): string {
+  const jour = reference.getUTCDay();
   const decalage = jour === 0 ? -6 : 1 - jour;
-  d.setDate(d.getDate() + decalage);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  const y = reference.getUTCFullYear();
+  const m = reference.getUTCMonth();
+  const d = reference.getUTCDate() + decalage;
+  const date = new Date(Date.UTC(y, m, d));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 
 function decalerSemaine(semaineISO: string, nbSemaines: number): string {
   const [y, m, d] = semaineISO.split('-').map(Number);
-  const date = new Date(y, m - 1, d);
-  date.setDate(date.getDate() + nbSemaines * 7);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
+  const date = new Date(Date.UTC(y, m - 1, d + nbSemaines * 7));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
     '0'
-  )}-${String(date.getDate()).padStart(2, '0')}`;
+  )}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 
 // Les N dernières semaines (lundis), semaine actuelle incluse — utilisé
@@ -37,13 +51,39 @@ const NOMS_JOURS = [
 ];
 
 function jourDAujourdhui(): string | null {
-  const nom = NOMS_JOURS[new Date().getDay()];
+  const nom = NOMS_JOURS[maintenantCameroun().getUTCDay()];
   return nom === 'Dimanche' ? null : nom;
 }
 
-// Heuristique simple : avant 13h → créneau du matin, sinon après-midi.
-function creneauActuel(): '08h-12h' | '14h-17h' {
-  return new Date().getHours() < 13 ? '08h-12h' : '14h-17h';
+// Bornes (en minutes depuis minuit, heure du Cameroun) de chaque créneau.
+const BORNES_CRENEAU: Record<Creneau, { debut: number; fin: number }> = {
+  '08h-12h': { debut: 8 * 60, fin: 12 * 60 },
+  '14h-17h': { debut: 14 * 60, fin: 17 * 60 },
+};
+
+// Fenêtre élargie : ouvrable dès 3h avant le début programmé, encore
+// fermable jusqu'à 1h après la fin programmée — sinon un enseignant en
+// avance ou un peu en retard ne retrouverait jamais son cours dans "Ma
+// séance". Renvoie null si l'heure actuelle ne tombe dans la fenêtre
+// élargie d'aucun créneau.
+const MARGE_AVANT_MIN = 3 * 60;
+const MARGE_APRES_MIN = 1 * 60;
+
+function creneauActuel(): Creneau | null {
+  const maintenant = maintenantCameroun();
+  const minutes = maintenant.getUTCHours() * 60 + maintenant.getUTCMinutes();
+  for (const [creneau, bornes] of Object.entries(BORNES_CRENEAU) as [
+    Creneau,
+    { debut: number; fin: number },
+  ][]) {
+    if (
+      minutes >= bornes.debut - MARGE_AVANT_MIN &&
+      minutes <= bornes.fin + MARGE_APRES_MIN
+    ) {
+      return creneau;
+    }
+  }
+  return null;
 }
 
 // ── Flux normal enseignant (écrans 6.1 / 6.2) ──────────────────────
@@ -82,6 +122,7 @@ export async function getSeanceDuMoment(
 
   const semaine = lundiDeLaSemaine();
   const creneau = creneauActuel();
+  if (!creneau) return null;
 
   const { data: emplois } = await supabase
     .from('emplois_du_temps')
@@ -115,12 +156,13 @@ export async function getSeanceDuMoment(
     .eq('enseignant_id', enseignant.id)
     .eq('jour', jour)
     .eq('creneau', creneau)
+    .eq('annulee', false)
     .in('emploi_du_temps_id', emploiIds)
-    .maybeSingle();
+    .limit(1);
   if (error) throw error;
-  if (!data) return null;
+  if (!data || data.length === 0) return null;
 
-  const s = data as any;
+  const s = data[0] as any;
   const specialiteInfo = specialiteParEmploi.get(s.emploi_du_temps_id);
   return {
     id: s.id,

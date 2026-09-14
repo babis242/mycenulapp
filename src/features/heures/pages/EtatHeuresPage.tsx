@@ -4,6 +4,7 @@ import * as XLSX from 'xlsx';
 import { Loader2, FileSpreadsheet, WifiOff, Search } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
+import { formatHeureCameroun } from '@/lib/formatHeureCameroun';
 import {
   listHeuresDetailMois,
   lireHeuresDepuisCache,
@@ -23,12 +24,7 @@ function labelMois(anneeMois: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function formatHeure(iso: string): string {
-  return new Date(iso).toLocaleTimeString('fr-FR', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+const formatHeure = formatHeureCameroun;
 
 function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString('fr-FR');

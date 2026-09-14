@@ -1,5 +1,5 @@
 // src/components/shared/NotificationBell.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
 import { Bell, X } from 'lucide-react';
@@ -21,9 +21,11 @@ interface NotificationRow {
 export default function NotificationBell({
   className,
   iconClassName,
+  style,
 }: {
   className?: string;
   iconClassName?: string;
+  style?: CSSProperties;
 }) {
   const user = useAuthStore((s) => s.user);
   const navigate = useNavigate();
@@ -107,6 +109,7 @@ export default function NotificationBell({
           setOuverte(true);
           charger();
         }}
+        style={style}
         className={
           className ??
           'relative w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center'

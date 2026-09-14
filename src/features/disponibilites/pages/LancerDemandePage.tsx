@@ -1,5 +1,7 @@
 // src/features/disponibilites/pages/LancerDemandePage.tsx
 import { useEffect, useState } from 'react';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Loader2, X, CheckCircle2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
@@ -115,6 +117,15 @@ export default function LancerDemandePage() {
         [id]: (data ?? []) as Specialite[],
       }));
     }
+  }
+
+  // Raccourci : sélectionne directement une spécialité trouvée par
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    await handleEcoleChange(s.ecoleId);
+    await handleFiliereChange(s.filiereId);
+    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
+    setSpecialiteId(s.id);
   }
 
   const filieres = filieresByEcole[ecoleId] ?? [];
@@ -246,6 +257,14 @@ export default function LancerDemandePage() {
         <p className="font-extrabold text-sm text-gray-900 mb-3">
           Ajouter une spécialité + niveau
         </p>
+
+        <div className="mb-3">
+          <RechercheSpecialite
+            onSelect={handleSelectionRecherche}
+            placeholder="Rechercher directement une spécialité..."
+          />
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <select
             value={ecoleId}

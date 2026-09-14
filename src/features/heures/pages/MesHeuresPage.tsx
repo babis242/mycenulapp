@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { Loader2, WifiOff } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { db } from '@/lib/db';
+import { formatHeureCameroun } from '@/lib/formatHeureCameroun';
 import {
   listMesHeuresMois,
   lireHeuresDepuisCache,
@@ -20,12 +21,7 @@ function labelMois(anneeMois: string): string {
   return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
-function formatHeure(iso: string): string {
-  return new Date(iso).toLocaleTimeString('fr-FR', {
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
+const formatHeure = formatHeureCameroun;
 
 function formatDateLabel(dateISO: string, jour: string): string {
   const [y, m, d] = dateISO.split('-').map(Number);
