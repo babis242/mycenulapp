@@ -8,6 +8,8 @@ import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { extraireTextePdf } from '@/lib/pdfExtraction';
 import { televerserFichier } from '@/lib/r2';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   createUE,
   createEcole,
@@ -349,6 +351,15 @@ export default function AjouterUEPage() {
     setCycleKey(key);
     setSpecialiteId('');
     setSemestre('');
+  }
+
+  // Raccourci : sélectionne directement une spécialité trouvée par
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    await handleEcoleChange(s.ecoleId);
+    await handleFiliereChange(s.filiereId);
+    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
+    setSpecialiteId(s.id);
   }
 
   async function handleImporterPdf(fichier: File | undefined) {
@@ -735,6 +746,11 @@ export default function AjouterUEPage() {
           <p className="font-extrabold text-sm text-gray-900 mb-3">
             Rattachement
           </p>
+          {enLigne && (
+            <div className="mb-3">
+              <RechercheSpecialite onSelect={handleSelectionRecherche} />
+            </div>
+          )}
           <div className="grid grid-cols-1 gap-3">
             <div>
               <div className="flex items-center justify-between mb-1.5">
