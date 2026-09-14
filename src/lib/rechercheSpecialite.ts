@@ -1,11 +1,13 @@
 // src/lib/rechercheSpecialite.ts
 import { supabase } from './supabase';
+import type { TypeCursus } from '@/types';
 
 export interface SpecialiteRecherche {
   id: string;
   nom: string;
   cycle: string;
   sousCycle: string | null;
+  typeCursus: TypeCursus;
   filiereId: string;
   filiereNom: string;
   ecoleId: string;
@@ -23,7 +25,7 @@ export async function listSpecialitesRecherche(): Promise<
     .from('specialites')
     .select(
       `
-      id, nom, cycle, sous_cycle,
+      id, nom, cycle, sous_cycle, type_cursus,
       filiere:filieres (
         id, nom,
         ecole:ecoles ( id, nom )
@@ -40,6 +42,7 @@ export async function listSpecialitesRecherche(): Promise<
       nom: s.nom,
       cycle: s.cycle,
       sousCycle: s.sous_cycle ?? null,
+      typeCursus: s.type_cursus,
       filiereId: s.filiere.id,
       filiereNom: s.filiere.nom,
       ecoleId: s.filiere.ecole.id,

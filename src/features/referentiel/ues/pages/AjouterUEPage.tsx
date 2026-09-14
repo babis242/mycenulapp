@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
-import { Loader2, X, WifiOff, Sparkles, FileText, Trash2, Plus } from 'lucide-react';
+import { Loader2, X, WifiOff, Sparkles, FileText, Trash2, Plus, Users2 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
@@ -19,6 +19,10 @@ import {
   enregistrerPointsCles,
 } from '../api';
 import { CYCLES, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
+import {
+  createTroncCommun,
+  enregistrerPointsClesTronc,
+} from '@/features/referentiel/troncs-communs/api';
 import type { TypeCursus } from '@/types';
 
 interface Ecole {
@@ -263,6 +267,14 @@ export default function AjouterUEPage() {
   const [specialiteId, setSpecialiteId] = useState('');
   const [semestre, setSemestre] = useState('');
 
+  // Mode tronc commun : au lieu d'une seule spécialité, on en choisit
+  // plusieurs (recherche) — une UE est créée pour chacune, regroupées
+  // automatiquement dans un nouveau tronc commun.
+  const [modeTronc, setModeTronc] = useState(false);
+  const [specialitesTronc, setSpecialitesTronc] = useState<
+    SpecialiteRecherche[]
+  >([]);
+
   const [modal, setModal] = useState<ModalCreation>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,6 +373,34 @@ export default function AjouterUEPage() {
     setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
     setSpecialiteId(s.id);
   }
+
+  function ajouterSpecialiteTronc(s: SpecialiteRecherche) {
+    setSpecialitesTronc((prev) =>
+      prev.some((p) => p.id === s.id) ? prev : [...prev, s]
+    );
+    // Le semestre choisi peut ne plus être valable pour la nouvelle
+    // combinaison de spécialités — on le remet à zéro pour forcer un
+    // nouveau choix cohérent.
+    setSemestre('');
+  }
+
+  function retirerSpecialiteTronc(id: string) {
+    setSpecialitesTronc((prev) => prev.filter((p) => p.id !== id));
+    setSemestre('');
+  }
+
+  // Semestres valables pour TOUTES les spécialités choisies à la fois
+  // (intersection) — un semestre qui n'existe pas pour l'une d'elles ne
+  // doit pas être proposé.
+  const semestresCommuns =
+    specialitesTronc.length === 0
+      ? []
+      : SEMESTRES_PAR_TYPE_CURSUS[specialitesTronc[0].typeCursus].filter(
+          (sem) =>
+            specialitesTronc.every((s) =>
+              SEMESTRES_PAR_TYPE_CURSUS[s.typeCursus].includes(sem)
+            )
+        );
 
   async function handleImporterPdf(fichier: File | undefined) {
     if (!fichier) return;
@@ -494,6 +534,68 @@ export default function AjouterUEPage() {
       setError("Le nom de l'UE est obligatoire.");
       return;
     }
+
+    if (modeTronc) {
+      if (specialitesTronc.length < 2) {
+        setError('Choisis au moins 2 spécialités pour un tronc commun.');
+        return;
+      }
+      if (!semestre) {
+        setError('Choisis un semestre (valable pour toutes les spécialités).');
+        return;
+      }
+      if (
+        fichierSyllabus &&
+        pointsCles.filter((p) => p.trim()).length === 0
+      ) {
+        setError(
+          'Un syllabus a été importé : au moins un point clé du contenu est obligatoire.'
+        );
+        return;
+      }
+
+      setSaving(true);
+      try {
+        const uesCreees = [];
+        for (const spe of specialitesTronc) {
+          const ue = await createUE({
+            nom: nom.trim(),
+            code: code.trim() || undefined,
+            volume_horaire: volumeHoraire ? Number(volumeHoraire) : undefined,
+            coefficient: coefficient ? Number(coefficient) : undefined,
+            specialite_id: spe.id,
+            semestre,
+          });
+          uesCreees.push(ue.id);
+        }
+
+        const tronc = await createTroncCommun({
+          nom: nom.trim(),
+          ue_ids: uesCreees,
+        });
+
+        // Le syllabus + ses points clés (obligatoires dès qu'un syllabus
+        // est fourni) sont partagés par tout le groupe — enregistrés au
+        // niveau du tronc commun, pas d'une UE en particulier.
+        if (fichierSyllabus) {
+          await televerserFichier('syllabus-tronc-commun', tronc.id, fichierSyllabus);
+          await enregistrerPointsClesTronc(
+            tronc.id,
+            pointsCles.map((p) => p.trim()).filter(Boolean)
+          );
+        }
+
+        navigate(`/referentiel/troncs-communs/${tronc.id}`);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : 'Erreur lors de la création.'
+        );
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
     if (!specialiteId || !semestre) {
       setError('Choisis École, Filière, Cycle, Spécialité et Semestre.');
       return;
@@ -743,15 +845,105 @@ export default function AjouterUEPage() {
         </div>
 
         <div className="bg-white rounded-[20px] p-4">
-          <p className="font-extrabold text-sm text-gray-900 mb-3">
-            Rattachement
-          </p>
-          {enLigne && (
-            <div className="mb-3">
-              <RechercheSpecialite onSelect={handleSelectionRecherche} />
+          <div className="flex items-center justify-between mb-3">
+            <p className="font-extrabold text-sm text-gray-900">
+              Rattachement
+            </p>
+            <div className="flex items-center gap-1 bg-gray-50 rounded-full p-0.5">
+              <button
+                type="button"
+                onClick={() => setModeTronc(false)}
+                className={`text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${
+                  !modeTronc ? 'bg-white text-red-600 shadow-sm' : 'text-gray-400'
+                }`}
+              >
+                Une spécialité
+              </button>
+              <button
+                type="button"
+                onClick={() => setModeTronc(true)}
+                className={`flex items-center gap-1 text-xs font-bold px-3 py-1.5 rounded-full transition-colors ${
+                  modeTronc ? 'bg-white text-red-600 shadow-sm' : 'text-gray-400'
+                }`}
+              >
+                <Users2 size={12} /> Tronc commun
+              </button>
             </div>
-          )}
-          <div className="grid grid-cols-1 gap-3">
+          </div>
+
+          {modeTronc ? (
+            <div>
+              <p className="text-xs text-gray-400 mb-3">
+                Choisis au moins 2 spécialités — une UE sera créée pour
+                chacune, automatiquement regroupées dans un nouveau tronc
+                commun.
+              </p>
+
+              {enLigne ? (
+                <RechercheSpecialite onSelect={ajouterSpecialiteTronc} />
+              ) : (
+                <p className="text-xs font-semibold text-amber-600 mb-2">
+                  Indisponible hors ligne.
+                </p>
+              )}
+
+              {specialitesTronc.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-3">
+                  {specialitesTronc.map((s) => (
+                    <span
+                      key={s.id}
+                      className="flex items-center gap-1.5 bg-purple-50 text-purple-700 text-xs font-bold px-3 py-1.5 rounded-full"
+                    >
+                      {s.nom}
+                      <button
+                        type="button"
+                        onClick={() => retirerSpecialiteTronc(s.id)}
+                        className="hover:text-purple-900"
+                      >
+                        <X size={12} />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {specialitesTronc.length >= 2 && (
+                <div className="mt-4">
+                  <label className="block text-xs font-bold text-gray-500 mb-1.5">
+                    Semestre{' '}
+                    <span className="text-gray-300 font-normal">
+                      (valable pour toutes les spécialités choisies)
+                    </span>
+                  </label>
+                  <select
+                    value={semestre}
+                    onChange={(e) => setSemestre(e.target.value)}
+                    className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:border-red-600"
+                  >
+                    <option value="">Sélectionner...</option>
+                    {semestresCommuns.map((s) => (
+                      <option key={s} value={s}>
+                        {s}
+                      </option>
+                    ))}
+                  </select>
+                  {semestresCommuns.length === 0 && (
+                    <p className="text-xs font-semibold text-red-600 mt-1.5">
+                      Aucun semestre commun à ces spécialités — vérifie ta
+                      sélection.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <>
+              {enLigne && (
+                <div className="mb-3">
+                  <RechercheSpecialite onSelect={handleSelectionRecherche} />
+                </div>
+              )}
+              <div className="grid grid-cols-1 gap-3">
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs font-bold text-gray-500">École</label>
@@ -912,7 +1104,9 @@ export default function AjouterUEPage() {
                 ))}
               </select>
             </div>
-          </div>
+              </div>
+            </>
+          )}
         </div>
 
         {error && (
@@ -924,7 +1118,7 @@ export default function AjouterUEPage() {
         <div className="flex gap-3">
           <button
             type="submit"
-            disabled={saving || analyseEnCours}
+            disabled={saving || analyseEnCours || (modeTronc && !enLigne)}
             className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
           >
             {saving && <Loader2 size={15} className="animate-spin" />}
