@@ -142,7 +142,7 @@ export default function AppLayout() {
       <div className="flex-1 w-full flex md:p-4 md:gap-4 print:h-auto print:block print:overflow-visible print:bg-white print:p-0 print:m-0">
       <div
         className="md:hidden fixed left-4 z-30 flex items-center gap-2 print:hidden"
-        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 1.5rem)' }}
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}
       >
         <button
           onClick={() => setMenuOpen(true)}
@@ -160,7 +160,7 @@ export default function AppLayout() {
 
       <NotificationBell
         className="fixed right-4 z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden"
-        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 1.5rem)' }}
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}
       />
 
       {menuOpen && (
@@ -296,7 +296,7 @@ export default function AppLayout() {
         </div>
       </div>
 
-      <div className="flex-1 h-full overflow-y-auto p-4 pt-20 md:p-6 md:pt-6 min-w-0 print:p-0 print:h-auto print:overflow-visible print:w-full">
+      <div className="flex-1 h-full overflow-y-auto p-4 pt-[max(1rem,calc(env(safe-area-inset-top,0px)+3.75rem))] md:p-6 md:pt-6 min-w-0 print:p-0 print:h-auto print:overflow-visible print:w-full">
         <Outlet />
       </div>
       </div>
