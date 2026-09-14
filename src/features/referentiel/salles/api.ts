@@ -36,3 +36,8 @@ export async function createSalle(input: NouvelleSalle) {
   if (error) throw error;
   return data;
 }
+
+export async function deleteSalle(id: string): Promise<void> {
+  const { error } = await supabase.from('salles').delete().eq('id', id);
+  if (error) throw error;
+}

@@ -1,10 +1,10 @@
 // src/features/referentiel/salles/pages/ListeSallesPage.tsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, UploadCloud, Loader2, Search, WifiOff } from 'lucide-react';
+import { Plus, UploadCloud, Loader2, Search, WifiOff, Trash2 } from 'lucide-react';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
 import { db } from '@/lib/db';
-import { listSalles, type SalleAvecSpecialite } from '../api';
+import { listSalles, deleteSalle, type SalleAvecSpecialite } from '../api';
 
 // Reconstruit la forme "salle + spécialité jointe" depuis deux tables
 // Dexie séparées — le cache local ne stocke que les tables brutes, pas
@@ -33,6 +33,8 @@ async function lireSallesDepuisCache(): Promise<SalleAvecSpecialite[]> {
 export default function ListeSallesPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+  const [suppression, setSuppression] = useState<string | null>(null);
+  const [supprimees, setSupprimees] = useState<Set<string>>(new Set());
 
   const {
     data: salles,
@@ -41,9 +43,26 @@ export default function ListeSallesPage() {
     depuisCache,
   } = useCacheSupabase<SalleAvecSpecialite>(lireSallesDepuisCache, listSalles);
 
-  const filtered = salles.filter((s) =>
-    s.code_salle.toLowerCase().includes(search.toLowerCase())
-  );
+  async function handleSupprimer(s: SalleAvecSpecialite) {
+    if (!window.confirm(`Supprimer la salle "${s.code_salle}" ?`)) return;
+    setSuppression(s.id);
+    try {
+      await deleteSalle(s.id);
+      setSupprimees((prev) => new Set(prev).add(s.id));
+    } catch (err) {
+      window.alert(
+        err instanceof Error
+          ? err.message
+          : 'Erreur lors de la suppression — cette salle est peut-être encore utilisée.'
+      );
+    } finally {
+      setSuppression(null);
+    }
+  }
+
+  const filtered = salles
+    .filter((s) => !supprimees.has(s.id))
+    .filter((s) => s.code_salle.toLowerCase().includes(search.toLowerCase()));
 
   return (
     <div>
@@ -113,6 +132,7 @@ export default function ListeSallesPage() {
                 <th className="px-5 py-3">Code salle</th>
                 <th className="px-5 py-3">Capacité</th>
                 <th className="px-5 py-3">Spécialité par défaut</th>
+                <th className="px-5 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -127,6 +147,20 @@ export default function ListeSallesPage() {
                   <td className="px-5 py-3.5 text-gray-500">{s.capacite}</td>
                   <td className="px-5 py-3.5 text-gray-500">
                     {s.specialite?.nom ?? '—'}
+                  </td>
+                  <td className="px-5 py-3.5 text-right">
+                    <button
+                      onClick={() => handleSupprimer(s)}
+                      disabled={suppression === s.id}
+                      className="flex items-center gap-1.5 bg-red-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 ml-auto w-fit"
+                    >
+                      {suppression === s.id ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={13} />
+                      )}
+                      Supprimer
+                    </button>
                   </td>
                 </tr>
               ))}
