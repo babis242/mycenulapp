@@ -1,6 +1,6 @@
 // src/features/rapports/pages/ListeRapportsPage.tsx
 import { useEffect, useState } from 'react';
-import { Loader2, Search, FileVideo, Users } from 'lucide-react';
+import { Loader2, Search, Image, Users } from 'lucide-react';
 import { urlPubliqueR2 } from '@/lib/r2';
 import { listRapports, type RapportLigne } from '../api';
 
@@ -107,18 +107,20 @@ export default function ListeRapportsPage() {
                     : `${r.nbPresents}/${r.nbTotal} présents`}
                 </span>
 
-                {r.cahierTexteKey ? (
+                {r.cahierTexteKeys.length > 0 ? (
                   <a
-                    href={urlPubliqueR2(r.cahierTexteKey)}
+                    href={urlPubliqueR2(r.cahierTexteKeys[0])}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="flex items-center gap-1.5 bg-gray-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-100"
                   >
-                    <FileVideo size={13} /> Cahier de texte
+                    <Image size={13} /> Cahier de texte (
+                    {r.cahierTexteKeys.length} photo
+                    {r.cahierTexteKeys.length > 1 ? 's' : ''})
                   </a>
                 ) : (
                   <span className="flex items-center gap-1.5 bg-gray-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-gray-300">
-                    <FileVideo size={13} /> Cahier de texte absent
+                    <Image size={13} /> Cahier de texte absent
                   </span>
                 )}
               </div>

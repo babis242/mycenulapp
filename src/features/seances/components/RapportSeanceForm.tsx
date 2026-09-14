@@ -1,9 +1,9 @@
 // src/features/seances/components/RapportSeanceForm.tsx
 import { useEffect, useState } from 'react';
-import { Loader2, Camera, ListChecks, Layers, GraduationCap } from 'lucide-react';
+import { Loader2, ListChecks, Layers, GraduationCap, X, Plus } from 'lucide-react';
 import { niveauDeSemestre } from '@/constants/enums';
 import type { TypeCursus } from '@/types';
-import { televerserFichier } from '@/lib/r2';
+import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
 import {
   listEtudiants,
   type Etudiant,
@@ -20,6 +20,7 @@ import {
   enregistrerAppel,
   getPointsAbordesExistants,
   enregistrerPointsAbordes,
+  retirerImageCahierTexte,
 } from '../api';
 
 // Une spécialité concernée par le rapport, avec son niveau déduit (ou
@@ -77,8 +78,11 @@ export default function RapportSeanceForm({
     {}
   );
 
-  const [cahierTexteNom, setCahierTexteNom] = useState<string | null>(null);
-  const [fichierCahier, setFichierCahier] = useState<File | null>(null);
+  const [imagesExistantes, setImagesExistantes] = useState<
+    { key: string; nom: string }[]
+  >([]);
+  const [nouvellesPhotos, setNouvellesPhotos] = useState<File[]>([]);
+  const [erreurPhotos, setErreurPhotos] = useState<string | null>(null);
 
   const [enregistrement, setEnregistrement] = useState(false);
   const [succes, setSucces] = useState(false);
@@ -122,7 +126,12 @@ export default function RapportSeanceForm({
       if (r) {
         setRapportId(r.id);
         setNiveauManuel(r.niveau);
-        setCahierTexteNom(r.cahierTexteNom);
+        setImagesExistantes(
+          r.cahierTexteKeys.map((key, i) => ({
+            key,
+            nom: r.cahierTexteNoms[i] ?? key,
+          }))
+        );
         const abordes = await getPointsAbordesExistants(r.id);
         setPointsAbordes(
           Object.fromEntries(Array.from(abordes).map((id) => [id, true]))
@@ -177,6 +186,41 @@ export default function RapportSeanceForm({
     setPointsAbordes((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  const MAX_PHOTOS = 5;
+  const totalPhotos = imagesExistantes.length + nouvellesPhotos.length;
+
+  function handleAjouterPhotos(fichiers: FileList | null) {
+    if (!fichiers) return;
+    setErreurPhotos(null);
+    const aAjouter = Array.from(fichiers);
+    const placesRestantes = MAX_PHOTOS - totalPhotos;
+    if (aAjouter.length > placesRestantes) {
+      setErreurPhotos(
+        `Maximum ${MAX_PHOTOS} photos — ${placesRestantes > 0 ? `il ne reste que ${placesRestantes} place${placesRestantes > 1 ? 's' : ''}` : 'la limite est déjà atteinte'}.`
+      );
+    }
+    setNouvellesPhotos((prev) => [
+      ...prev,
+      ...aAjouter.slice(0, placesRestantes),
+    ]);
+  }
+
+  function retirerNouvellePhoto(index: number) {
+    setNouvellesPhotos((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  async function retirerPhotoExistante(index: number) {
+    if (!rapportId) return;
+    try {
+      await retirerImageCahierTexte(rapportId, index + 1);
+      setImagesExistantes((prev) => prev.filter((_, i) => i !== index));
+    } catch (err) {
+      setErreurPhotos(
+        err instanceof Error ? err.message : 'Erreur lors de la suppression.'
+      );
+    }
+  }
+
   async function handleEnregistrer() {
     if (!pretAFaireAppel || !groupesEffectifs) {
       setErreur('Choisis le niveau de la classe.');
@@ -216,14 +260,18 @@ export default function RapportSeanceForm({
           .map(([pointId]) => pointId)
       );
 
-      if (fichierCahier) {
-        const { nom } = await televerserFichier(
-          'cahier-texte',
-          id,
-          fichierCahier
-        );
-        setCahierTexteNom(nom);
-        setFichierCahier(null);
+      if (nouvellesPhotos.length > 0) {
+        const nouvellesEntrees: { key: string; nom: string }[] = [];
+        for (const photo of nouvellesPhotos) {
+          const { key, nom } = await televerserFichier(
+            'cahier-texte',
+            id,
+            photo
+          );
+          nouvellesEntrees.push({ key, nom });
+        }
+        setImagesExistantes((prev) => [...prev, ...nouvellesEntrees]);
+        setNouvellesPhotos([]);
       }
 
       setSucces(true);
@@ -379,20 +427,67 @@ export default function RapportSeanceForm({
           )}
 
           <label className="text-xs font-bold text-gray-500 mb-1.5 block">
-            Cahier de texte (photo ou vidéo)
+            Cahier de texte — photos ({totalPhotos}/{MAX_PHOTOS})
           </label>
-          <label className="flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-xl py-6 cursor-pointer hover:border-red-300 mb-4">
-            <Camera size={18} className="text-gray-400 shrink-0" />
-            <span className="text-sm font-bold text-gray-500 truncate">
-              {fichierCahier?.name ?? cahierTexteNom ?? 'Choisir un fichier'}
-            </span>
-            <input
-              type="file"
-              accept="image/*,video/*"
-              onChange={(e) => setFichierCahier(e.target.files?.[0] ?? null)}
-              className="hidden"
-            />
-          </label>
+
+          {(imagesExistantes.length > 0 || nouvellesPhotos.length > 0) && (
+            <div className="grid grid-cols-3 sm:grid-cols-5 gap-2 mb-3">
+              {imagesExistantes.map((img, i) => (
+                <div key={img.key} className="relative aspect-square">
+                  <img
+                    src={urlPubliqueR2(img.key)}
+                    alt={img.nom}
+                    className="w-full h-full object-cover rounded-xl"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => retirerPhotoExistante(i)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white flex items-center justify-center shadow"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+              {nouvellesPhotos.map((f, i) => (
+                <div key={i} className="relative aspect-square">
+                  <img
+                    src={URL.createObjectURL(f)}
+                    alt={f.name}
+                    className="w-full h-full object-cover rounded-xl opacity-80"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => retirerNouvellePhoto(i)}
+                    className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-600 text-white flex items-center justify-center shadow"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {totalPhotos < MAX_PHOTOS && (
+            <label className="flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-xl py-4 cursor-pointer hover:border-red-300 mb-1">
+              <Plus size={16} className="text-gray-400 shrink-0" />
+              <span className="text-sm font-bold text-gray-500">
+                Ajouter des photos
+              </span>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={(e) => handleAjouterPhotos(e.target.files)}
+                className="hidden"
+              />
+            </label>
+          )}
+          {erreurPhotos && (
+            <p className="text-xs font-semibold text-red-600 mb-3">
+              {erreurPhotos}
+            </p>
+          )}
+          <div className="mb-4" />
 
           <button
             onClick={handleEnregistrer}

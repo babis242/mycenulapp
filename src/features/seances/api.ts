@@ -314,8 +314,8 @@ export interface RapportSeance {
   seanceId: string;
   niveau: string;
   contenu: string | null;
-  cahierTexteKey: string | null;
-  cahierTexteNom: string | null;
+  cahierTexteKeys: string[];
+  cahierTexteNoms: string[];
 }
 
 export async function getRapportPourSeance(
@@ -324,7 +324,7 @@ export async function getRapportPourSeance(
   const { data } = await supabase
     .from('rapports_seances')
     .select(
-      'id, seance_edt_id, niveau, contenu, cahier_texte_key, cahier_texte_nom'
+      'id, seance_edt_id, niveau, contenu, cahier_texte_keys, cahier_texte_noms'
     )
     .eq('seance_edt_id', seanceId)
     .maybeSingle();
@@ -334,9 +334,23 @@ export async function getRapportPourSeance(
     seanceId: data.seance_edt_id,
     niveau: data.niveau,
     contenu: data.contenu,
-    cahierTexteKey: data.cahier_texte_key,
-    cahierTexteNom: data.cahier_texte_nom,
+    cahierTexteKeys: data.cahier_texte_keys ?? [],
+    cahierTexteNoms: data.cahier_texte_noms ?? [],
   };
+}
+
+// Retire une photo du cahier de texte (index 1-based, dans l'ordre
+// d'envoi) — le fichier reste sur R2 (pas critique de le supprimer), la
+// photo disparaît juste de la liste du rapport.
+export async function retirerImageCahierTexte(
+  rapportId: string,
+  index1Based: number
+): Promise<void> {
+  const { error } = await supabase.rpc('retirer_image_cahier_texte', {
+    p_rapport_id: rapportId,
+    p_index: index1Based,
+  });
+  if (error) throw new Error(error.message);
 }
 
 // Crée le rapport s'il n'existe pas encore pour cette séance, ou renvoie

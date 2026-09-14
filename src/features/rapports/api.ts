@@ -11,8 +11,7 @@ export interface RapportLigne {
   semaine: string;
   jour: string;
   creneau: string;
-  cahierTexteKey: string | null;
-  cahierTexteNom: string | null;
+  cahierTexteKeys: string[];
   nbPresents: number;
   nbTotal: number;
 }
@@ -24,7 +23,7 @@ export async function listRapports(): Promise<RapportLigne[]> {
     .from('rapports_seances')
     .select(
       `
-      id, niveau, cahier_texte_key, cahier_texte_nom,
+      id, niveau, cahier_texte_keys,
       seance:seances_edt(
         jour, creneau, tronc_commun_id,
         offre:offres(ue:ues(nom), specialite:specialites(nom)),
@@ -89,8 +88,7 @@ export async function listRapports(): Promise<RapportLigne[]> {
       semaine: r.seance?.emploi_du_temps?.semaine ?? '',
       jour: r.seance?.jour ?? '',
       creneau: r.seance?.creneau ?? '',
-      cahierTexteKey: r.cahier_texte_key,
-      cahierTexteNom: r.cahier_texte_nom,
+      cahierTexteKeys: r.cahier_texte_keys ?? [],
       nbPresents: c.presents,
       nbTotal: c.total,
     };
