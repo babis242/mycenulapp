@@ -1,14 +1,34 @@
 // src/features/referentiel/ues/pages/ListeUEsPage.tsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, UploadCloud, Loader2, Search, WifiOff } from 'lucide-react';
+import {
+  Plus,
+  UploadCloud,
+  Loader2,
+  Search,
+  WifiOff,
+  Trash2,
+} from 'lucide-react';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
-import { listUEsAvecOffre, lireUEsDepuisCache, type UEAvecOffre } from '../api';
+import {
+  listUEsAvecOffre,
+  lireUEsDepuisCache,
+  deleteUE,
+  ueEstUtilisee,
+  type UEAvecOffre,
+} from '../api';
 
 // Écran 1.1 — Liste des UEs (ecrans_ui.md)
 export default function ListeUEsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [suppressionEnCours, setSuppressionEnCours] = useState<string | null>(
+    null
+  );
+  const [suppressionGroupeEnCours, setSuppressionGroupeEnCours] =
+    useState(false);
+  const [erreur, setErreur] = useState<string | null>(null);
 
   const {
     data: ues,
@@ -17,9 +37,94 @@ export default function ListeUEsPage() {
     depuisCache,
   } = useCacheSupabase<UEAvecOffre>(lireUEsDepuisCache, listUEsAvecOffre);
 
-  const filtered = ues.filter((ue) =>
-    ue.nom.toLowerCase().includes(search.toLowerCase())
-  );
+  // useCacheSupabase n'expose pas de refetch — on masque localement les
+  // UEs supprimées plutôt que de forcer un rechargement complet.
+  const [idsSupprimes, setIdsSupprimes] = useState<Set<string>>(new Set());
+
+  const filtered = ues
+    .filter((ue) => !idsSupprimes.has(ue.id))
+    .filter((ue) => ue.nom.toLowerCase().includes(search.toLowerCase()));
+
+  const touSelectionnes =
+    filtered.length > 0 && filtered.every((ue) => selection.has(ue.id));
+
+  function toggleUn(id: string) {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleTous() {
+    setSelection((prev) => {
+      if (touSelectionnes) {
+        const next = new Set(prev);
+        for (const ue of filtered) next.delete(ue.id);
+        return next;
+      }
+      const next = new Set(prev);
+      for (const ue of filtered) next.add(ue.id);
+      return next;
+    });
+  }
+
+  async function handleSupprimerUne(ue: UEAvecOffre) {
+    const utilisee = await ueEstUtilisee(ue.id);
+    const message = utilisee
+      ? `"${ue.nom}" fait partie d'un jumelage. La supprimer quand même ?`
+      : `Supprimer définitivement "${ue.nom}" ?`;
+    if (!window.confirm(message)) return;
+
+    setErreur(null);
+    setSuppressionEnCours(ue.id);
+    try {
+      await deleteUE(ue.id);
+      setSelection((prev) => {
+        const next = new Set(prev);
+        next.delete(ue.id);
+        return next;
+      });
+      setIdsSupprimes((prev) => new Set(prev).add(ue.id));
+    } catch (err) {
+      setErreur(
+        err instanceof Error ? err.message : 'Erreur lors de la suppression.'
+      );
+    } finally {
+      setSuppressionEnCours(null);
+    }
+  }
+
+  async function handleSupprimerSelection() {
+    if (selection.size === 0) return;
+    if (
+      !window.confirm(
+        `Supprimer définitivement ${selection.size} UE${selection.size > 1 ? 's' : ''} ?`
+      )
+    )
+      return;
+
+    setErreur(null);
+    setSuppressionGroupeEnCours(true);
+    try {
+      for (const id of selection) {
+        await deleteUE(id);
+      }
+      setIdsSupprimes((prev) => {
+        const next = new Set(prev);
+        for (const id of selection) next.add(id);
+        return next;
+      });
+      setSelection(new Set());
+    } catch (err) {
+      setErreur(
+        err instanceof Error ? err.message : 'Erreur lors de la suppression.'
+      );
+    } finally {
+      setSuppressionGroupeEnCours(false);
+    }
+  }
 
   return (
     <div>
@@ -52,7 +157,7 @@ export default function ListeUEsPage() {
         </div>
       </div>
 
-      <div className="flex mb-4">
+      <div className="flex items-center gap-3 mb-4 flex-wrap">
         <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
           <Search size={15} className="text-gray-300 shrink-0" />
           <input
@@ -62,9 +167,30 @@ export default function ListeUEsPage() {
             className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
           />
         </div>
+
+        {selection.size > 0 && (
+          <button
+            onClick={handleSupprimerSelection}
+            disabled={suppressionGroupeEnCours}
+            className="flex items-center gap-2 bg-red-50 rounded-full px-4 py-2.5 text-sm font-bold text-red-600 hover:bg-red-100 disabled:opacity-50"
+          >
+            {suppressionGroupeEnCours ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <Trash2 size={15} />
+            )}
+            Supprimer la sélection ({selection.size})
+          </button>
+        )}
       </div>
 
-      <div className="bg-white rounded-[20px] overflow-hidden">
+      {erreur && (
+        <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-4">
+          <p className="text-sm font-bold text-red-600">{erreur}</p>
+        </div>
+      )}
+
+      <div className="bg-white rounded-[20px] overflow-hidden overflow-x-auto">
         {loading ? (
           <div className="flex items-center justify-center py-16 text-gray-300">
             <Loader2 size={22} className="animate-spin" />
@@ -86,12 +212,21 @@ export default function ListeUEsPage() {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-gray-50 text-left text-xs font-bold text-gray-400 uppercase tracking-wide">
+                <th className="px-5 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    checked={touSelectionnes}
+                    onChange={toggleTous}
+                    className="shrink-0"
+                  />
+                </th>
                 <th className="px-5 py-3">Nom</th>
                 <th className="px-5 py-3">Code</th>
                 <th className="px-5 py-3">Volume horaire</th>
                 <th className="px-5 py-3">Spécialité</th>
                 <th className="px-5 py-3">Semestre</th>
                 <th className="px-5 py-3">Syllabus</th>
+                <th className="px-5 py-3"></th>
               </tr>
             </thead>
             <tbody>
@@ -101,6 +236,17 @@ export default function ListeUEsPage() {
                   onClick={() => navigate(`/referentiel/ues/${ue.id}`)}
                   className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 cursor-pointer"
                 >
+                  <td
+                    className="px-5 py-3.5"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selection.has(ue.id)}
+                      onChange={() => toggleUn(ue.id)}
+                      className="shrink-0"
+                    />
+                  </td>
                   <td className="px-5 py-3.5 font-bold text-gray-900">
                     {ue.nom}
                   </td>
@@ -126,6 +272,23 @@ export default function ListeUEsPage() {
                     >
                       {ue.syllabus_key ? 'Présent' : 'Manquant'}
                     </span>
+                  </td>
+                  <td
+                    className="px-5 py-3.5 text-right"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <button
+                      onClick={() => handleSupprimerUne(ue)}
+                      disabled={suppressionEnCours === ue.id}
+                      className="flex items-center gap-1.5 bg-red-50 rounded-full px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 ml-auto w-fit"
+                    >
+                      {suppressionEnCours === ue.id ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={13} />
+                      )}
+                      Supprimer
+                    </button>
                   </td>
                 </tr>
               ))}

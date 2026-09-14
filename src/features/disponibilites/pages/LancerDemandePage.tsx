@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Loader2, X, CheckCircle2 } from 'lucide-react';
+import { Plus, Loader2, X, CheckCircle2, Search } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetre } from '@/lib/perimetre';
@@ -73,6 +73,7 @@ export default function LancerDemandePage() {
   const [ues, setUes] = useState<UEPourCampagne[]>([]);
   const [loadingUEs, setLoadingUEs] = useState(false);
   const [ueIdsCochees, setUeIdsCochees] = useState<Set<string>>(new Set());
+  const [rechercheUE, setRechercheUE] = useState('');
 
   const [lancement, setLancement] = useState(false);
   const [succes, setSucces] = useState<{ nbEnseignants: number } | null>(null);
@@ -397,8 +398,31 @@ export default function LancerDemandePage() {
               ({ueIdsCochees.size}/{ues.length} coché(e)s)
             </span>
           </p>
+
+          <div className="mb-3">
+            <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
+              <Search size={15} className="text-gray-300 shrink-0" />
+              <input
+                value={rechercheUE}
+                onChange={(e) => setRechercheUE(e.target.value)}
+                placeholder="Rechercher une UE..."
+                className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
+              />
+            </div>
+          </div>
+
           <div className="bg-white rounded-[20px] overflow-hidden mb-5">
-            {ues.map((u) => (
+            {ues
+              .filter((u) => {
+                const q = rechercheUE.trim().toLowerCase();
+                if (!q) return true;
+                return (
+                  u.ueNom.toLowerCase().includes(q) ||
+                  u.specialiteNom.toLowerCase().includes(q) ||
+                  (u.enseignantNom?.toLowerCase().includes(q) ?? false)
+                );
+              })
+              .map((u) => (
               <label
                 key={u.offreId}
                 className="flex items-center gap-3 px-5 py-3.5 border-b border-gray-50 last:border-0 cursor-pointer"

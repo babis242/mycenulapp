@@ -158,6 +158,7 @@ export async function getSeanceDuMoment(
     .eq('creneau', creneau)
     .eq('annulee', false)
     .in('emploi_du_temps_id', emploiIds)
+    .order('id')
     .limit(1);
   if (error) throw error;
   if (!data || data.length === 0) return null;
@@ -321,21 +322,24 @@ export interface RapportSeance {
 export async function getRapportPourSeance(
   seanceId: string
 ): Promise<RapportSeance | null> {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('rapports_seances')
     .select(
       'id, seance_edt_id, niveau, contenu, cahier_texte_keys, cahier_texte_noms'
     )
     .eq('seance_edt_id', seanceId)
-    .maybeSingle();
-  if (!data) return null;
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  if (!data || data.length === 0) return null;
+  const r = data[0];
   return {
-    id: data.id,
-    seanceId: data.seance_edt_id,
-    niveau: data.niveau,
-    contenu: data.contenu,
-    cahierTexteKeys: data.cahier_texte_keys ?? [],
-    cahierTexteNoms: data.cahier_texte_noms ?? [],
+    id: r.id,
+    seanceId: r.seance_edt_id,
+    niveau: r.niveau,
+    contenu: r.contenu,
+    cahierTexteKeys: r.cahier_texte_keys ?? [],
+    cahierTexteNoms: r.cahier_texte_noms ?? [],
   };
 }
 

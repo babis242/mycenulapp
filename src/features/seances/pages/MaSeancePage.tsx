@@ -11,6 +11,7 @@ import {
 } from '../api';
 import { annulerMaSeance } from '@/features/seances-ponctuelles/api';
 import { ecartHorlogeMinutes } from '@/lib/horlogeAppareil';
+import { finCreneauAvecMargeDepassee } from '@/lib/tempsCameroun';
 import { formatHeureCameroun as formatHeure } from '@/lib/formatHeureCameroun';
 
 // Écrans 6.1 et 6.2 (ecrans_ui.md) — Scénario 8, flux normal enseignant :
@@ -101,6 +102,10 @@ export default function MaSeancePage() {
     }
   }
 
+  const rapportVerrouille = seance
+    ? finCreneauAvecMargeDepassee(seance.creneau, 30)
+    : false;
+
   return (
     <div className="max-w-md mx-auto">
       <div className="flex items-center justify-between mb-6">
@@ -178,7 +183,10 @@ export default function MaSeancePage() {
 
             {seance.heureOuverture && seance.heureFermeture ? (
               <p className="text-sm font-bold text-gray-500 text-center py-2">
-                Séance terminée — le rapport n'est plus modifiable.
+                Séance terminée
+                {rapportVerrouille
+                  ? " — le rapport n'est plus modifiable."
+                  : ' — le rapport reste modifiable encore un peu.'}
               </p>
             ) : (
               <>
@@ -229,7 +237,7 @@ export default function MaSeancePage() {
             )}
           </div>
 
-          {seance.heureOuverture && !seance.heureFermeture && user && (
+          {seance.heureOuverture && !rapportVerrouille && user && (
             <RapportSeanceForm
               seanceId={seance.id}
               ueId={seance.ueId}
@@ -240,6 +248,14 @@ export default function MaSeancePage() {
               semestre={seance.semestre}
               enseignantMatricule={user.matricule}
             />
+          )}
+          {seance.heureOuverture && rapportVerrouille && (
+            <div className="bg-white rounded-[20px] p-6 text-center">
+              <p className="text-sm font-bold text-gray-500">
+                Le rapport de cette séance n'est plus modifiable (plus de
+                30 min après la fin du cours).
+              </p>
+            </div>
           )}
         </>
       )}
