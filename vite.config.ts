@@ -16,6 +16,9 @@ export default defineConfig({
       injectManifest: {
         // Même règle qu'avant : précache tout le shell de l'app.
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        // pdf-lib (découpage de PDF page par page) a fait grossir le
+        // bundle principal au-delà de la limite par défaut (2 MiB).
+        maximumFileSizeToCacheInBytes: 4 * 1024 * 1024,
       },
       includeAssets: [
         'favicon.svg',

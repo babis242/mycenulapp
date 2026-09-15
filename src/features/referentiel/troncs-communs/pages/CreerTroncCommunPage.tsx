@@ -7,14 +7,22 @@ import {
   Search,
   AlertTriangle,
   WifiOff,
+  Sparkles,
+  FileText,
+  X,
+  Plus,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
+import { extraireTextePdf } from '@/lib/pdfExtraction';
+import { televerserFichier } from '@/lib/r2';
+import { extraireSyllabusPdf } from '@/features/referentiel/ues/api';
 import {
   listUEsPourTroncCommun,
   lireUEsPourTroncCommunDepuisCache,
   createTroncCommun,
+  enregistrerPointsClesTronc,
   type UEOption,
 } from '../api';
 
@@ -44,6 +52,10 @@ export default function CreerTroncCommunPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const [fichierSyllabus, setFichierSyllabus] = useState<File | null>(null);
+  const [analyseEnCours, setAnalyseEnCours] = useState(false);
+  const [pointsCles, setPointsCles] = useState<string[]>([]);
 
   useEffect(() => {
     if (navigator.onLine) {
@@ -82,6 +94,36 @@ export default function CreerTroncCommunPage() {
     });
   }
 
+  async function handleImporterSyllabus(fichier: File | undefined) {
+    if (!fichier) return;
+    setFichierSyllabus(fichier);
+    setAnalyseEnCours(true);
+    setError(null);
+    try {
+      const texte = await extraireTextePdf(fichier);
+      const extraction = await extraireSyllabusPdf(texte);
+      setPointsCles(extraction.points_cles);
+      if (!nom.trim() && extraction.nom) setNom(extraction.nom);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Erreur lors de l'analyse."
+      );
+      setFichierSyllabus(null);
+    } finally {
+      setAnalyseEnCours(false);
+    }
+  }
+
+  function ajouterPointCle() {
+    setPointsCles((prev) => [...prev, '']);
+  }
+  function majPointCle(index: number, valeur: string) {
+    setPointsCles((prev) => prev.map((p, i) => (i === index ? valeur : p)));
+  }
+  function retirerPointCle(index: number) {
+    setPointsCles((prev) => prev.filter((_, i) => i !== index));
+  }
+
   const uesFiltrees = ues.filter((u) =>
     u.nom.toLowerCase().includes(recherche.toLowerCase())
   );
@@ -98,15 +140,47 @@ export default function CreerTroncCommunPage() {
       setError('Sélectionne au moins 2 UEs à regrouper.');
       return;
     }
+    if (
+      fichierSyllabus &&
+      pointsCles.filter((p) => p.trim()).length === 0
+    ) {
+      setError(
+        'Un syllabus a été importé : au moins un point clé du contenu est obligatoire.'
+      );
+      return;
+    }
 
     setSaving(true);
     try {
       if (navigator.onLine) {
-        await createTroncCommun({
+        const troncCommun = await createTroncCommun({
           nom: nom.trim(),
           ue_ids: Array.from(ueIdsSelectionnes),
           enseignant_id: enseignantId || undefined,
         });
+
+        if (fichierSyllabus) {
+          await televerserFichier(
+            'syllabus-tronc-commun',
+            troncCommun.id,
+            fichierSyllabus
+          );
+          await enregistrerPointsClesTronc(
+            troncCommun.id,
+            pointsCles.map((p) => p.trim()).filter(Boolean)
+          );
+          // Le syllabus du tronc commun fait référence pour tout le
+          // groupe — les syllabus individuels des UEs regroupées
+          // n'ont plus lieu d'être, pour éviter toute confusion.
+          await supabase
+            .from('ues')
+            .update({
+              syllabus_key: null,
+              syllabus_nom: null,
+              syllabus_uploaded_at: null,
+            })
+            .in('id', Array.from(ueIdsSelectionnes));
+        }
       } else {
         const id = crypto.randomUUID();
         const ueIds = Array.from(ueIdsSelectionnes);
@@ -162,8 +236,8 @@ export default function CreerTroncCommunPage() {
         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-5">
           <WifiOff size={15} className="text-amber-600 shrink-0" />
           <p className="text-xs font-bold text-amber-700">
-            Hors ligne — le tronc commun sera enregistré localement et envoyé
-            dès le retour du réseau.
+            Hors ligne — le tronc commun sera enregistré localement et
+            envoyé dès le retour du réseau.
           </p>
         </div>
       )}
@@ -203,6 +277,97 @@ export default function CreerTroncCommunPage() {
             </select>
           </div>
         </div>
+
+        {enLigne && (
+          <div className="bg-white rounded-[20px] p-5">
+            <p className="font-extrabold text-sm text-gray-900 mb-1 flex items-center gap-1.5">
+              <Sparkles size={15} className="text-red-600" />
+              Syllabus du tronc commun
+            </p>
+            <p className="text-xs text-gray-400 mb-3">
+              Partagé par toutes les UEs du groupe — présenté à
+              l'enseignant, écrase les syllabus individuels des UEs
+              sélectionnées.
+            </p>
+
+            {fichierSyllabus ? (
+              <div className="flex items-center justify-between gap-2 bg-gray-50 rounded-xl px-4 py-3 mb-3">
+                <span className="flex items-center gap-2 text-sm font-bold text-gray-700 truncate">
+                  <FileText size={16} className="text-gray-400 shrink-0" />
+                  {fichierSyllabus.name}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFichierSyllabus(null);
+                    setPointsCles([]);
+                  }}
+                  className="text-gray-300 hover:text-red-600 shrink-0"
+                >
+                  <X size={16} />
+                </button>
+              </div>
+            ) : (
+              <label className="flex items-center justify-center gap-2 border-2 border-dashed border-gray-200 rounded-xl py-5 cursor-pointer hover:border-red-300 mb-3">
+                {analyseEnCours ? (
+                  <Loader2 size={18} className="text-gray-400 animate-spin shrink-0" />
+                ) : (
+                  <FileText size={18} className="text-gray-400 shrink-0" />
+                )}
+                <span className="text-sm font-bold text-gray-500">
+                  {analyseEnCours ? 'Analyse en cours...' : 'Choisir un PDF de syllabus'}
+                </span>
+                <input
+                  type="file"
+                  accept="application/pdf"
+                  onChange={(e) => handleImporterSyllabus(e.target.files?.[0])}
+                  className="hidden"
+                  disabled={analyseEnCours}
+                />
+              </label>
+            )}
+
+            {fichierSyllabus && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="text-xs font-bold text-gray-500">
+                    Points clés du contenu *
+                  </label>
+                  <button
+                    type="button"
+                    onClick={ajouterPointCle}
+                    className="flex items-center gap-1 text-[11px] font-bold text-red-600"
+                  >
+                    <Plus size={12} /> Ajouter
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  {pointsCles.map((p, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input
+                        value={p}
+                        onChange={(e) => majPointCle(i, e.target.value)}
+                        className="w-full border border-gray-200 rounded-xl px-3.5 py-2 text-sm outline-none focus:border-red-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => retirerPointCle(i)}
+                        className="text-gray-300 hover:text-red-600 shrink-0"
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  {pointsCles.length === 0 && (
+                    <p className="text-xs font-semibold text-amber-600">
+                      Aucun point clé — obligatoire avant enregistrement.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         <div>
           <p className="font-extrabold text-sm text-gray-900 mb-2.5">

@@ -13,7 +13,8 @@ import {
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
-import { extraireTextePdfParPage } from '@/lib/pdfExtraction';
+import { extraireTextePdfParPage, decouperPdfParPage } from '@/lib/pdfExtraction';
+import { televerserFichier } from '@/lib/r2';
 import {
   extraireSyllabusPdf,
   creerUEsDuSemestre,
@@ -26,6 +27,9 @@ interface MatiereEditable {
   volumeHoraire: string;
   coefficient: string;
   pointsCles: string[];
+  // Fichier PDF de la page d'origine — devient le syllabus de l'UE une
+  // fois enregistrée, exactement comme un import individuel.
+  pageFichier: File;
 }
 
 // Import en masse : un seul PDF couvrant tout un semestre (plusieurs
@@ -65,7 +69,10 @@ export default function AjouterSemestrePage() {
     setErreurAnalyse(null);
     setMatieres([]);
     try {
-      const pages = await extraireTextePdfParPage(fichier);
+      const [pages, pageFichiers] = await Promise.all([
+        extraireTextePdfParPage(fichier),
+        decouperPdfParPage(fichier),
+      ]);
       const trouvees: MatiereEditable[] = [];
       for (let i = 0; i < pages.length; i++) {
         setProgression({ page: i + 1, total: pages.length });
@@ -89,6 +96,7 @@ export default function AjouterSemestrePage() {
                   : '',
               coefficient: '1',
               pointsCles: extraction.points_cles,
+              pageFichier: pageFichiers[i],
             });
           }
         } catch {
@@ -168,12 +176,15 @@ export default function AjouterSemestrePage() {
         semestre
       );
       await Promise.all(
-        creees.map((ue, i) =>
-          enregistrerPointsCles(
+        creees.map(async (ue, i) => {
+          await enregistrerPointsCles(
             ue.id,
             matieres[i].pointsCles.map((p) => p.trim()).filter(Boolean)
-          )
-        )
+          );
+          // La page d'origine devient le syllabus de l'UE — même flux
+          // que pour un import individuel.
+          await televerserFichier('syllabus', ue.id, matieres[i].pageFichier);
+        })
       );
       setSucces(`${creees.length} UEs créées avec succès.`);
       setMatieres([]);

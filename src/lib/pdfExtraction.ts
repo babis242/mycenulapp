@@ -1,5 +1,6 @@
 // src/lib/pdfExtraction.ts
 import * as pdfjsLib from 'pdfjs-dist';
+import { PDFDocument } from 'pdf-lib';
 
 // new URL(..., import.meta.url) est la façon recommandée par Vite pour
 // référencer un fichier binaire/asset depuis une dépendance — plus fiable
@@ -57,4 +58,30 @@ export async function extraireTextePdfParPage(
     pages.push(texte);
   }
   return pages;
+}
+
+// Découpe le PDF en un vrai fichier PDF par page (pas juste le texte) —
+// pour que chaque UE importée depuis un semestre complet garde SA page
+// comme syllabus téléchargeable, exactement comme si elle avait été
+// importée individuellement.
+export async function decouperPdfParPage(fichier: File): Promise<File[]> {
+  const buffer = await fichier.arrayBuffer();
+  const source = await PDFDocument.load(buffer);
+  const nbPages = source.getPageCount();
+
+  const fichiers: File[] = [];
+  for (let i = 0; i < nbPages; i++) {
+    const nouveauDoc = await PDFDocument.create();
+    const [page] = await nouveauDoc.copyPages(source, [i]);
+    nouveauDoc.addPage(page);
+    const octets = await nouveauDoc.save();
+    fichiers.push(
+      new File(
+        [octets as BlobPart],
+        `${fichier.name.replace(/\.pdf$/i, '')}-page-${i + 1}.pdf`,
+        { type: 'application/pdf' }
+      )
+    );
+  }
+  return fichiers;
 }
