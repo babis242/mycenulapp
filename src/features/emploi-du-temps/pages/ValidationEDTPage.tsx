@@ -1,6 +1,6 @@
 // src/features/emploi-du-temps/pages/ValidationEDTPage.tsx
 import { useEffect, useState, Fragment } from 'react';
-import { Link, useSearchParams, useLocation } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   Loader2,
   Upload,
@@ -16,7 +16,6 @@ import { supabase } from '@/lib/supabase';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
-  listSpecialitesParIds,
   getSeancesGroupees,
   getHeuresEffectuees,
   getHeuresEffectueesTronc,
@@ -115,9 +114,18 @@ interface EmploiGroupe {
 // un seul document signé, une seule validation, pour toutes les
 // spécialités concernées à la fois (même dans des écoles/filières
 // différentes). Le PDF téléchargé regroupe une page par spécialité.
+//
+// Changement d'approche définitif : cette page ne reçoit plus RIEN de
+// GenererEDTPage (ni URL, ni state, ni localStorage). Elle lit
+// directement en base quelles spécialités du cycle/semestre ont été
+// explicitement envoyées en validation — c'est-à-dire dont
+// emplois_du_temps.statut vaut 'en_attente_validation' ou 'valide' (ce
+// choix a été fait et PERSISTÉ sur GenererEDTPage, via le bouton
+// "Enregistrer"). Les spécialités encore au statut 'genere' (pas
+// envoyées) n'apparaissent pas ici. Aucune transmission fragile, aucun
+// state éphémère : la base est l'unique source de vérité.
 export default function ValidationEDTPage() {
   const [searchParams] = useSearchParams();
-  const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const enLigne = useOnlineStatus();
   const perimetreIds =
@@ -128,6 +136,9 @@ export default function ValidationEDTPage() {
   const [semestre, setSemestre] = useState(searchParams.get('semestre') || '');
   const [semaine, setSemaine] = useState(searchParams.get('semaine') || '');
 
+  // Uniquement les spécialités effectivement envoyées en validation
+  // (statut 'en_attente_validation' ou 'valide' en base) — pas toutes
+  // celles du cycle/semestre.
   const [specialites, setSpecialites] = useState<SpecialiteGroupe[]>([]);
   const [specialiteAffichee, setSpecialiteAffichee] = useState('');
   const [emplois, setEmplois] = useState<EmploiGroupe[]>([]);
@@ -151,72 +162,55 @@ export default function ValidationEDTPage() {
   }, [enLigne]);
 
   // Resynchronise avec l'URL à chaque navigation vers cette page (pas
-  // seulement au tout premier montage) — sinon, en arrivant une
-  // deuxième fois depuis "Génération EDT" avec une sélection différente
-  // mais le même cycle/semestre, la page garde silencieusement l'ancien
-  // état.
+  // seulement au tout premier montage).
   useEffect(() => {
     setCycleKey(searchParams.get('cycle') || '');
     setSemestre(searchParams.get('semestre') || '');
     setSemaine(searchParams.get('semaine') || '');
   }, [searchParams]);
 
+  // Charge le cycle/semestre complet, PUIS filtre en base sur le
+  // statut réellement enregistré (en_attente_validation / valide) —
+  // c'est ce filtre qui remplace toute la mécanique de transmission
+  // client qu'on a essayée jusqu'ici.
   useEffect(() => {
-    if (!cycleKey || !semestre || !enLigne) {
+    if (!cycleKey || !semestre || !semaine || !enLigne) {
       setSpecialites([]);
       return;
     }
-    const idsDepuisEtat = (location.state as any)?.specialiteIds as
-      | string[]
-      | undefined;
-
-    // Sélection explicite déjà faite (depuis "Génération EDT") — reçue
-    // via l'état de navigation (fiable, aucun souci d'encodage possible,
-    // contrairement à un identifiant transmis dans l'URL). Le paramètre
-    // d'URL reste un repli pour un accès direct/rechargement de page.
-    if (idsDepuisEtat && idsDepuisEtat.length > 0) {
-      listSpecialitesParIds(idsDepuisEtat).then((liste) => {
-        setSpecialites(liste);
-        setSpecialiteAffichee((prev) =>
-          liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
-        );
-      });
-      return;
-    }
-
-    const specialitesParam = searchParams.get('specialites');
-    if (specialitesParam) {
-      const ids = specialitesParam.split(',').filter(Boolean);
-      listSpecialitesParIds(ids).then((liste) => {
-        setSpecialites(liste);
-        setSpecialiteAffichee((prev) =>
-          liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
-        );
-      });
-      return;
-    }
-
-    const [cycle, sousCycle] = cycleKey.split('::');
-    listSpecialitesDuCycleSemestre(
-      cycle,
-      sousCycle || null,
-      semestre,
-      perimetreIds
-    ).then((liste) => {
+    (async () => {
+      const [cycle, sousCycle] = cycleKey.split('::');
+      const toutes = await listSpecialitesDuCycleSemestre(
+        cycle,
+        sousCycle || null,
+        semestre,
+        perimetreIds
+      );
+      if (toutes.length === 0) {
+        setSpecialites([]);
+        return;
+      }
+      const { data: emploisStatuts, error } = await supabase
+        .from('emplois_du_temps')
+        .select('specialite_id, statut')
+        .in(
+          'specialite_id',
+          toutes.map((s) => s.id)
+        )
+        .eq('semaine', semaine)
+        .in('statut', ['en_attente_validation', 'valide']);
+      if (error) throw error;
+      const idsEnvoyes = new Set(
+        (emploisStatuts ?? []).map((e: any) => e.specialite_id)
+      );
+      const liste = toutes.filter((s) => idsEnvoyes.has(s.id));
       setSpecialites(liste);
       setSpecialiteAffichee((prev) =>
         liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
       );
-    });
-    // Important : "location" doit être dans les dépendances (et pas
-    // seulement "searchParams.get('specialites')") — sinon une nouvelle
-    // navigation vers CETTE MÊME URL mais avec un "state.specialiteIds"
-    // différent (cas de "Génération EDT" → "Valider ces spécialités")
-    // est silencieusement ignorée : l'effet ne se redéclenche pas et la
-    // page garde l'ancienne sélection (ou retombe sur la liste complète
-    // du cycle/semestre).
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycleKey, semestre, enLigne, location, searchParams.get('specialites')]);
+  }, [cycleKey, semestre, semaine, enLigne]);
 
   useEffect(() => {
     if (specialites.length === 0 || !semaine || !enLigne) {
@@ -382,8 +376,8 @@ export default function ValidationEDTPage() {
           Validation de l'emploi du temps
         </p>
         <p className="text-sm text-gray-400 mb-6">
-          Un seul document signé et une seule validation pour toutes les
-          spécialités du cycle et du semestre.
+          Un seul document signé et une seule validation pour les
+          spécialités envoyées en validation depuis "Génération EDT".
         </p>
 
         <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 mb-5">
@@ -436,8 +430,18 @@ export default function ValidationEDTPage() {
           cycleKey && semestre && semaine ? (
             <div className="bg-amber-50 rounded-xl px-4 py-3.5">
               <p className="text-sm font-bold text-amber-700">
-                Aucune spécialité accessible pour ce cycle et ce semestre.
+                Aucune spécialité n'a été envoyée en validation pour ce
+                cycle/semestre/semaine.
               </p>
+              <Link
+                to={`/emploi-du-temps?cycle=${encodeURIComponent(
+                  cycleKey
+                )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`}
+                className="inline-flex items-center gap-2 mt-3 text-sm font-bold text-amber-800 hover:underline"
+              >
+                <Pencil size={14} /> Aller sélectionner des spécialités sur
+                "Génération EDT"
+              </Link>
             </div>
           ) : (
             <div className="bg-white rounded-[20px] p-8 text-center text-sm text-gray-400">
@@ -474,7 +478,7 @@ export default function ValidationEDTPage() {
               >
                 {tousValides
                   ? 'Groupe validé'
-                  : `Généré — ${emploisAvecDonnees.length} spécialité${
+                  : `Envoyé en validation — ${emploisAvecDonnees.length} spécialité${
                       emploisAvecDonnees.length > 1 ? 's' : ''
                     }`}
               </span>
@@ -486,7 +490,7 @@ export default function ValidationEDTPage() {
                     )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`}
                     className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
                   >
-                    <Pencil size={15} /> Modifier
+                    <Pencil size={15} /> Modifier la sélection
                   </Link>
                 )}
                 <button

@@ -776,6 +776,51 @@ export async function supprimerSeance(seanceId: string) {
   if (error) throw error;
 }
 
+// ── Scénario 5.5 (NOUVEAU) — Sélection des spécialités à envoyer en
+// validation, persistée en base ─────────────────────────────────────
+// Exploite le statut 'en_attente_validation' de emplois_du_temps.statut,
+// qui existait déjà dans le type EmploiExistant mais n'était jusqu'ici
+// jamais réellement utilisé (le code sautait directement de 'genere' à
+// 'valide'). En s'appuyant sur ce champ déjà en base, la sélection faite
+// sur GenererEDTPage survit à un rechargement de page, fonctionne sur un
+// autre appareil/navigateur, et n'a besoin d'aucun mécanisme de
+// transport fragile (URL, state de navigation, localStorage).
+//
+// - Les spécialités cochées (déjà à l'état 'genere', donc avec un EDT
+//   généré) passent à 'en_attente_validation'.
+// - Les spécialités du même groupe qui ne sont PAS cochées, mais qui
+//   avaient été marquées 'en_attente_validation' lors d'un précédent
+//   enregistrement, repassent à 'genere' (retirées de la validation).
+// - Les emplois déjà 'valide' ne sont jamais touchés (verrouillés).
+export async function definirSpecialitesEnAttenteValidation(
+  specialiteIdsAInclure: string[],
+  specialiteIdsDuGroupe: string[],
+  semaine: string
+): Promise<void> {
+  if (specialiteIdsAInclure.length > 0) {
+    const { error } = await supabase
+      .from('emplois_du_temps')
+      .update({ statut: 'en_attente_validation' })
+      .in('specialite_id', specialiteIdsAInclure)
+      .eq('semaine', semaine)
+      .eq('statut', 'genere');
+    if (error) throw error;
+  }
+
+  const specialiteIdsAExclure = specialiteIdsDuGroupe.filter(
+    (id) => !specialiteIdsAInclure.includes(id)
+  );
+  if (specialiteIdsAExclure.length > 0) {
+    const { error } = await supabase
+      .from('emplois_du_temps')
+      .update({ statut: 'genere' })
+      .in('specialite_id', specialiteIdsAExclure)
+      .eq('semaine', semaine)
+      .eq('statut', 'en_attente_validation');
+    if (error) throw error;
+  }
+}
+
 // ── Scénario 6 — Validation et publication ────────────────────────
 
 export async function uploaderDocumentSigne(

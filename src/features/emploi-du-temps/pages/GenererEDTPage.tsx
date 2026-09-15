@@ -8,6 +8,8 @@ import {
   Trash2,
   X,
   WifiOff,
+  Check,
+  Save,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
@@ -25,12 +27,14 @@ import {
   listToutesLesSalles,
   getHeuresEffectuees,
   getHeuresEffectueesTronc,
+  definirSpecialitesEnAttenteValidation,
   type CycleOption,
   type SpecialiteGroupe,
   type SeanceGroupee,
   type OffreDeSpecialite,
   type EnseignantDisponible,
 } from '../api';
+import { supabase } from '@/lib/supabase';
 
 interface Salle {
   id: string;
@@ -160,6 +164,14 @@ function appliquerChangement(
 // des écoles/filières différentes — un tronc commun peut les regrouper).
 // 100% local pendant la confection (brouillon dans le navigateur),
 // envoyé en base d'un coup au clic sur "Enregistrer".
+//
+// Entre cette page et ValidationEDTPage, il y a désormais une étape
+// explicite : le bouton "Enregistrer" ouvre une sélection des
+// spécialités à envoyer en validation, puis PERSISTE ce choix en base
+// (colonne emplois_du_temps.statut → 'en_attente_validation', un champ
+// qui existait déjà mais n'était jamais utilisé). ValidationEDTPage n'a
+// donc plus besoin de recevoir quoi que ce soit — il lit directement ce
+// qui a été enregistré en base pour ce cycle/semestre/semaine.
 export default function GenererEDTPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -189,6 +201,12 @@ export default function GenererEDTPage() {
   const [emploiParSpecialite, setEmploiParSpecialite] = useState<
     Map<string, string>
   >(new Map());
+  // Statut en base (genere / en_attente_validation / valide) de chaque
+  // spécialité du groupe pour la semaine choisie — sert à pré-cocher la
+  // modale de sélection avec ce qui est déjà enregistré.
+  const [statutParSpecialite, setStatutParSpecialite] = useState<
+    Map<string, string>
+  >(new Map());
 
   const [toutesSalles, setToutesSalles] = useState<Salle[]>([]);
   const [offresParSpecialite, setOffresParSpecialite] = useState<
@@ -199,11 +217,13 @@ export default function GenererEDTPage() {
 
   const [changements, setChangements] = useState<ChangementCellule[]>([]);
   const [envoiEnCours, setEnvoiEnCours] = useState(false);
-  const [selectionValidationOuverte, setSelectionValidationOuverte] =
-    useState(false);
-  const [specialitesPourValidation, setSpecialitesPourValidation] = useState<
+
+  const [selectionOuverte, setSelectionOuverte] = useState(false);
+  const [specialitesSelectionnees, setSpecialitesSelectionnees] = useState<
     Set<string>
   >(new Set());
+  const [enregistrementSelectionEnCours, setEnregistrementSelectionEnCours] =
+    useState(false);
 
   const [chargement, setChargement] = useState(false);
   const [erreurChargement, setErreurChargement] = useState<string | null>(
@@ -265,6 +285,19 @@ export default function GenererEDTPage() {
       setEmploiParSpecialite(donnees.emploiParSpecialite);
       setSpecialitesParTronc(donnees.specialitesParTronc);
       setUeVersTronc(donnees.ueVersTronc);
+
+      // Statuts actuels (genere / en_attente_validation / valide) — pour
+      // pré-cocher la modale de sélection avec l'état réel de la base.
+      const { data: emploisStatuts } = await supabase
+        .from('emplois_du_temps')
+        .select('specialite_id, statut')
+        .in('specialite_id', specialiteIds)
+        .eq('semaine', semaine);
+      setStatutParSpecialite(
+        new Map(
+          (emploisStatuts ?? []).map((e: any) => [e.specialite_id, e.statut])
+        )
+      );
 
       // Rejoue un éventuel brouillon local pas encore envoyé en base.
       const cleDraft = `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`;
@@ -499,80 +532,126 @@ export default function GenererEDTPage() {
     setModal(null);
   }
 
-  async function handleAllerValidation() {
-    if (changements.length === 0) {
-      ouvrirSelectionValidation();
-      return;
-    }
+  // ── Étape "Enregistrer" : (1) sauvegarde les modifications de grille
+  // en attente, (2) garantit qu'un emploi du temps existe en base pour
+  // TOUTES les spécialités du groupe — même vide, pour celles qu'on n'a
+  // pas touchées cette session — puis (3) ouvre la sélection de ce qui
+  // part en validation.
+  async function handleOuvrirEnregistrement() {
     setEnvoiEnCours(true);
     setErreurChargement(null);
     try {
-      const emplois = new Map(emploiParSpecialite);
-      for (const c of changements) {
-        if (c.action === 'delete') {
-          await supprimerSeance(c.seanceId);
-          continue;
+      // 1) Modifications de grille en attente (comme avant).
+      if (changements.length > 0) {
+        const emplois = new Map(emploiParSpecialite);
+        for (const c of changements) {
+          if (c.action === 'delete') {
+            await supprimerSeance(c.seanceId);
+            continue;
+          }
+          let emploiId = emplois.get(c.specialiteId);
+          if (!emploiId) {
+            emploiId = await trouverOuCreerEmploi(c.specialiteId, semaine);
+            emplois.set(c.specialiteId, emploiId);
+          }
+          await assignerSeance({
+            emploiId,
+            specialiteId: c.specialiteId,
+            semaine,
+            seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
+              ? null
+              : c.seanceIdExistante,
+            offreId: c.offreId,
+            enseignantId: c.enseignantId,
+            salleId: c.salleId,
+            jour: c.jour,
+            creneau: c.creneau,
+          });
         }
-        let emploiId = emplois.get(c.specialiteId);
-        if (!emploiId) {
-          emploiId = await trouverOuCreerEmploi(c.specialiteId, semaine);
-          emplois.set(c.specialiteId, emploiId);
-        }
-        await assignerSeance({
-          emploiId,
-          specialiteId: c.specialiteId,
-          semaine,
-          seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
-            ? null
-            : c.seanceIdExistante,
-          offreId: c.offreId,
-          enseignantId: c.enseignantId,
-          salleId: c.salleId,
-          jour: c.jour,
-          creneau: c.creneau,
-        });
+        localStorage.removeItem(
+          `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`
+        );
+        setChangements([]);
       }
-      localStorage.removeItem(
-        `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`
+
+      // 2) Garantit qu'un emploi du temps existe pour CHAQUE spécialité
+      // du groupe, cette semaine — y compris celles qu'on n'a jamais
+      // ouvertes/éditées dans cette session. Sans ça, elles n'ont aucune
+      // ligne en base et restent grisées, non sélectionnables, dans la
+      // modale qui suit. trouverOuCreerEmploi ne recrée rien si un
+      // emploi existe déjà (idempotent).
+      await Promise.all(
+        specialites.map((s) => trouverOuCreerEmploi(s.id, semaine))
       );
-      setChangements([]);
-      // Défaut de conception corrigé : ne pas envoyer automatiquement
-      // TOUTES les spécialités du cycle/semestre vers la validation —
-      // certaines peuvent ne pas être prêtes. L'admin choisit lesquelles
-      // passent en PDF/validation maintenant.
-      ouvrirSelectionValidation();
+
+      // 3) Recharge emploiParSpecialite / statutParSpecialite / seances
+      // à jour avant d'ouvrir la sélection.
+      await chargerGroupe();
     } catch (err) {
       setErreurChargement(
         err instanceof Error
           ? `Erreur lors de l'enregistrement : ${err.message}`
           : "Erreur lors de l'enregistrement."
       );
-      await chargerGroupe();
+      setEnvoiEnCours(false);
+      return;
     } finally {
       setEnvoiEnCours(false);
     }
+
+    // Pré-coche : ce qui est déjà 'en_attente_validation' ou 'valide' en
+    // base ; à défaut (première fois), toutes les spécialités (elles
+    // ont désormais toutes un emploi du temps, vide ou pas).
+    const dejaMarquees = specialites
+      .filter((s) => {
+        const statut = statutParSpecialite.get(s.id);
+        return statut === 'en_attente_validation' || statut === 'valide';
+      })
+      .map((s) => s.id);
+    const parDefaut =
+      dejaMarquees.length > 0
+        ? dejaMarquees
+        : specialites
+            .filter((s) => emploiParSpecialite.has(s.id))
+            .map((s) => s.id);
+    setSpecialitesSelectionnees(new Set(parDefaut));
+    setSelectionOuverte(true);
   }
 
-  function ouvrirSelectionValidation() {
-    setSpecialitesPourValidation(new Set(specialites.map((s) => s.id)));
-    setSelectionValidationOuverte(true);
+  // ── Confirmation : persiste la sélection en base puis navigue ──────
+  async function handleConfirmerEnregistrement() {
+    setEnregistrementSelectionEnCours(true);
+    setErreurChargement(null);
+    try {
+      await definirSpecialitesEnAttenteValidation(
+        Array.from(specialitesSelectionnees),
+        specialites.map((s) => s.id),
+        semaine
+      );
+      setSelectionOuverte(false);
+      navigate(
+        `/emploi-du-temps/validation?cycle=${encodeURIComponent(
+          cycleKey
+        )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`
+      );
+    } catch (err) {
+      setErreurChargement(
+        err instanceof Error
+          ? `Erreur lors de l'enregistrement de la sélection : ${err.message}`
+          : "Erreur lors de l'enregistrement de la sélection."
+      );
+    } finally {
+      setEnregistrementSelectionEnCours(false);
+    }
   }
 
-  // Correction : la sélection faite dans la modale est désormais
-  // transmise via l'état de navigation (location.state), pas encodée
-  // dans l'URL — plus robuste (aucun souci de caractères spéciaux comme
-  // le "&" de "S3&4", aucune limite de longueur d'URL, aucun risque de
-  // troncature). Le paramètre "specialites" dans l'URL reste géré côté
-  // ValidationEDTPage comme simple repli pour un accès direct/rechargement.
-  function confirmerSelectionValidation() {
-    if (specialitesPourValidation.size === 0) return;
-    const specialiteIds = Array.from(specialitesPourValidation);
-    navigate(
-      `/emploi-du-temps/validation?cycle=${encodeURIComponent(
-        cycleKey
-      )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`,
-      { state: { specialiteIds } }
-    );
+  function basculerSelection(specialiteId: string) {
+    setSpecialitesSelectionnees((prev) => {
+      const next = new Set(prev);
+      if (next.has(specialiteId)) next.delete(specialiteId);
+      else next.add(specialiteId);
+      return next;
+    });
   }
 
   const specialiteCourante = specialites.find(
@@ -699,14 +778,16 @@ export default function GenererEDTPage() {
             </select>
 
             <button
-              onClick={handleAllerValidation}
+              onClick={handleOuvrirEnregistrement}
               disabled={envoiEnCours}
-              className="flex items-center gap-2 text-red-600 font-bold hover:underline text-sm disabled:opacity-50 disabled:no-underline"
+              className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
             >
-              {envoiEnCours && <Loader2 size={14} className="animate-spin" />}
-              {changements.length > 0
-                ? `Enregistrer et aller à la validation (${changements.length}) →`
-                : 'Aller à la validation →'}
+              {envoiEnCours ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Save size={15} />
+              )}
+              Enregistrer{changements.length > 0 ? ` (${changements.length})` : ''}
             </button>
           </div>
           {changements.length > 0 && (
@@ -974,61 +1055,95 @@ export default function GenererEDTPage() {
         </div>
       )}
 
-      {selectionValidationOuverte && (
+      {selectionOuverte && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-[20px] p-5 w-full max-w-sm max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between mb-1 shrink-0">
               <p className="font-extrabold text-base text-gray-900">
-                Spécialités à valider
+                Spécialités à envoyer en validation
               </p>
               <button
-                onClick={() => setSelectionValidationOuverte(false)}
+                onClick={() => setSelectionOuverte(false)}
                 className="text-gray-300 hover:text-gray-600"
               >
                 <X size={18} />
               </button>
             </div>
             <p className="text-xs text-gray-400 mb-3 shrink-0">
-              Choisis lesquelles passer en PDF/validation maintenant —
-              les autres restent en brouillon, à valider plus tard.
+              Coche celles à envoyer maintenant — les autres restent en
+              brouillon ("généré"), à envoyer plus tard. Ce choix est
+              enregistré en base.
             </p>
 
             <div className="overflow-y-auto flex-1 min-h-0 -mx-1 px-1 mb-4">
-              {specialites.map((s) => (
-                <label
-                  key={s.id}
-                  className="flex items-center gap-3 py-2.5 border-b border-gray-50 last:border-0 cursor-pointer"
-                >
-                  <input
-                    type="checkbox"
-                    checked={specialitesPourValidation.has(s.id)}
-                    onChange={() =>
-                      setSpecialitesPourValidation((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(s.id)) next.delete(s.id);
-                        else next.add(s.id);
-                        return next;
-                      })
-                    }
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-bold text-gray-900 truncate">
-                      {s.nom}
-                    </p>
-                    <p className="text-xs text-gray-400 truncate">
-                      {s.ecoleNom}
-                    </p>
-                  </div>
-                </label>
-              ))}
+              {specialites.map((s) => {
+                const dejaValide = statutParSpecialite.get(s.id) === 'valide';
+                const aDesSeances = seances.some(
+                  (sc) =>
+                    sc.specialiteId === s.id ||
+                    (sc.troncCommunId &&
+                      specialitesParTronc.get(sc.troncCommunId)?.has(s.id))
+                );
+                const cochee = specialitesSelectionnees.has(s.id);
+                return (
+                  <label
+                    key={s.id}
+                    className={`flex items-center gap-3 px-2 py-2.5 rounded-xl cursor-pointer border-b border-gray-50 last:border-0 ${
+                      dejaValide ? 'opacity-50' : ''
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-md flex items-center justify-center shrink-0 border-2 ${
+                        cochee
+                          ? 'bg-red-600 border-red-600'
+                          : 'border-gray-300 bg-white'
+                      }`}
+                    >
+                      {cochee && <Check size={13} className="text-white" />}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={cochee}
+                      disabled={dejaValide}
+                      onChange={() => basculerSelection(s.id)}
+                      className="hidden"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-bold text-gray-900 truncate">
+                        {s.nom}
+                      </p>
+                      <p
+                        className={`text-xs truncate ${
+                          !aDesSeances && !dejaValide
+                            ? 'text-amber-600 font-semibold'
+                            : 'text-gray-400'
+                        }`}
+                      >
+                        {dejaValide
+                          ? `${s.ecoleNom} — déjà validé`
+                          : aDesSeances
+                          ? s.ecoleNom
+                          : 'Aucune séance programmée pour l\'instant'}
+                      </p>
+                    </div>
+                  </label>
+                );
+              })}
             </div>
 
             <button
-              onClick={confirmerSelectionValidation}
-              disabled={specialitesPourValidation.size === 0}
+              onClick={handleConfirmerEnregistrement}
+              disabled={
+                specialitesSelectionnees.size === 0 ||
+                enregistrementSelectionEnCours
+              }
               className="flex items-center justify-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50 shrink-0"
             >
-              Continuer vers la validation ({specialitesPourValidation.size})
+              {enregistrementSelectionEnCours && (
+                <Loader2 size={15} className="animate-spin" />
+              )}
+              Enregistrer ({specialitesSelectionnees.size}) et aller à la
+              validation
             </button>
           </div>
         </div>
