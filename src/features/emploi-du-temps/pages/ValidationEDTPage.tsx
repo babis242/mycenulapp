@@ -18,6 +18,7 @@ import {
   listSpecialitesDuCycleSemestre,
   getSeancesGroupees,
   getHeuresEffectuees,
+  getHeuresEffectueesTronc,
   uploaderDocumentSigneGroupe,
   validerEDT,
   type CycleOption,
@@ -205,6 +206,18 @@ export default function ValidationEDTPage() {
       setSeances(donnees.seances);
       setSpecialitesParTronc(donnees.specialitesParTronc);
 
+      const troncIdsGlobal = Array.from(
+        new Set(
+          donnees.seances
+            .filter((s) => s.troncCommunId)
+            .map((s) => s.troncCommunId as string)
+        )
+      );
+      const heuresTroncsGlobal =
+        troncIdsGlobal.length > 0
+          ? await getHeuresEffectueesTronc(troncIdsGlobal, semaine)
+          : new Map<string, number>();
+
       const heuresParSpe = new Map<string, Map<string, number>>();
       for (const specId of specialiteIds) {
         const offreIds = Array.from(
@@ -214,12 +227,11 @@ export default function ValidationEDTPage() {
               .map((s) => s.offreId as string)
           )
         );
-        heuresParSpe.set(
-          specId,
+        const heuresOffres =
           offreIds.length > 0
             ? await getHeuresEffectuees(offreIds, semaine)
-            : new Map()
-        );
+            : new Map<string, number>();
+        heuresParSpe.set(specId, new Map([...heuresOffres, ...heuresTroncsGlobal]));
       }
       setHeuresEffectueesParSpecialite(heuresParSpe);
     } catch (err) {
@@ -676,9 +688,7 @@ export default function ValidationEDTPage() {
                                 if (!s)
                                   return <td key={jour} className="border border-black px-2 py-2" />;
                                 const total = s.volumeHoraire ?? 0;
-                                const faites = s.offreId
-                                  ? heuresEffectuees.get(s.offreId) ?? 0
-                                  : 0;
+                                const faites = heuresEffectuees.get(s.id) ?? 0;
                                 const restant = total - faites;
                                 return (
                                   <td

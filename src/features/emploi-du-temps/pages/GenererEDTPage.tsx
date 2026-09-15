@@ -23,6 +23,8 @@ import {
   getEnseignantsDisponibles,
   getSalleParDefautSpecialite,
   listToutesLesSalles,
+  getHeuresEffectuees,
+  getHeuresEffectueesTronc,
   type CycleOption,
   type SpecialiteGroupe,
   type SeanceGroupee,
@@ -175,6 +177,9 @@ export default function GenererEDTPage() {
   const [specialiteAffichee, setSpecialiteAffichee] = useState('');
 
   const [seances, setSeances] = useState<SeanceGroupee[]>([]);
+  const [heuresEffectuees, setHeuresEffectuees] = useState<
+    Map<string, number>
+  >(new Map());
   const [specialitesParTronc, setSpecialitesParTronc] = useState<
     Map<string, Set<string>>
   >(new Map());
@@ -293,6 +298,30 @@ export default function GenererEDTPage() {
       }
       setSeances(seancesAffichees);
       setChangements(changementsCharges);
+
+      const offreIds = Array.from(
+        new Set(
+          seancesAffichees
+            .filter((s) => s.offreId)
+            .map((s) => s.offreId as string)
+        )
+      );
+      const troncIds = Array.from(
+        new Set(
+          seancesAffichees
+            .filter((s) => s.troncCommunId)
+            .map((s) => s.troncCommunId as string)
+        )
+      );
+      const [heuresOffres, heuresTroncs] = await Promise.all([
+        offreIds.length > 0
+          ? getHeuresEffectuees(offreIds, semaine)
+          : Promise.resolve(new Map<string, number>()),
+        troncIds.length > 0
+          ? getHeuresEffectueesTronc(troncIds, semaine)
+          : Promise.resolve(new Map<string, number>()),
+      ]);
+      setHeuresEffectuees(new Map([...heuresOffres, ...heuresTroncs]));
     } catch (err) {
       setErreurChargement(
         err instanceof Error ? err.message : 'Erreur de chargement.'
@@ -736,6 +765,12 @@ export default function GenererEDTPage() {
                                     {s.enseignantNom} ·{' '}
                                     {s.salleCode ?? 'Aucune salle'}
                                   </p>
+                                  {s.volumeHoraire != null && (
+                                    <p className="text-[11px] font-bold text-red-600 mb-1.5">
+                                      {heuresEffectuees.get(s.id) ?? 0}/
+                                      {s.volumeHoraire}h
+                                    </p>
+                                  )}
                                   {s.statut === 'conflit' && (
                                     <p className="text-[10px] text-red-600 font-bold mb-1.5">
                                       ⚠ Conflit de salle

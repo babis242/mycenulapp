@@ -261,6 +261,27 @@ export async function getSeances(
 // Heures déjà effectuées AVANT la semaine donnée (semaines validées
 // antérieures) pour chaque offre — sert à afficher "XX/YYh (-ZZh)" dans le
 // PDF, comme dans le modèle Cenulape. Une séance = 4h.
+const JOUR_ORDRE: Record<string, number> = {
+  Lundi: 0,
+  Mardi: 1,
+  Mercredi: 2,
+  Jeudi: 3,
+  Vendredi: 4,
+  Samedi: 5,
+};
+const CRENEAU_ORDRE: Record<string, number> = { '08h-12h': 0, '14h-17h': 1 };
+
+// Durée programmée d'un créneau, utilisée tant que la séance n'a pas
+// encore été fermée (duree_calculee null) — 08h-12h fait 4h, 14h-17h
+// fait 3h (pas 4h comme les deux, erreur corrigée).
+function dureeCreneauParDefaut(creneau: string): number {
+  return creneau === '14h-17h' ? 3 : 4;
+}
+
+// Heures effectuées, PAR SÉANCE (pas un total plat pour toute l'UE) — la
+// première séance programmée dans la semaine affiche sa propre durée,
+// la suivante affiche le cumul (elle + les précédentes), etc. Les
+// semaines déjà passées et validées comptent en bloc avant ce cumul.
 export async function getHeuresEffectuees(
   offreIds: string[],
   semaineActuelle: string
@@ -269,17 +290,88 @@ export async function getHeuresEffectuees(
 
   const { data } = await supabase
     .from('seances_edt')
-    .select('offre_id, emploi_du_temps:emplois_du_temps(statut, semaine)')
+    .select(
+      'id, offre_id, jour, creneau, duree_calculee, emploi_du_temps:emplois_du_temps(statut, semaine)'
+    )
     .in('offre_id', offreIds);
 
-  const heuresParOffre = new Map<string, number>();
+  const parOffre = new Map<string, any[]>();
   for (const s of (data ?? []) as any[]) {
     const emploi = s.emploi_du_temps;
-    if (emploi?.statut === 'valide' && emploi.semaine < semaineActuelle) {
-      heuresParOffre.set(s.offre_id, (heuresParOffre.get(s.offre_id) ?? 0) + 4);
+    if (!emploi) continue;
+    const estPasseeEtValidee =
+      emploi.semaine < semaineActuelle && emploi.statut === 'valide';
+    const estSemaineActuelle = emploi.semaine === semaineActuelle;
+    if (!estPasseeEtValidee && !estSemaineActuelle) continue;
+    if (!parOffre.has(s.offre_id)) parOffre.set(s.offre_id, []);
+    parOffre.get(s.offre_id)!.push({ ...s, estSemaineActuelle });
+  }
+
+  const resultat = new Map<string, number>();
+  for (const liste of parOffre.values()) {
+    let cumulPasse = 0;
+    const seancesActuelles: any[] = [];
+    for (const s of liste) {
+      if (s.estSemaineActuelle) seancesActuelles.push(s);
+      else cumulPasse += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+    }
+    seancesActuelles.sort((a, b) => {
+      const diffJour = (JOUR_ORDRE[a.jour] ?? 0) - (JOUR_ORDRE[b.jour] ?? 0);
+      if (diffJour !== 0) return diffJour;
+      return (CRENEAU_ORDRE[a.creneau] ?? 0) - (CRENEAU_ORDRE[b.creneau] ?? 0);
+    });
+    let cumul = cumulPasse;
+    for (const s of seancesActuelles) {
+      cumul += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      resultat.set(s.id, cumul);
     }
   }
-  return heuresParOffre;
+  return resultat;
+}
+
+// Même principe pour une UE de tronc commun — une séance de tronc commun
+// n'a plus d'emploi du temps de spécialité (une seule ligne partagée),
+// donc pas de statut "valide" direct : on compte simplement les
+// créneaux déjà passés (semaine antérieure), au même forfait de 4h par
+// créneau que pour une UE simple.
+export async function getHeuresEffectueesTronc(
+  troncCommunIds: string[],
+  semaineActuelle: string
+): Promise<Map<string, number>> {
+  if (troncCommunIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('seances_edt')
+    .select('id, tronc_commun_id, jour, creneau, duree_calculee, semaine')
+    .in('tronc_commun_id', troncCommunIds)
+    .lte('semaine', semaineActuelle);
+
+  const parTronc = new Map<string, any[]>();
+  for (const s of (data ?? []) as any[]) {
+    if (!parTronc.has(s.tronc_commun_id)) parTronc.set(s.tronc_commun_id, []);
+    parTronc.get(s.tronc_commun_id)!.push(s);
+  }
+
+  const resultat = new Map<string, number>();
+  for (const liste of parTronc.values()) {
+    let cumulPasse = 0;
+    const seancesActuelles: any[] = [];
+    for (const s of liste) {
+      if (s.semaine === semaineActuelle) seancesActuelles.push(s);
+      else cumulPasse += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+    }
+    seancesActuelles.sort((a, b) => {
+      const diffJour = (JOUR_ORDRE[a.jour] ?? 0) - (JOUR_ORDRE[b.jour] ?? 0);
+      if (diffJour !== 0) return diffJour;
+      return (CRENEAU_ORDRE[a.creneau] ?? 0) - (CRENEAU_ORDRE[b.creneau] ?? 0);
+    });
+    let cumul = cumulPasse;
+    for (const s of seancesActuelles) {
+      cumul += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      resultat.set(s.id, cumul);
+    }
+  }
+  return resultat;
 }
 
 export async function listSallesLibres(
@@ -1127,10 +1219,13 @@ export async function getSeancesGroupees(
   let seancesTronc: any[] = [];
   const specialitesParTronc = new Map<string, Set<string>>();
   const ueVersTronc = new Map<string, { troncCommunId: string; nom: string }>();
+  const volumeHoraireParTronc = new Map<string, number>();
   if (ueIds.length > 0) {
     const { data: liens } = await supabase
       .from('troncs_communs_ues')
-      .select('tronc_commun_id, ue_id, tronc_commun:troncs_communs(nom)')
+      .select(
+        'tronc_commun_id, ue_id, tronc_commun:troncs_communs(nom), ue:ues(volume_horaire)'
+      )
       .in('ue_id', ueIds);
     for (const l of (liens ?? []) as any[]) {
       const specialiteId = specialiteParUe.get(l.ue_id);
@@ -1143,6 +1238,12 @@ export async function getSeancesGroupees(
         troncCommunId: l.tronc_commun_id,
         nom: l.tronc_commun?.nom ?? '',
       });
+      // Toutes les UEs membres partagent le même volume horaire (créées
+      // ensemble avec les mêmes caractéristiques) — on prend la première
+      // valeur trouvée.
+      if (!volumeHoraireParTronc.has(l.tronc_commun_id) && l.ue?.volume_horaire != null) {
+        volumeHoraireParTronc.set(l.tronc_commun_id, l.ue.volume_horaire);
+      }
     }
     const troncIds = Array.from(specialitesParTronc.keys());
     if (troncIds.length > 0) {
@@ -1184,7 +1285,7 @@ export async function getSeancesGroupees(
     offreId: null,
     troncCommunId: s.tronc_commun_id,
     ueNom: s.tronc_commun?.nom ?? '',
-    volumeHoraire: null,
+    volumeHoraire: volumeHoraireParTronc.get(s.tronc_commun_id) ?? null,
     semestre: null,
     enseignantNom: s.enseignant?.nom ?? '',
     salleCode: s.salle?.code_salle ?? null,
