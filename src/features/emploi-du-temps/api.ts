@@ -1117,6 +1117,38 @@ export interface SpecialiteGroupe {
 
 // Spécialités correspondant à un cycle donné, ayant au moins une UE
 // programmée pour le semestre donné, filtrées par périmètre.
+// Récupère des spécialités précises par leurs identifiants — sans
+// filtrer par cycle/semestre (contrairement à
+// listSpecialitesDuCycleSemestre) — utilisée quand une sélection
+// explicite a déjà été faite (ex : "Génération EDT" → choix des
+// spécialités à valider) : on ne veut pas risquer d'en perdre en route
+// à cause d'un léger écart de libellé de semestre entre spécialités
+// (ex: "S3" chez l'une, "S3&4" chez l'autre).
+export async function listSpecialitesParIds(
+  ids: string[]
+): Promise<SpecialiteGroupe[]> {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase
+    .from('specialites')
+    .select(
+      `
+      id, nom, type_cursus,
+      filiere:filieres(nom, ecole:ecoles(nom))
+    `
+    )
+    .in('id', ids);
+  if (error) throw error;
+  return ((data ?? []) as any[])
+    .map((s) => ({
+      id: s.id,
+      nom: s.nom,
+      ecoleNom: s.filiere?.ecole?.nom ?? '',
+      filiereNom: s.filiere?.nom ?? '',
+      typeCursus: s.type_cursus,
+    }))
+    .sort((a, b) => a.nom.localeCompare(b.nom));
+}
+
 export async function listSpecialitesDuCycleSemestre(
   cycle: string,
   sousCycle: string | null,

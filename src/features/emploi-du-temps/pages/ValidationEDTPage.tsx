@@ -16,6 +16,7 @@ import { supabase } from '@/lib/supabase';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
+  listSpecialitesParIds,
   getSeancesGroupees,
   getHeuresEffectuees,
   getHeuresEffectueesTronc,
@@ -148,11 +149,40 @@ export default function ValidationEDTPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enLigne]);
 
+  // Resynchronise avec l'URL à chaque navigation vers cette page (pas
+  // seulement au tout premier montage) — sinon, en arrivant une
+  // deuxième fois depuis "Génération EDT" avec une sélection différente
+  // mais le même cycle/semestre, la page garde silencieusement l'ancien
+  // état.
+  useEffect(() => {
+    setCycleKey(searchParams.get('cycle') || '');
+    setSemestre(searchParams.get('semestre') || '');
+    setSemaine(searchParams.get('semaine') || '');
+  }, [searchParams]);
+
   useEffect(() => {
     if (!cycleKey || !semestre || !enLigne) {
       setSpecialites([]);
       return;
     }
+    const specialitesParam = searchParams.get('specialites');
+
+    // Sélection explicite déjà faite (depuis "Génération EDT") — on va
+    // chercher directement ces spécialités par leur id, sans repasser
+    // par le filtre cycle/semestre qui pourrait en perdre certaines
+    // (libellés de semestre pas identiques d'une spécialité à l'autre,
+    // ex: "S3" vs "S3&4").
+    if (specialitesParam) {
+      const ids = specialitesParam.split(',').filter(Boolean);
+      listSpecialitesParIds(ids).then((liste) => {
+        setSpecialites(liste);
+        setSpecialiteAffichee((prev) =>
+          liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
+        );
+      });
+      return;
+    }
+
     const [cycle, sousCycle] = cycleKey.split('::');
     listSpecialitesDuCycleSemestre(
       cycle,
@@ -166,7 +196,7 @@ export default function ValidationEDTPage() {
       );
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycleKey, semestre, enLigne]);
+  }, [cycleKey, semestre, enLigne, searchParams.get('specialites')]);
 
   useEffect(() => {
     if (specialites.length === 0 || !semaine || !enLigne) {

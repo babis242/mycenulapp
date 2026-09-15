@@ -19,12 +19,15 @@ import { supabase } from '@/lib/supabase';
 import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
 import { extraireTextePdf } from '@/lib/pdfExtraction';
 import { extraireSyllabusPdf } from '@/features/referentiel/ues/api';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   getTroncCommun,
   updateTroncCommun,
   deleteTroncCommun,
   retirerUEDuTroncCommun,
   ajouterUEsAuTroncCommun,
+  ajouterSpecialitesAuTroncCommun,
   listUEsPourTroncCommun,
   listPointsClesTronc,
   enregistrerPointsClesTronc,
@@ -61,6 +64,15 @@ export default function DetailTroncCommunPage() {
   const [uesDisponibles, setUesDisponibles] = useState<UEOption[]>([]);
   const [rechercheAjout, setRechercheAjout] = useState('');
   const [ueIdsAAjouter, setUeIdsAAjouter] = useState<Set<string>>(new Set());
+
+  const [ajoutSpecialiteOuvert, setAjoutSpecialiteOuvert] = useState(false);
+  const [specialitesAAjouter, setSpecialitesAAjouter] = useState<
+    SpecialiteRecherche[]
+  >([]);
+  const [ajoutSpecialiteEnCours, setAjoutSpecialiteEnCours] = useState(false);
+  const [erreurAjoutSpecialite, setErreurAjoutSpecialite] = useState<
+    string | null
+  >(null);
 
   const [envoiSyllabus, setEnvoiSyllabus] = useState(false);
   const [analyseEnCours, setAnalyseEnCours] = useState(false);
@@ -162,6 +174,62 @@ export default function DetailTroncCommunPage() {
       recharger();
     } finally {
       setSaving(false);
+    }
+  }
+
+  const specialiteIdsDejaDansGroupe = new Set(
+    (troncCommun?.ues ?? [])
+      .map((u) => u.specialite_id)
+      .filter((id): id is string => !!id)
+  );
+
+  function ajouterSpecialiteAuxCandidates(s: SpecialiteRecherche) {
+    if (specialiteIdsDejaDansGroupe.has(s.id)) {
+      setErreurAjoutSpecialite('Cette spécialité fait déjà partie du groupe.');
+      return;
+    }
+    setErreurAjoutSpecialite(null);
+    setSpecialitesAAjouter((prev) =>
+      prev.some((p) => p.id === s.id) ? prev : [...prev, s]
+    );
+  }
+
+  function retirerSpecialiteDesCandidates(specialiteId: string) {
+    setSpecialitesAAjouter((prev) => prev.filter((s) => s.id !== specialiteId));
+  }
+
+  async function handleAjouterSpecialites() {
+    if (!id || !troncCommun || specialitesAAjouter.length === 0) return;
+    const modele = troncCommun.ues[0];
+    if (!modele || !modele.semestre) {
+      setErreurAjoutSpecialite(
+        'Impossible de déterminer le semestre du groupe — ajoute au moins une UE manuellement.'
+      );
+      return;
+    }
+    setAjoutSpecialiteEnCours(true);
+    setErreurAjoutSpecialite(null);
+    try {
+      await ajouterSpecialitesAuTroncCommun(
+        id,
+        specialitesAAjouter.map((s) => s.id),
+        {
+          nom: troncCommun.nom,
+          code: modele.code,
+          volumeHoraire: modele.volume_horaire,
+          coefficient: modele.coefficient,
+          semestre: modele.semestre,
+        }
+      );
+      setAjoutSpecialiteOuvert(false);
+      setSpecialitesAAjouter([]);
+      recharger();
+    } catch (err) {
+      setErreurAjoutSpecialite(
+        err instanceof Error ? err.message : "Erreur lors de l'ajout."
+      );
+    } finally {
+      setAjoutSpecialiteEnCours(false);
     }
   }
 
@@ -563,12 +631,24 @@ export default function DetailTroncCommunPage() {
         <p className="font-extrabold text-sm text-gray-900">
           UEs du groupe ({troncCommun.ues.length})
         </p>
-        <button
-          onClick={ouvrirAjout}
-          className="flex items-center gap-1.5 text-xs font-bold text-red-600"
-        >
-          <Plus size={14} /> Ajouter des UEs
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => {
+              setAjoutSpecialiteOuvert(true);
+              setSpecialitesAAjouter([]);
+              setErreurAjoutSpecialite(null);
+            }}
+            className="flex items-center gap-1.5 text-xs font-bold text-red-600"
+          >
+            <Plus size={14} /> Ajouter une spécialité
+          </button>
+          <button
+            onClick={ouvrirAjout}
+            className="flex items-center gap-1.5 text-xs font-bold text-gray-500"
+          >
+            <Plus size={14} /> Ajouter une UE existante
+          </button>
+        </div>
       </div>
 
       <div className="bg-white rounded-[20px] overflow-hidden mb-6">
@@ -596,6 +676,70 @@ export default function DetailTroncCommunPage() {
           </div>
         ))}
       </div>
+
+      {ajoutSpecialiteOuvert && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[20px] p-5 w-full max-w-sm max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-1 shrink-0">
+              <p className="font-extrabold text-base text-gray-900">
+                Ajouter une spécialité
+              </p>
+              <button
+                onClick={() => setAjoutSpecialiteOuvert(false)}
+                className="text-gray-300 hover:text-gray-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-3 shrink-0">
+              Crée automatiquement une UE (mêmes caractéristiques que le
+              groupe) pour chaque spécialité cochée, et l'ajoute au tronc
+              commun.
+            </p>
+
+            <div className="shrink-0 mb-3">
+              <RechercheSpecialite onSelect={ajouterSpecialiteAuxCandidates} />
+            </div>
+
+            {specialitesAAjouter.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mb-3 shrink-0">
+                {specialitesAAjouter.map((s) => (
+                  <span
+                    key={s.id}
+                    className="flex items-center gap-1.5 bg-purple-50 text-purple-700 text-xs font-bold px-3 py-1.5 rounded-full"
+                  >
+                    {s.nom}
+                    <button
+                      type="button"
+                      onClick={() => retirerSpecialiteDesCandidates(s.id)}
+                      className="hover:text-purple-900"
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {erreurAjoutSpecialite && (
+              <p className="text-xs font-semibold text-red-600 mb-3 shrink-0">
+                {erreurAjoutSpecialite}
+              </p>
+            )}
+
+            <button
+              onClick={handleAjouterSpecialites}
+              disabled={specialitesAAjouter.length === 0 || ajoutSpecialiteEnCours}
+              className="flex items-center justify-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50 shrink-0"
+            >
+              {ajoutSpecialiteEnCours && (
+                <Loader2 size={15} className="animate-spin" />
+              )}
+              Ajouter ({specialitesAAjouter.length})
+            </button>
+          </div>
+        </div>
+      )}
 
       {ajoutOuvert && (
         <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">

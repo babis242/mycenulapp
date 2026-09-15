@@ -2,6 +2,7 @@
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import type { TypeCursus } from '@/types';
+import { createUE } from '@/features/referentiel/ues/api';
 
 export interface UEDeTroncCommunResume {
   id: string;
@@ -327,7 +328,11 @@ export async function getGroupesSpecialitesTronc(
 export interface UEDuTroncCommun {
   id: string;
   nom: string;
+  code: string | null;
+  volume_horaire: number | null;
+  coefficient: number | null;
   semestre: string | null;
+  specialite_id: string | null;
   specialite_nom: string | null;
   filiere_nom: string | null;
   ecole_nom: string | null;
@@ -356,8 +361,8 @@ export async function getTroncCommun(
       enseignant:enseignants ( nom ),
       troncs_communs_ues (
         ue:ues (
-          id, nom,
-          offres ( semestre, specialite:specialites ( nom, filiere:filieres ( nom, ecole:ecoles ( nom ) ) ) )
+          id, nom, code, volume_horaire, coefficient,
+          offres ( semestre, specialite_id, specialite:specialites ( nom, filiere:filieres ( nom, ecole:ecoles ( nom ) ) ) )
         )
       )
     `
@@ -381,7 +386,11 @@ export async function getTroncCommun(
       return {
         id: tu.ue.id,
         nom: tu.ue.nom,
+        code: tu.ue.code ?? null,
+        volume_horaire: tu.ue.volume_horaire ?? null,
+        coefficient: tu.ue.coefficient ?? null,
         semestre: offre?.semestre ?? null,
+        specialite_id: offre?.specialite_id ?? null,
         specialite_nom: offre?.specialite?.nom ?? null,
         filiere_nom: offre?.specialite?.filiere?.nom ?? null,
         ecole_nom: offre?.specialite?.filiere?.ecole?.nom ?? null,
@@ -457,4 +466,35 @@ export async function ajouterUEsAuTroncCommun(
     .from('troncs_communs_ues')
     .insert(ueIds.map((ue_id) => ({ tronc_commun_id: troncCommunId, ue_id })));
   if (error) throw error;
+}
+
+// Étend un tronc commun à de nouvelles spécialités — plutôt que
+// d'ajouter une UE déjà existante, ceci CRÉE une UE (mêmes
+// caractéristiques que les UEs déjà membres du groupe : nom, code,
+// volume horaire, coefficient, semestre) pour chaque spécialité cochée,
+// puis les relie toutes au tronc commun d'un coup.
+export async function ajouterSpecialitesAuTroncCommun(
+  troncCommunId: string,
+  specialiteIds: string[],
+  caracteristiques: {
+    nom: string;
+    code: string | null;
+    volumeHoraire: number | null;
+    coefficient: number | null;
+    semestre: string;
+  }
+): Promise<void> {
+  const ueIds: string[] = [];
+  for (const specialiteId of specialiteIds) {
+    const ue = await createUE({
+      nom: caracteristiques.nom,
+      code: caracteristiques.code || undefined,
+      volume_horaire: caracteristiques.volumeHoraire ?? undefined,
+      coefficient: caracteristiques.coefficient ?? undefined,
+      specialite_id: specialiteId,
+      semestre: caracteristiques.semestre,
+    });
+    ueIds.push(ue.id);
+  }
+  await ajouterUEsAuTroncCommun(troncCommunId, ueIds);
 }

@@ -199,6 +199,11 @@ export default function GenererEDTPage() {
 
   const [changements, setChangements] = useState<ChangementCellule[]>([]);
   const [envoiEnCours, setEnvoiEnCours] = useState(false);
+  const [selectionValidationOuverte, setSelectionValidationOuverte] =
+    useState(false);
+  const [specialitesPourValidation, setSpecialitesPourValidation] = useState<
+    Set<string>
+  >(new Set());
 
   const [chargement, setChargement] = useState(false);
   const [erreurChargement, setErreurChargement] = useState<string | null>(
@@ -496,11 +501,7 @@ export default function GenererEDTPage() {
 
   async function handleAllerValidation() {
     if (changements.length === 0) {
-      navigate(
-        `/emploi-du-temps/validation?cycle=${encodeURIComponent(
-          cycleKey
-        )}&semestre=${semestre}&semaine=${semaine}`
-      );
+      ouvrirSelectionValidation();
       return;
     }
     setEnvoiEnCours(true);
@@ -535,11 +536,11 @@ export default function GenererEDTPage() {
         `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`
       );
       setChangements([]);
-      navigate(
-        `/emploi-du-temps/validation?cycle=${encodeURIComponent(
-          cycleKey
-        )}&semestre=${semestre}&semaine=${semaine}`
-      );
+      // Défaut de conception corrigé : ne pas envoyer automatiquement
+      // TOUTES les spécialités du cycle/semestre vers la validation —
+      // certaines peuvent ne pas être prêtes. L'admin choisit lesquelles
+      // passent en PDF/validation maintenant.
+      ouvrirSelectionValidation();
     } catch (err) {
       setErreurChargement(
         err instanceof Error
@@ -550,6 +551,22 @@ export default function GenererEDTPage() {
     } finally {
       setEnvoiEnCours(false);
     }
+  }
+
+  function ouvrirSelectionValidation() {
+    setSpecialitesPourValidation(new Set(specialites.map((s) => s.id)));
+    setSelectionValidationOuverte(true);
+  }
+
+  function confirmerSelectionValidation() {
+    if (specialitesPourValidation.size === 0) return;
+    navigate(
+      `/emploi-du-temps/validation?cycle=${encodeURIComponent(
+        cycleKey
+      )}&semestre=${semestre}&semaine=${semaine}&specialites=${Array.from(
+        specialitesPourValidation
+      ).join(',')}`
+    );
   }
 
   const specialiteCourante = specialites.find(
@@ -947,6 +964,66 @@ export default function GenererEDTPage() {
                 </button>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {selectionValidationOuverte && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[20px] p-5 w-full max-w-sm max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between mb-1 shrink-0">
+              <p className="font-extrabold text-base text-gray-900">
+                Spécialités à valider
+              </p>
+              <button
+                onClick={() => setSelectionValidationOuverte(false)}
+                className="text-gray-300 hover:text-gray-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <p className="text-xs text-gray-400 mb-3 shrink-0">
+              Choisis lesquelles passer en PDF/validation maintenant —
+              les autres restent en brouillon, à valider plus tard.
+            </p>
+
+            <div className="overflow-y-auto flex-1 min-h-0 -mx-1 px-1 mb-4">
+              {specialites.map((s) => (
+                <label
+                  key={s.id}
+                  className="flex items-center gap-3 py-2.5 border-b border-gray-50 last:border-0 cursor-pointer"
+                >
+                  <input
+                    type="checkbox"
+                    checked={specialitesPourValidation.has(s.id)}
+                    onChange={() =>
+                      setSpecialitesPourValidation((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(s.id)) next.delete(s.id);
+                        else next.add(s.id);
+                        return next;
+                      })
+                    }
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-bold text-gray-900 truncate">
+                      {s.nom}
+                    </p>
+                    <p className="text-xs text-gray-400 truncate">
+                      {s.ecoleNom}
+                    </p>
+                  </div>
+                </label>
+              ))}
+            </div>
+
+            <button
+              onClick={confirmerSelectionValidation}
+              disabled={specialitesPourValidation.size === 0}
+              className="flex items-center justify-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50 shrink-0"
+            >
+              Continuer vers la validation ({specialitesPourValidation.size})
+            </button>
           </div>
         </div>
       )}
