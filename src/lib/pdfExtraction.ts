@@ -35,3 +35,26 @@ export async function extraireTextePdf(fichier: File): Promise<string> {
   }
   return nettoye;
 }
+
+// Même chose, mais renvoie le texte de CHAQUE page séparément — pour
+// l'import d'un semestre complet (une UE par page), où chaque page est
+// analysée indépendamment plutôt que tout le document d'un coup (plus
+// fiable qu'une seule grosse extraction sur un document long).
+export async function extraireTextePdfParPage(
+  fichier: File
+): Promise<string[]> {
+  const buffer = await fichier.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+
+  const pages: string[] = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const contenu = await page.getTextContent();
+    const texte = contenu.items
+      .map((item: any) => ('str' in item ? item.str : ''))
+      .join(' ')
+      .trim();
+    pages.push(texte);
+  }
+  return pages;
+}

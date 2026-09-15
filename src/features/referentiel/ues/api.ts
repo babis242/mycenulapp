@@ -39,6 +39,63 @@ export async function extraireSyllabusPdf(
   return data;
 }
 
+// ── Extraction IA d'un semestre complet (plusieurs UEs d'un coup) ──
+export interface MatiereExtraite {
+  nom: string;
+  code: string | null;
+  volume_horaire: number | null;
+  points_cles: string[];
+}
+
+export async function extraireSemestrePdf(
+  texte: string
+): Promise<MatiereExtraite[]> {
+  const { data, error } = await supabase.functions.invoke(
+    'extraire-semestre-pdf',
+    { body: { texte } }
+  );
+  if (error) {
+    let detail = error.message;
+    try {
+      const contexte = (error as any).context;
+      if (contexte && typeof contexte.json === 'function') {
+        const corps = await contexte.json();
+        if (corps?.error) detail = corps.error;
+      }
+    } catch {
+      // Pas grave, on garde le message générique.
+    }
+    throw new Error(detail);
+  }
+  if (data?.error) throw new Error(data.error);
+  return data.matieres as MatiereExtraite[];
+}
+
+// Crée toutes les UEs d'un semestre extrait d'un coup — une offre par
+// UE, pour la spécialité et le semestre choisis. Coefficient à 1 par
+// défaut pour toutes (pas extrait par l'IA). Renvoie les UEs créées
+// (id + nom), dans le même ordre, pour pouvoir ensuite enregistrer les
+// points clés de chacune.
+export async function creerUEsDuSemestre(
+  matieres: { nom: string; code: string | null; volumeHoraire: number | null; coefficient: number }[],
+  specialiteId: string,
+  semestre: string
+): Promise<{ id: string; nom: string }[]> {
+  const resultats: { id: string; nom: string }[] = [];
+  for (const m of matieres) {
+    const ue = await createUE({
+      nom: m.nom,
+      code: m.code || undefined,
+      volume_horaire: m.volumeHoraire ?? undefined,
+      coefficient: m.coefficient,
+      specialite_id: specialiteId,
+      semestre,
+    });
+    resultats.push({ id: ue.id, nom: m.nom });
+  }
+  return resultats;
+}
+
 // Remplace intégralement les points clés d'une UE — l'envoi d'un syllabus
 // (création ou sur une UE existante) fournit toujours la liste complète,
 // jamais un ajout partiel.

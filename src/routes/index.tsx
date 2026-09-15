@@ -15,6 +15,7 @@ import DashboardPage from '@/features/dashboard/pages/DashboardPage';
 import ReferentielLayout from '@/features/referentiel/ReferentielLayout';
 import ListeUEsPage from '@/features/referentiel/ues/pages/ListeUEsPage';
 import AjouterUEPage from '@/features/referentiel/ues/pages/AjouterUEPage';
+import AjouterSemestrePage from '@/features/referentiel/ues/pages/AjouterSemestrePage';
 import DetailUEPage from '@/features/referentiel/ues/pages/DetailUEPage';
 import ImporterUEsPage from '@/features/referentiel/ues/pages/ImporterUEsPage';
 import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
@@ -75,6 +76,7 @@ export default function AppRoutes() {
 
               <Route path="ues" element={<ListeUEsPage />} />
               <Route path="ues/nouvelle" element={<AjouterUEPage />} />
+              <Route path="ues/semestre" element={<AjouterSemestrePage />} />
               <Route path="ues/importer" element={<ImporterUEsPage />} />
               <Route path="ues/:id" element={<DetailUEPage />} />
 

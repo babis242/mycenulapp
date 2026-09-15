@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Plus,
   UploadCloud,
+  Sparkles,
   Loader2,
   Search,
   WifiOff,
@@ -200,6 +201,12 @@ export default function ListeUEsPage() {
             className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
           >
             <UploadCloud size={16} /> Importer Excel
+          </button>
+          <button
+            onClick={() => navigate('/referentiel/ues/semestre')}
+            className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
+          >
+            <Sparkles size={16} /> Semestre complet (IA)
           </button>
           <button
             onClick={() => navigate('/referentiel/ues/nouvelle')}
