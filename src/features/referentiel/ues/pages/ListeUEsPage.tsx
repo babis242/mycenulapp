@@ -1,5 +1,5 @@
 // src/features/referentiel/ues/pages/ListeUEsPage.tsx
-import { useState } from 'react';
+import { useState, useEffect, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Plus,
@@ -17,11 +17,26 @@ import {
   ueEstUtilisee,
   type UEAvecOffre,
 } from '../api';
+import {
+  listSpecialitesRecherche,
+  type SpecialiteRecherche,
+} from '@/lib/rechercheSpecialite';
+import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 
 // Écran 1.1 — Liste des UEs (ecrans_ui.md)
 export default function ListeUEsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+  const [specialiteFiltre, setSpecialiteFiltre] = useState('');
+  const [cycleFiltre, setCycleFiltre] = useState('');
+  const [semestreFiltre, setSemestreFiltre] = useState('');
+  const [toutesSpecialites, setToutesSpecialites] = useState<
+    SpecialiteRecherche[]
+  >([]);
+
+  useEffect(() => {
+    listSpecialitesRecherche().then(setToutesSpecialites).catch(() => {});
+  }, []);
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [suppressionEnCours, setSuppressionEnCours] = useState<string | null>(
     null
@@ -43,7 +58,45 @@ export default function ListeUEsPage() {
 
   const filtered = ues
     .filter((ue) => !idsSupprimes.has(ue.id))
-    .filter((ue) => ue.nom.toLowerCase().includes(search.toLowerCase()));
+    .filter((ue) => ue.nom.toLowerCase().includes(search.toLowerCase()))
+    .filter(
+      (ue) => !specialiteFiltre || ue.offre?.specialite.id === specialiteFiltre
+    )
+    .filter((ue) => !cycleFiltre || ue.offre?.specialite.cycle === cycleFiltre)
+    .filter((ue) => !semestreFiltre || ue.offre?.semestre === semestreFiltre);
+
+  const specialiteChoisie = toutesSpecialites.find(
+    (s) => s.id === specialiteFiltre
+  );
+
+  // Toutes les spécialités connues (même sans UE) — pour les listes
+  // déroulantes, qui doivent proposer des choix même "vides" pour
+  // l'instant.
+  const specialitesDisponibles = [...toutesSpecialites].sort((a, b) =>
+    a.nom.localeCompare(b.nom)
+  );
+
+  const cyclesDisponibles = Array.from(
+    new Set(toutesSpecialites.map((s) => s.cycle))
+  ).sort();
+
+  // Si une spécialité est choisie : tous les semestres valables pour SON
+  // type de cursus (même ceux sans UE pour l'instant). Sinon, l'union de
+  // tous les semestres possibles, toutes spécialités confondues.
+  const semestresDisponibles = specialiteChoisie
+    ? [...SEMESTRES_PAR_TYPE_CURSUS[specialiteChoisie.typeCursus]]
+    : Array.from(
+        new Set(
+          Object.values(SEMESTRES_PAR_TYPE_CURSUS).flatMap((liste) => liste)
+        )
+      );
+
+  function handleSelectionSpecialiteFiltre(id: string) {
+    setSpecialiteFiltre(id);
+    setSemestreFiltre('');
+    const spe = toutesSpecialites.find((s) => s.id === id);
+    setCycleFiltre(spe ? spe.cycle : '');
+  }
 
   const touSelectionnes =
     filtered.length > 0 && filtered.every((ue) => selection.has(ue.id));
@@ -168,6 +221,46 @@ export default function ListeUEsPage() {
           />
         </div>
 
+        <select
+          value={specialiteFiltre}
+          onChange={(e) => handleSelectionSpecialiteFiltre(e.target.value)}
+          className="bg-white rounded-full px-4 py-2.5 text-sm font-semibold outline-none border-0"
+        >
+          <option value="">Toutes les spécialités</option>
+          {specialitesDisponibles.map((s) => (
+            <option key={s.id} value={s.id}>
+              {s.nom}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={cycleFiltre}
+          onChange={(e) => setCycleFiltre(e.target.value)}
+          disabled={!!specialiteFiltre}
+          className="bg-white rounded-full px-4 py-2.5 text-sm font-semibold outline-none border-0 disabled:text-gray-400"
+        >
+          <option value="">Tous les cycles</option>
+          {cyclesDisponibles.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={semestreFiltre}
+          onChange={(e) => setSemestreFiltre(e.target.value)}
+          className="bg-white rounded-full px-4 py-2.5 text-sm font-semibold outline-none border-0"
+        >
+          <option value="">Tous les semestres</option>
+          {semestresDisponibles.map((s) => (
+            <option key={s} value={s}>
+              {s}
+            </option>
+          ))}
+        </select>
+
         {selection.size > 0 && (
           <button
             onClick={handleSupprimerSelection}
@@ -224,75 +317,127 @@ export default function ListeUEsPage() {
                 <th className="px-5 py-3">Code</th>
                 <th className="px-5 py-3">Volume horaire</th>
                 <th className="px-5 py-3">Spécialité</th>
-                <th className="px-5 py-3">Semestre</th>
                 <th className="px-5 py-3">Syllabus</th>
                 <th className="px-5 py-3"></th>
               </tr>
             </thead>
-            <tbody>
-              {filtered.map((ue) => (
-                <tr
-                  key={ue.id}
-                  onClick={() => navigate(`/referentiel/ues/${ue.id}`)}
-                  className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 cursor-pointer"
-                >
-                  <td
-                    className="px-5 py-3.5"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selection.has(ue.id)}
-                      onChange={() => toggleUn(ue.id)}
-                      className="shrink-0"
-                    />
-                  </td>
-                  <td className="px-5 py-3.5 font-bold text-gray-900">
-                    {ue.nom}
-                  </td>
-                  <td className="px-5 py-3.5 text-gray-500">
-                    {ue.code ?? '—'}
-                  </td>
-                  <td className="px-5 py-3.5 text-gray-500">
-                    {ue.volume_horaire ?? '—'}
-                  </td>
-                  <td className="px-5 py-3.5 text-gray-500">
-                    {ue.offre?.specialite.nom ?? '—'}
-                  </td>
-                  <td className="px-5 py-3.5 text-gray-500">
-                    {ue.offre?.semestre ?? '—'}
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <span
-                      className={`text-xs font-bold px-2.5 py-1 rounded-full ${
-                        ue.syllabus_key
-                          ? 'bg-green-50 text-green-600'
-                          : 'bg-amber-50 text-amber-600'
-                      }`}
-                    >
-                      {ue.syllabus_key ? 'Présent' : 'Manquant'}
-                    </span>
-                  </td>
-                  <td
-                    className="px-5 py-3.5 text-right"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <button
-                      onClick={() => handleSupprimerUne(ue)}
-                      disabled={suppressionEnCours === ue.id}
-                      className="flex items-center gap-1.5 bg-red-50 rounded-full px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 ml-auto w-fit"
-                    >
-                      {suppressionEnCours === ue.id ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Trash2 size={13} />
-                      )}
-                      Supprimer
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
+            {(() => {
+              const semestres = Array.from(
+                new Set(
+                  filtered.map((ue) => ue.offre?.semestre ?? 'Sans semestre')
+                )
+              ).sort();
+
+              return semestres.map((semestre) => {
+                const uesDuSemestre = filtered.filter(
+                  (ue) => (ue.offre?.semestre ?? 'Sans semestre') === semestre
+                );
+                const specialites = Array.from(
+                  new Set(
+                    uesDuSemestre.map(
+                      (ue) => ue.offre?.specialite.nom ?? 'Sans spécialité'
+                    )
+                  )
+                ).sort();
+
+                return (
+                  <tbody key={semestre}>
+                    <tr>
+                      <td
+                        colSpan={7}
+                        className="px-5 pt-5 pb-2 text-xs font-extrabold text-red-600 uppercase tracking-wide"
+                      >
+                        {semestre}
+                      </td>
+                    </tr>
+                    {specialites.map((specialite) => (
+                      <Fragment key={`${semestre}-${specialite}`}>
+                        <tr>
+                          <td
+                            colSpan={7}
+                            className="px-5 py-2 text-xs font-bold text-gray-500 bg-gray-50/60"
+                          >
+                            {specialite}
+                          </td>
+                        </tr>
+                        {uesDuSemestre
+                          .filter(
+                            (ue) =>
+                              (ue.offre?.specialite.nom ?? 'Sans spécialité') ===
+                              specialite
+                          )
+                          .map((ue) => (
+                            <tr
+                              key={ue.id}
+                              onClick={() =>
+                                navigate(`/referentiel/ues/${ue.id}`)
+                              }
+                              className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 cursor-pointer"
+                            >
+                              <td
+                                className="px-5 py-3.5"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={selection.has(ue.id)}
+                                  onChange={() => toggleUn(ue.id)}
+                                  className="shrink-0"
+                                />
+                              </td>
+                              <td className="px-5 py-3.5 font-bold text-gray-900">
+                                {ue.nom}
+                                {ue.troncCommunNom && (
+                                  <span className="ml-1.5 text-[10px] font-bold text-purple-600 bg-purple-50 px-2 py-0.5 rounded-full">
+                                    Tronc commun
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-5 py-3.5 text-gray-500">
+                                {ue.code ?? '—'}
+                              </td>
+                              <td className="px-5 py-3.5 text-gray-500">
+                                {ue.volume_horaire ?? '—'}
+                              </td>
+                              <td className="px-5 py-3.5 text-gray-500">
+                                {ue.offre?.specialite.nom ?? '—'}
+                              </td>
+                              <td className="px-5 py-3.5">
+                                <span
+                                  className={`text-xs font-bold px-2.5 py-1 rounded-full ${
+                                    ue.aSyllabus
+                                      ? 'bg-green-50 text-green-600'
+                                      : 'bg-amber-50 text-amber-600'
+                                  }`}
+                                >
+                                  {ue.aSyllabus ? 'Présent' : 'Manquant'}
+                                </span>
+                              </td>
+                              <td
+                                className="px-5 py-3.5 text-right"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                <button
+                                  onClick={() => handleSupprimerUne(ue)}
+                                  disabled={suppressionEnCours === ue.id}
+                                  className="flex items-center gap-1.5 bg-red-50 rounded-full px-3 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 ml-auto w-fit"
+                                >
+                                  {suppressionEnCours === ue.id ? (
+                                    <Loader2 size={13} className="animate-spin" />
+                                  ) : (
+                                    <Trash2 size={13} />
+                                  )}
+                                  Supprimer
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                      </Fragment>
+                    ))}
+                  </tbody>
+                );
+              });
+            })()}
           </table>
         )}
       </div>

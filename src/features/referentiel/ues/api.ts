@@ -77,6 +77,12 @@ export interface UEAvecOffre extends UE {
   syllabus_key: string | null;
   syllabus_nom: string | null;
   syllabus_uploaded_at: string | null;
+  // Si cette UE appartient à un tronc commun, son syllabus vit sur le
+  // tronc commun lui-même, pas sur l'UE — ce champ reflète donc l'état
+  // réel du syllabus, peu importe où il est stocké.
+  troncCommunId: string | null;
+  troncCommunNom: string | null;
+  aSyllabus: boolean;
   offre:
     | (Offre & {
         specialite: Pick<Specialite, 'id' | 'nom' | 'cycle'> & {
@@ -92,13 +98,16 @@ export interface UEAvecOffre extends UE {
 // quatre niveaux de jointure à assembler à la main, contrairement à
 // Supabase qui le fait en une requête.
 export async function lireUEsDepuisCache(): Promise<UEAvecOffre[]> {
-  const [ues, offres, specialites, filieres, ecoles] = await Promise.all([
-    db.ues.toArray(),
-    db.offres.toArray(),
-    db.specialites.toArray(),
-    db.filieres.toArray(),
-    db.ecoles.toArray(),
-  ]);
+  const [ues, offres, specialites, filieres, ecoles, troncsCommunsUes, troncsCommuns] =
+    await Promise.all([
+      db.ues.toArray(),
+      db.offres.toArray(),
+      db.specialites.toArray(),
+      db.filieres.toArray(),
+      db.ecoles.toArray(),
+      db.troncsCommunsUes.toArray(),
+      db.troncsCommuns.toArray(),
+    ]);
 
   const specialiteParId = new Map(specialites.map((s: any) => [s.id, s]));
   const filiereParId = new Map(filieres.map((f: any) => [f.id, f]));
@@ -107,16 +116,28 @@ export async function lireUEsDepuisCache(): Promise<UEAvecOffre[]> {
   for (const o of offres as any[]) {
     if (!offreParUeId.has(o.ue_id)) offreParUeId.set(o.ue_id, o);
   }
+  const troncCommunParId = new Map(troncsCommuns.map((t: any) => [t.id, t]));
+  const troncParUeId = new Map<string, any>();
+  for (const l of troncsCommunsUes as any[]) {
+    troncParUeId.set(l.ue_id, troncCommunParId.get(l.tronc_commun_id));
+  }
 
   return (ues as any[])
     .map((ue) => {
       const offre = offreParUeId.get(ue.id);
-      if (!offre) return { ...ue, offre: null } as UEAvecOffre;
+      const tronc = troncParUeId.get(ue.id);
+      const champsSyllabus = {
+        troncCommunId: tronc?.id ?? null,
+        troncCommunNom: tronc?.nom ?? null,
+        aSyllabus: tronc ? !!tronc.syllabus_key : !!ue.syllabus_key,
+      };
+      if (!offre) return { ...ue, ...champsSyllabus, offre: null } as UEAvecOffre;
       const specialite = specialiteParId.get(offre.specialite_id);
       const filiere = specialite ? filiereParId.get(specialite.filiere_id) : null;
       const ecole = filiere ? ecoleParId.get(filiere.ecole_id) : null;
       return {
         ...ue,
+        ...champsSyllabus,
         offre: {
           ...offre,
           specialite: specialite
@@ -159,10 +180,28 @@ export async function listUEsAvecOffre(): Promise<UEAvecOffre[]> {
     .order('nom', { ascending: true });
 
   if (error) throw error;
-  return (data ?? []).map((ue: any) => ({
-    ...ue,
-    offre: ue.offres?.[0] ?? null,
-  })) as UEAvecOffre[];
+
+  // Requête séparée (plutôt qu'une jointure imbriquée via la table de
+  // liaison) — plus robuste, ne dépend pas de la façon dont PostgREST
+  // applique les règles de sécurité sur un embed à deux niveaux.
+  const { data: liens, error: liensError } = await supabase
+    .from('troncs_communs_ues')
+    .select('ue_id, tronc_commun:troncs_communs(id, nom, syllabus_key)');
+  if (liensError) throw liensError;
+  const troncParUeId = new Map(
+    (liens ?? []).map((l: any) => [l.ue_id, l.tronc_commun])
+  );
+
+  return (data ?? []).map((ue: any) => {
+    const tronc = troncParUeId.get(ue.id);
+    return {
+      ...ue,
+      offre: ue.offres?.[0] ?? null,
+      troncCommunId: tronc?.id ?? null,
+      troncCommunNom: tronc?.nom ?? null,
+      aSyllabus: tronc ? !!tronc.syllabus_key : !!ue.syllabus_key,
+    };
+  }) as UEAvecOffre[];
 }
 
 export async function listEcoles() {
