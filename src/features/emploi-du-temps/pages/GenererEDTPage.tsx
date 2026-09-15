@@ -558,14 +558,20 @@ export default function GenererEDTPage() {
     setSelectionValidationOuverte(true);
   }
 
+  // Correction : la sélection faite dans la modale est désormais
+  // transmise via l'état de navigation (location.state), pas encodée
+  // dans l'URL — plus robuste (aucun souci de caractères spéciaux comme
+  // le "&" de "S3&4", aucune limite de longueur d'URL, aucun risque de
+  // troncature). Le paramètre "specialites" dans l'URL reste géré côté
+  // ValidationEDTPage comme simple repli pour un accès direct/rechargement.
   function confirmerSelectionValidation() {
     if (specialitesPourValidation.size === 0) return;
+    const specialiteIds = Array.from(specialitesPourValidation);
     navigate(
       `/emploi-du-temps/validation?cycle=${encodeURIComponent(
         cycleKey
-      )}&semestre=${semestre}&semaine=${semaine}&specialites=${Array.from(
-        specialitesPourValidation
-      ).join(',')}`
+      )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`,
+      { state: { specialiteIds } }
     );
   }
 

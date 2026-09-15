@@ -1,6 +1,6 @@
 // src/features/emploi-du-temps/pages/ValidationEDTPage.tsx
 import { useEffect, useState, Fragment } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams, useLocation } from 'react-router-dom';
 import {
   Loader2,
   Upload,
@@ -117,6 +117,7 @@ interface EmploiGroupe {
 // différentes). Le PDF téléchargé regroupe une page par spécialité.
 export default function ValidationEDTPage() {
   const [searchParams] = useSearchParams();
+  const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const enLigne = useOnlineStatus();
   const perimetreIds =
@@ -165,13 +166,25 @@ export default function ValidationEDTPage() {
       setSpecialites([]);
       return;
     }
-    const specialitesParam = searchParams.get('specialites');
+    const idsDepuisEtat = (location.state as any)?.specialiteIds as
+      | string[]
+      | undefined;
 
-    // Sélection explicite déjà faite (depuis "Génération EDT") — on va
-    // chercher directement ces spécialités par leur id, sans repasser
-    // par le filtre cycle/semestre qui pourrait en perdre certaines
-    // (libellés de semestre pas identiques d'une spécialité à l'autre,
-    // ex: "S3" vs "S3&4").
+    // Sélection explicite déjà faite (depuis "Génération EDT") — reçue
+    // via l'état de navigation (fiable, aucun souci d'encodage possible,
+    // contrairement à un identifiant transmis dans l'URL). Le paramètre
+    // d'URL reste un repli pour un accès direct/rechargement de page.
+    if (idsDepuisEtat && idsDepuisEtat.length > 0) {
+      listSpecialitesParIds(idsDepuisEtat).then((liste) => {
+        setSpecialites(liste);
+        setSpecialiteAffichee((prev) =>
+          liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
+        );
+      });
+      return;
+    }
+
+    const specialitesParam = searchParams.get('specialites');
     if (specialitesParam) {
       const ids = specialitesParam.split(',').filter(Boolean);
       listSpecialitesParIds(ids).then((liste) => {
@@ -195,8 +208,15 @@ export default function ValidationEDTPage() {
         liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
       );
     });
+    // Important : "location" doit être dans les dépendances (et pas
+    // seulement "searchParams.get('specialites')") — sinon une nouvelle
+    // navigation vers CETTE MÊME URL mais avec un "state.specialiteIds"
+    // différent (cas de "Génération EDT" → "Valider ces spécialités")
+    // est silencieusement ignorée : l'effet ne se redéclenche pas et la
+    // page garde l'ancienne sélection (ou retombe sur la liste complète
+    // du cycle/semestre).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cycleKey, semestre, enLigne, searchParams.get('specialites')]);
+  }, [cycleKey, semestre, enLigne, location, searchParams.get('specialites')]);
 
   useEffect(() => {
     if (specialites.length === 0 || !semaine || !enLigne) {
@@ -463,7 +483,7 @@ export default function ValidationEDTPage() {
                   <Link
                     to={`/emploi-du-temps?cycle=${encodeURIComponent(
                       cycleKey
-                    )}&semestre=${semestre}&semaine=${semaine}`}
+                    )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`}
                     className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
                   >
                     <Pencil size={15} /> Modifier
