@@ -25,7 +25,7 @@ export async function listRapports(): Promise<RapportLigne[]> {
       `
       id, niveau, cahier_texte_keys,
       seance:seances_edt(
-        jour, creneau, tronc_commun_id,
+        jour, creneau, tronc_commun_id, semaine,
         offre:offres(ue:ues(nom), specialite:specialites(nom)),
         tronc_commun:troncs_communs(nom),
         emploi_du_temps:emplois_du_temps(semaine, specialite:specialites(nom))
@@ -85,7 +85,7 @@ export async function listRapports(): Promise<RapportLigne[]> {
       specialiteNoms,
       enseignantNom: r.enseignant?.nom ?? '',
       niveau: r.niveau,
-      semaine: r.seance?.emploi_du_temps?.semaine ?? '',
+      semaine: r.seance?.emploi_du_temps?.semaine ?? r.seance?.semaine ?? '',
       jour: r.seance?.jour ?? '',
       creneau: r.seance?.creneau ?? '',
       cahierTexteKeys: r.cahier_texte_keys ?? [],

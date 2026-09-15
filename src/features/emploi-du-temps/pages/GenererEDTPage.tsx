@@ -1,73 +1,39 @@
 // src/features/emploi-du-temps/pages/GenererEDTPage.tsx
 import { useEffect, useState } from 'react';
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import {
   Loader2,
   Plus,
   Pencil,
   Trash2,
   X,
-  Sparkles,
-  CheckCircle2,
   WifiOff,
 } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
-import { db } from '@/lib/db';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
-import { filtrerParPerimetre, estDansLePerimetre } from '@/lib/perimetre';
-import { JOURS, CRENEAUX } from '@/constants/enums';
-import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
-import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
+import { JOURS, CRENEAUX, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import {
-  creerOuChargerEDT,
-  getSeances,
+  listCyclesDisponibles,
+  listSpecialitesDuCycleSemestre,
+  getSeancesGroupees,
+  trouverOuCreerEmploi,
+  assignerSeance,
+  supprimerSeance,
   listOffresDeSpecialite,
   getEnseignantsDisponibles,
   getSalleParDefautSpecialite,
   listToutesLesSalles,
-  assignerSeance,
-  supprimerSeance,
-  lireEmploiExistantDepuisCache,
-  lireSeancesDepuisCache,
-  lireOffresDeSpecialiteDepuisCache,
-  lireEnseignantsDisponiblesDepuisCache,
-  lireSalleParDefautDepuisCache,
-  lireToutesLesSallesDepuisCache,
-  type SeanceDetail,
+  type CycleOption,
+  type SpecialiteGroupe,
+  type SeanceGroupee,
   type OffreDeSpecialite,
   type EnseignantDisponible,
 } from '../api';
-import type { TypeCursus } from '@/types';
 
-interface Ecole {
-  id: string;
-  nom: string;
-}
-interface Filiere {
-  id: string;
-  nom: string;
-  ecole_id: string;
-}
-interface Specialite {
-  id: string;
-  nom: string;
-  filiere_id: string;
-  cycle: string;
-  sous_cycle: string | null;
-  type_cursus: TypeCursus;
-}
 interface Salle {
   id: string;
   code_salle: string;
   capacite: number;
-}
-
-function cycleKeyDe(cycle: string, sousCycle: string | null) {
-  return `${cycle}::${sousCycle ?? ''}`;
-}
-function labelCycle(cycle: string, sousCycle: string | null) {
-  return sousCycle ? `${cycle} (${sousCycle})` : cycle;
 }
 
 function lundiDeLaSemaine(): string {
@@ -75,30 +41,100 @@ function lundiDeLaSemaine(): string {
   const jour = d.getDay();
   const decalage = jour === 0 ? -6 : 1 - jour;
   d.setDate(d.getDate() + decalage);
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
-// Applique un changement (pas encore en base) à une liste de séances —
-// utilisée à la fois pour l'affichage optimiste immédiat et pour rejouer
-// un brouillon retrouvé dans le navigateur au rechargement de la page.
+interface ModalCellule {
+  specialiteId: string;
+  jour: string;
+  creneau: string;
+  seanceIdExistante: string | null;
+  offreId: string;
+  salleId: string;
+}
+
+// "set" pour remplir/modifier une case, "delete" pour en retirer une
+// déjà confirmée. specialiteId sert à retrouver/créer le bon emploi du
+// temps de cette spécialité à l'enregistrement (une UE de tronc commun
+// se propage quand même à tout son groupe, peu importe cette valeur).
+type ChangementCellule =
+  | {
+      action: 'set';
+      specialiteId: string;
+      jour: string;
+      creneau: string;
+      offreId: string;
+      enseignantId: string;
+      salleId: string | null;
+      seanceIdExistante: string | null;
+      estTronc: boolean;
+      troncCommunId?: string;
+      troncNom?: string;
+    }
+  | {
+      action: 'delete';
+      seanceId: string;
+      jour: string;
+      creneau: string;
+      specialiteId: string;
+    };
+
+// Applique un changement local à la liste groupée — sert à la fois pour
+// l'affichage optimiste immédiat et pour rejouer un brouillon retrouvé
+// dans le navigateur au rechargement de la page.
 function appliquerChangement(
-  liste: SeanceDetail[],
+  liste: SeanceGroupee[],
   c: ChangementCellule,
   offres: OffreDeSpecialite[],
-  salles: Salle[]
-): SeanceDetail[] {
+  salles: Salle[],
+  specialitesParTronc: Map<string, Set<string>>
+): SeanceGroupee[] {
   if (c.action === 'delete') {
     return liste.filter((s) => s.id !== c.seanceId);
   }
   const offre = offres.find((o) => o.offreId === c.offreId);
   const salle = c.salleId ? salles.find((s) => s.id === c.salleId) : null;
-  const nouvelle: SeanceDetail = {
-    id: c.seanceIdExistante ?? `local-${c.jour}-${c.creneau}-${c.offreId}`,
+
+  if (c.estTronc && c.troncCommunId) {
+    // Une seule entité partagée : on retire l'ancienne occurrence de la
+    // même case pour ce tronc commun (si déjà présente), puis on ajoute
+    // la nouvelle.
+    const sansAncienne = liste.filter(
+      (s) =>
+        !(
+          s.troncCommunId === c.troncCommunId &&
+          s.jour === c.jour &&
+          s.creneau === c.creneau
+        )
+    );
+    const nouvelle: SeanceGroupee = {
+      id: c.seanceIdExistante ?? `local-tronc-${c.troncCommunId}-${c.jour}-${c.creneau}`,
+      offreId: null,
+      troncCommunId: c.troncCommunId,
+      specialiteId: null,
+      ueNom: c.troncNom ?? offre?.ueNom ?? '',
+      volumeHoraire: null,
+      semestre: null,
+      enseignantNom: offre?.enseignantAttribueNom ?? '',
+      salleCode: salle?.code_salle ?? null,
+      salleId: c.salleId,
+      jour: c.jour,
+      creneau: c.creneau,
+      statut: 'ok',
+    };
+    return [...sansAncienne, nouvelle];
+  }
+
+  const nouvelle: SeanceGroupee = {
+    id:
+      c.seanceIdExistante ??
+      `local-${c.specialiteId}-${c.jour}-${c.creneau}-${c.offreId}`,
     offreId: c.offreId,
     troncCommunId: null,
+    specialiteId: c.specialiteId,
     ueNom: offre?.ueNom ?? '',
     volumeHoraire: offre?.volumeHoraire ?? null,
     semestre: null,
@@ -109,316 +145,154 @@ function appliquerChangement(
     creneau: c.creneau,
     statut: 'ok',
   };
-  // Ne retire l'ancienne occupation de la case que si on modifiait
-  // vraiment une entrée précise (sinon, une autre UE pourrait déjà être
-  // là en conflit volontaire — on ne l'efface pas).
   const sansAncienne = c.seanceIdExistante
     ? liste.filter((s) => s.id !== c.seanceIdExistante)
     : liste;
+  void specialitesParTronc;
   return [...sansAncienne, nouvelle];
 }
 
-interface ModalCellule {
-  jour: string;
-  creneau: string;
-  seanceIdExistante: string | null;
-  offreId: string;
-  salleId: string;
-}
-
-// Une modification pas encore envoyée en base — "set" pour remplir/
-// modifier une case, "delete" pour en retirer une déjà confirmée.
-type ChangementCellule =
-  | {
-      action: 'set';
-      jour: string;
-      creneau: string;
-      offreId: string;
-      enseignantId: string;
-      salleId: string | null;
-      seanceIdExistante: string | null;
-    }
-  | { action: 'delete'; seanceId: string; jour: string; creneau: string };
-
-// Écran Scénario 5 — Construction manuelle de l'emploi du temps
-// (journal.md). Nouvelle procédure : pas d'algorithme automatique, l'EDT
-// démarre vierge. Pour chaque créneau, on affiche les enseignants
-// disponibles (facultatif — on peut aussi en choisir un autre, ou une UE
-// différente), une salle est suggérée mais modifiable.
+// Écran Scénario 5 (refonte) — Construction manuelle groupée de l'EDT :
+// on choisit un cycle + un semestre + une semaine, et on confectionne
+// d'un coup les emplois de TOUTES les spécialités concernées (même dans
+// des écoles/filières différentes — un tronc commun peut les regrouper).
+// 100% local pendant la confection (brouillon dans le navigateur),
+// envoyé en base d'un coup au clic sur "Enregistrer".
 export default function GenererEDTPage() {
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
   const user = useAuthStore((s) => s.user);
   const enLigne = useOnlineStatus();
 
-  const [ecoles, setEcoles] = useState<Ecole[]>([]);
-  const [ecoleId, setEcoleId] = useState('');
-  const [filieresByEcole, setFilieresByEcole] = useState<
-    Record<string, Filiere[]>
-  >({});
-  const [filiereId, setFiliereId] = useState('');
-  const [specialitesByFiliere, setSpecialitesByFiliere] = useState<
-    Record<string, Specialite[]>
-  >({});
+  const perimetreIds =
+    user?.role === 'responsable' ? user.perimetre_specialite_ids ?? [] : null;
+
+  const [cycles, setCycles] = useState<CycleOption[]>([]);
   const [cycleKey, setCycleKey] = useState('');
-  const [specialiteId, setSpecialiteId] = useState('');
-  const [semaine, setSemaine] = useState(
-    searchParams.get('semaine') || lundiDeLaSemaine()
-  );
+  const [semestre, setSemestre] = useState('');
+  const [semaine, setSemaine] = useState(lundiDeLaSemaine());
 
-  const [chargement, setChargement] = useState(false);
-  const [emploi, setEmploi] = useState<{ id: string; statut: string } | null>(
-    null
-  );
-  const [seances, setSeances] = useState<SeanceDetail[]>([]);
-  const [offresSpecialite, setOffresSpecialite] = useState<OffreDeSpecialite[]>(
-    []
-  );
+  const [specialites, setSpecialites] = useState<SpecialiteGroupe[]>([]);
+  const [specialiteAffichee, setSpecialiteAffichee] = useState('');
+
+  const [seances, setSeances] = useState<SeanceGroupee[]>([]);
+  const [specialitesParTronc, setSpecialitesParTronc] = useState<
+    Map<string, Set<string>>
+  >(new Map());
+  const [ueVersTronc, setUeVersTronc] = useState<
+    Map<string, { troncCommunId: string; nom: string }>
+  >(new Map());
+  const [emploiParSpecialite, setEmploiParSpecialite] = useState<
+    Map<string, string>
+  >(new Map());
+
   const [toutesSalles, setToutesSalles] = useState<Salle[]>([]);
-  const [salleParDefaut, setSalleParDefaut] = useState<Salle | null>(null);
+  const [offresParSpecialite, setOffresParSpecialite] = useState<
+    Map<string, OffreDeSpecialite[]>
+  >(new Map());
+  const [salleParDefautParSpecialite, setSalleParDefautParSpecialite] =
+    useState<Map<string, Salle | null>>(new Map());
 
-  // Construction 100% locale : chaque case remplie ne part pas en base
-  // tout de suite (trop lent case par case) — juste gardée ici, et dans
-  // le navigateur (localStorage) pour survivre à une fermeture. Tout part
-  // en base d'un coup au clic sur "Aller à la validation".
   const [changements, setChangements] = useState<ChangementCellule[]>([]);
   const [envoiEnCours, setEnvoiEnCours] = useState(false);
 
-  const [modal, setModal] = useState<ModalCellule | null>(null);
-  const [enregistre, setEnregistre] = useState(false);
-  const [enseignantsDispoModal, setEnseignantsDispoModal] = useState<
-    EnseignantDisponible[]
-  >([]);
+  const [chargement, setChargement] = useState(false);
   const [erreurChargement, setErreurChargement] = useState<string | null>(
     null
   );
 
+  const [modal, setModal] = useState<ModalCellule | null>(null);
+  const [enseignantsDispoModal, setEnseignantsDispoModal] = useState<
+    EnseignantDisponible[]
+  >([]);
+
+  // ── Chargement initial des cycles disponibles (selon périmètre) ──
   useEffect(() => {
-    if (navigator.onLine) {
-      supabase
-        .from('ecoles')
-        .select('id, nom')
-        .order('nom')
-        .then(({ data }) => setEcoles(data ?? []));
-      listToutesLesSalles().then(setToutesSalles);
-    } else {
-      db.ecoles
-        .toArray()
-        .then((data) =>
-          setEcoles(
-            [...data].sort((a: any, b: any) => a.nom.localeCompare(b.nom))
-          )
-        );
-      lireToutesLesSallesDepuisCache().then(setToutesSalles);
-    }
-  }, []);
+    if (!enLigne) return;
+    listCyclesDisponibles(perimetreIds).then(setCycles);
+    listToutesLesSalles().then(setToutesSalles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enLigne]);
 
-  // Sauvegarde silencieuse du brouillon dans le navigateur à chaque
-  // changement — rapide (écriture locale, pas de réseau), permet de
-  // retrouver son travail même après une fermeture avant d'avoir cliqué
-  // "Aller à la validation".
+  // ── Spécialités du cycle + semestre choisis ───────────────────────
   useEffect(() => {
-    if (!specialiteId || !semaine) return;
-    const cleDraft = `edt-brouillon:${specialiteId}:${semaine}`;
-    if (changements.length === 0) {
-      localStorage.removeItem(cleDraft);
-    } else {
-      localStorage.setItem(cleDraft, JSON.stringify(changements));
+    if (!cycleKey || !semestre || !enLigne) {
+      setSpecialites([]);
+      setSpecialiteAffichee('');
+      return;
     }
-  }, [changements, specialiteId, semaine]);
+    const [cycle, sousCycle] = cycleKey.split('::');
+    listSpecialitesDuCycleSemestre(
+      cycle,
+      sousCycle || null,
+      semestre,
+      perimetreIds
+    ).then((liste) => {
+      setSpecialites(liste);
+      setSpecialiteAffichee((prev) =>
+        liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
+      );
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cycleKey, semestre, enLigne]);
 
+  // ── Chargement du groupe (réactif — pas de bouton "Charger") ──────
   useEffect(() => {
-    const specialiteParam = searchParams.get('specialite');
-    if (!specialiteParam) return;
-
-    async function preremplir() {
-      const { data: specialite } = await supabase
-        .from('specialites')
-        .select('id, nom, filiere_id, cycle, sous_cycle, type_cursus')
-        .eq('id', specialiteParam)
-        .maybeSingle();
-      if (!specialite) return;
-      if (!estDansLePerimetre(specialite.id, user)) return;
-
-      const { data: filiere } = await supabase
-        .from('filieres')
-        .select('id, nom, ecole_id')
-        .eq('id', specialite.filiere_id)
-        .maybeSingle();
-      if (!filiere) return;
-
-      setEcoleId(filiere.ecole_id);
-      const { data: filieresEcole } = await supabase
-        .from('filieres')
-        .select('id, nom, ecole_id')
-        .eq('ecole_id', filiere.ecole_id)
-        .order('nom');
-      setFilieresByEcole((prev) => ({
-        ...prev,
-        [filiere.ecole_id]: filieresEcole ?? [],
-      }));
-
-      setFiliereId(filiere.id);
-      const { data: specialitesFiliere } = await supabase
-        .from('specialites')
-        .select('id, nom, filiere_id, cycle, sous_cycle, type_cursus')
-        .eq('filiere_id', filiere.id)
-        .order('nom');
-      setSpecialitesByFiliere((prev) => ({
-        ...prev,
-        [filiere.id]: (specialitesFiliere ?? []) as Specialite[],
-      }));
-
-      setCycleKey(cycleKeyDe(specialite.cycle, specialite.sous_cycle));
-      setSpecialiteId(specialite.id);
+    if (specialites.length === 0 || !semaine || !enLigne) {
+      setSeances([]);
+      setChangements([]);
+      return;
     }
-    preremplir();
-  }, [searchParams, user]);
+    chargerGroupe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [specialites, semaine, enLigne]);
 
-  async function handleEcoleChange(id: string) {
-    setEcoleId(id);
-    setFiliereId('');
-    setCycleKey('');
-    setSpecialiteId('');
-    setEmploi(null);
-    if (id && !filieresByEcole[id]) {
-      if (navigator.onLine) {
-        const { data } = await supabase
-          .from('filieres')
-          .select('id, nom, ecole_id')
-          .eq('ecole_id', id)
-          .order('nom');
-        setFilieresByEcole((prev) => ({ ...prev, [id]: data ?? [] }));
-      } else {
-        const data = await db.filieres.where('ecole_id').equals(id).toArray();
-        setFilieresByEcole((prev) => ({
-          ...prev,
-          [id]: (data as any[]).sort((a, b) => a.nom.localeCompare(b.nom)),
-        }));
-      }
-    }
-  }
-
-  async function handleFiliereChange(id: string) {
-    setFiliereId(id);
-    setCycleKey('');
-    setSpecialiteId('');
-    setEmploi(null);
-    if (id && !specialitesByFiliere[id]) {
-      if (navigator.onLine) {
-        const { data } = await supabase
-          .from('specialites')
-          .select('id, nom, filiere_id, cycle, sous_cycle, type_cursus')
-          .eq('filiere_id', id)
-          .order('nom');
-        setSpecialitesByFiliere((prev) => ({
-          ...prev,
-          [id]: (data ?? []) as Specialite[],
-        }));
-      } else {
-        const data = await db.specialites
-          .where('filiere_id')
-          .equals(id)
-          .toArray();
-        setSpecialitesByFiliere((prev) => ({
-          ...prev,
-          [id]: (data as Specialite[]).sort((a, b) =>
-            a.nom.localeCompare(b.nom)
-          ),
-        }));
-      }
-    }
-  }
-
-  // Raccourci : sélectionne directement une spécialité trouvée par
-  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
-  async function handleSelectionRecherche(s: SpecialiteRecherche) {
-    await handleEcoleChange(s.ecoleId);
-    await handleFiliereChange(s.filiereId);
-    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
-    setSpecialiteId(s.id);
-  }
-
-  const filieres = filieresByEcole[ecoleId] ?? [];
-  const specialitesDeFiliere = filtrerParPerimetre(
-    specialitesByFiliere[filiereId] ?? [],
-    user
-  );
-  const cycles = (() => {
-    const vues = new Map<string, string>();
-    for (const s of specialitesDeFiliere) {
-      const k = cycleKeyDe(s.cycle, s.sous_cycle);
-      if (!vues.has(k)) vues.set(k, labelCycle(s.cycle, s.sous_cycle));
-    }
-    return Array.from(vues.entries()).map(([key, label]) => ({ key, label }));
-  })();
-  const specialitesDuCycle = specialitesDeFiliere.filter(
-    (s) => cycleKeyDe(s.cycle, s.sous_cycle) === cycleKey
-  );
-
-  async function handleCharger() {
-    if (!specialiteId || !semaine) return;
+  async function chargerGroupe() {
     setChargement(true);
     setErreurChargement(null);
     try {
-      if (navigator.onLine) {
-        const e = await creerOuChargerEDT(specialiteId, semaine);
-        setEmploi(e);
-        const [s, offres, defaut] = await Promise.all([
-          getSeances(e.id),
-          listOffresDeSpecialite(specialiteId),
-          getSalleParDefautSpecialite(specialiteId),
-        ]);
-        setOffresSpecialite(offres);
-        setSalleParDefaut(defaut);
+      const specialiteIds = specialites.map((s) => s.id);
+      const donnees = await getSeancesGroupees(specialiteIds, semaine);
+      setEmploiParSpecialite(donnees.emploiParSpecialite);
+      setSpecialitesParTronc(donnees.specialitesParTronc);
+      setUeVersTronc(donnees.ueVersTronc);
 
-        // Rejoue un éventuel brouillon local pas encore envoyé en base
-        // (fermeture du navigateur avant d'avoir cliqué "Aller à la
-        // validation") — l'admin retrouve exactement où il en était.
-        const cleDraft = `edt-brouillon:${specialiteId}:${semaine}`;
-        const brut = localStorage.getItem(cleDraft);
-        let seancesAffichees = s;
-        let changementsCharges: ChangementCellule[] = [];
-        if (brut) {
-          try {
-            changementsCharges = JSON.parse(brut);
-            for (const c of changementsCharges) {
-              seancesAffichees = appliquerChangement(
-                seancesAffichees,
-                c,
-                offres,
-                toutesSalles
-              );
-            }
-          } catch {
-            localStorage.removeItem(cleDraft);
-          }
-        }
-        setSeances(seancesAffichees);
-        setChangements(changementsCharges);
-      } else {
-        // Hors ligne : consultation uniquement. Si cet EDT n'a jamais été
-        // synchronisé sur cet appareil, impossible de savoir s'il existe
-        // déjà ailleurs — on ne crée jamais rien sans réseau (conflits de
-        // salle, propagation aux troncs communs... tout ça a besoin d'une
-        // vue à jour de la base).
-        const e = await lireEmploiExistantDepuisCache(specialiteId, semaine);
-        if (!e) {
-          setErreurChargement(
-            "Cet emploi du temps n'est pas disponible hors ligne. Connecte-toi pour l'ouvrir ou le créer."
+      // Rejoue un éventuel brouillon local pas encore envoyé en base.
+      const cleDraft = `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`;
+      const brut = localStorage.getItem(cleDraft);
+      let seancesAffichees = donnees.seances;
+      let changementsCharges: ChangementCellule[] = [];
+      const offresCache = new Map(offresParSpecialite);
+      if (brut) {
+        try {
+          changementsCharges = JSON.parse(brut);
+          // Les offres de chaque spécialité concernée par le brouillon
+          // doivent être chargées pour recalculer l'affichage optimiste.
+          const specialitesAChager = new Set(
+            changementsCharges
+              .filter((c) => c.action === 'set')
+              .map((c: any) => c.specialiteId as string)
           );
-          return;
+          for (const spId of specialitesAChager) {
+            if (!offresCache.has(spId)) {
+              offresCache.set(spId, await listOffresDeSpecialite(spId));
+            }
+          }
+          for (const c of changementsCharges) {
+            seancesAffichees = appliquerChangement(
+              seancesAffichees,
+              c,
+              offresCache.get((c as any).specialiteId) ?? [],
+              toutesSalles,
+              donnees.specialitesParTronc
+            );
+          }
+          setOffresParSpecialite(offresCache);
+        } catch {
+          localStorage.removeItem(cleDraft);
         }
-        setEmploi(e);
-        const [s, offres, defaut] = await Promise.all([
-          lireSeancesDepuisCache(e.id),
-          lireOffresDeSpecialiteDepuisCache(specialiteId),
-          lireSalleParDefautDepuisCache(specialiteId),
-        ]);
-        setSeances(s);
-        setOffresSpecialite(offres);
-        setSalleParDefaut(defaut);
       }
+      setSeances(seancesAffichees);
+      setChangements(changementsCharges);
     } catch (err) {
       setErreurChargement(
         err instanceof Error ? err.message : 'Erreur de chargement.'
@@ -428,68 +302,138 @@ export default function GenererEDTPage() {
     }
   }
 
+  // ── Sauvegarde silencieuse du brouillon (rapide, locale) ──────────
+  useEffect(() => {
+    if (!cycleKey || !semestre || !semaine) return;
+    const cleDraft = `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`;
+    if (changements.length === 0) {
+      localStorage.removeItem(cleDraft);
+    } else {
+      localStorage.setItem(cleDraft, JSON.stringify(changements));
+    }
+  }, [changements, cycleKey, semestre, semaine]);
+
   async function ouvrirModal(
     jour: string,
     creneau: string,
-    seanceExistante?: SeanceDetail
+    seanceExistante?: SeanceGroupee
   ) {
+    if (!specialiteAffichee) return;
     setModal({
+      specialiteId: specialiteAffichee,
       jour,
       creneau,
       seanceIdExistante: seanceExistante?.id ?? null,
       offreId: seanceExistante?.offreId ?? '',
-      salleId: seanceExistante?.salleId ?? salleParDefaut?.id ?? '',
+      salleId:
+        seanceExistante?.salleId ??
+        salleParDefautParSpecialite.get(specialiteAffichee)?.id ??
+        '',
     });
-    const dispo = navigator.onLine
-      ? await getEnseignantsDisponibles(jour, creneau)
-      : await lireEnseignantsDisponiblesDepuisCache(jour, creneau);
+
+    if (!offresParSpecialite.has(specialiteAffichee)) {
+      const offres = await listOffresDeSpecialite(specialiteAffichee);
+      setOffresParSpecialite((prev) =>
+        new Map(prev).set(specialiteAffichee, offres)
+      );
+    }
+    if (!salleParDefautParSpecialite.has(specialiteAffichee)) {
+      const defaut = await getSalleParDefautSpecialite(specialiteAffichee);
+      setSalleParDefautParSpecialite((prev) =>
+        new Map(prev).set(specialiteAffichee, defaut)
+      );
+    }
+    const dispo = await getEnseignantsDisponibles(jour, creneau);
     setEnseignantsDispoModal(dispo);
   }
 
-  function offreChoisie() {
-    return offresSpecialite.find((o) => o.offreId === modal?.offreId) ?? null;
+  function offreChoisie(): OffreDeSpecialite | null {
+    if (!modal) return null;
+    const offres = offresParSpecialite.get(modal.specialiteId) ?? [];
+    return offres.find((o) => o.offreId === modal.offreId) ?? null;
   }
 
   function handleEnregistrerModal() {
     const offre = offreChoisie();
-    if (!modal || !emploi || !modal.offreId || !offre?.enseignantAttribueId)
-      return;
+    if (!modal || !offre?.enseignantAttribueId) return;
 
-    const changement: ChangementCellule = {
-      action: 'set',
-      jour: modal.jour,
-      creneau: modal.creneau,
-      offreId: modal.offreId,
-      enseignantId: offre.enseignantAttribueId,
-      salleId: modal.salleId || null,
-      seanceIdExistante: modal.seanceIdExistante,
-    };
+    const lienTronc = ueVersTronc.get(offre.ueId);
+
+    const changement: ChangementCellule = lienTronc
+      ? {
+          action: 'set',
+          specialiteId: modal.specialiteId,
+          jour: modal.jour,
+          creneau: modal.creneau,
+          offreId: modal.offreId,
+          enseignantId: offre.enseignantAttribueId,
+          salleId: modal.salleId || null,
+          seanceIdExistante: modal.seanceIdExistante,
+          estTronc: true,
+          troncCommunId: lienTronc.troncCommunId,
+          troncNom: lienTronc.nom,
+        }
+      : {
+          action: 'set',
+          specialiteId: modal.specialiteId,
+          jour: modal.jour,
+          creneau: modal.creneau,
+          offreId: modal.offreId,
+          enseignantId: offre.enseignantAttribueId,
+          salleId: modal.salleId || null,
+          seanceIdExistante: modal.seanceIdExistante,
+          estTronc: false,
+        };
 
     setSeances((prev) =>
-      appliquerChangement(prev, changement, offresSpecialite, toutesSalles)
+      appliquerChangement(
+        prev,
+        changement,
+        offresParSpecialite.get(modal.specialiteId) ?? [],
+        toutesSalles,
+        specialitesParTronc
+      )
     );
-    setChangements((prev) => [
-      // Un seul changement "set" en attente par case à la fois — le
-      // dernier écrase le précédent, pas la peine de garder l'historique.
-      ...prev.filter(
-        (c) =>
-          !(
+
+    // Si l'UE choisie est un tronc commun, étend localement le groupe
+    // aux spécialités déjà chargées dans cette session (propagation
+    // visible immédiatement sur leurs propres grilles).
+    if (lienTronc) {
+      setSpecialitesParTronc((prev) => {
+        const copie = new Map(prev);
+        const ensemble = new Set(copie.get(lienTronc.troncCommunId) ?? []);
+        ensemble.add(modal.specialiteId);
+        copie.set(lienTronc.troncCommunId, ensemble);
+        return copie;
+      });
+    }
+
+    setChangements((prev) => {
+      const cleCellule = lienTronc
+        ? (c: ChangementCellule) =>
             c.action === 'set' &&
+            c.estTronc &&
+            c.troncCommunId === lienTronc.troncCommunId &&
             c.jour === modal.jour &&
             c.creneau === modal.creneau
-          )
-      ),
-      changement,
-    ]);
+        : (c: ChangementCellule) =>
+            c.action === 'set' &&
+            !c.estTronc &&
+            c.specialiteId === modal.specialiteId &&
+            c.jour === modal.jour &&
+            c.creneau === modal.creneau;
+      return [...prev.filter((c) => !cleCellule(c)), changement];
+    });
     setModal(null);
   }
 
   function handleSupprimer() {
-    if (!modal?.seanceIdExistante || !emploi) return;
+    if (!modal?.seanceIdExistante) return;
     if (!window.confirm('Retirer cette séance ?')) return;
 
     const idCible = modal.seanceIdExistante;
     const estLocalePasEncoreEnvoyee = idCible.startsWith('local-');
+    const specialiteId = modal.specialiteId;
 
     setChangements((prev) => {
       const sansCelleCi = prev.filter(
@@ -497,11 +441,13 @@ export default function GenererEDTPage() {
           !(
             c.action === 'set' &&
             c.jour === modal.jour &&
-            c.creneau === modal.creneau
+            c.creneau === modal.creneau &&
+            ((c.estTronc &&
+              seances.find((s) => s.id === idCible)?.troncCommunId ===
+                c.troncCommunId) ||
+              (!c.estTronc && c.specialiteId === specialiteId))
           )
       );
-      // Si rien n'avait encore été envoyé pour cette case, annuler le
-      // changement en attente suffit — pas besoin d'un "delete" en plus.
       return estLocalePasEncoreEnvoyee
         ? sansCelleCi
         : [
@@ -511,6 +457,7 @@ export default function GenererEDTPage() {
               seanceId: idCible,
               jour: modal.jour,
               creneau: modal.creneau,
+              specialiteId,
             },
           ];
     });
@@ -518,142 +465,116 @@ export default function GenererEDTPage() {
     setModal(null);
   }
 
-  const nbConflits = seances.filter((s) => s.statut === 'conflit').length;
-
-  // Envoie tous les changements en attente en base d'un coup, puis
-  // navigue vers la validation — c'est le seul moment où la construction
-  // de l'EDT touche vraiment le réseau.
   async function handleAllerValidation() {
-    if (changements.length === 0 || !emploi) {
+    if (changements.length === 0) {
       navigate(
-        `/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`
+        `/emploi-du-temps/validation?cycle=${encodeURIComponent(
+          cycleKey
+        )}&semestre=${semestre}&semaine=${semaine}`
       );
       return;
     }
     setEnvoiEnCours(true);
+    setErreurChargement(null);
     try {
+      const emplois = new Map(emploiParSpecialite);
       for (const c of changements) {
         if (c.action === 'delete') {
           await supprimerSeance(c.seanceId);
-        } else {
-          await assignerSeance({
-            emploiId: emploi.id,
-            specialiteId,
-            semaine,
-            seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
-              ? null
-              : c.seanceIdExistante,
-            offreId: c.offreId,
-            enseignantId: c.enseignantId,
-            salleId: c.salleId,
-            jour: c.jour,
-            creneau: c.creneau,
-          });
+          continue;
         }
+        let emploiId = emplois.get(c.specialiteId);
+        if (!emploiId) {
+          emploiId = await trouverOuCreerEmploi(c.specialiteId, semaine);
+          emplois.set(c.specialiteId, emploiId);
+        }
+        await assignerSeance({
+          emploiId,
+          specialiteId: c.specialiteId,
+          semaine,
+          seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
+            ? null
+            : c.seanceIdExistante,
+          offreId: c.offreId,
+          enseignantId: c.enseignantId,
+          salleId: c.salleId,
+          jour: c.jour,
+          creneau: c.creneau,
+        });
       }
-      localStorage.removeItem(`edt-brouillon:${specialiteId}:${semaine}`);
+      localStorage.removeItem(
+        `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`
+      );
       setChangements([]);
       navigate(
-        `/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`
+        `/emploi-du-temps/validation?cycle=${encodeURIComponent(
+          cycleKey
+        )}&semestre=${semestre}&semaine=${semaine}`
       );
     } catch (err) {
-      window.alert(
+      setErreurChargement(
         err instanceof Error
           ? `Erreur lors de l'enregistrement : ${err.message}`
           : "Erreur lors de l'enregistrement."
       );
-      const s = await getSeances(emploi.id);
-      setSeances(s);
+      await chargerGroupe();
     } finally {
       setEnvoiEnCours(false);
     }
   }
 
-  return (
-    <div className="max-w-4xl mx-auto">
-      <div className="flex items-center justify-between gap-3 flex-wrap mb-1">
-        <p className="font-extrabold text-2xl text-gray-900">Emploi du temps</p>
-        <button
-          onClick={handleAllerValidation}
-          disabled={envoiEnCours || !enLigne}
-          className="flex items-center gap-2 text-red-600 font-bold hover:underline text-sm disabled:opacity-50 disabled:no-underline"
-        >
-          {envoiEnCours && <Loader2 size={14} className="animate-spin" />}
-          {changements.length > 0
-            ? `Enregistrer et aller à la validation (${changements.length}) →`
-            : 'Aller à la validation →'}
-        </button>
-      </div>
-      {changements.length > 0 && (
-        <p className="text-xs font-semibold text-amber-600 mb-4">
-          {changements.length} modification{changements.length > 1 ? 's' : ''}{' '}
-          non enregistrée{changements.length > 1 ? 's' : ''} — gardée
-          {changements.length > 1 ? 's' : ''} sur cet appareil, envoyée
-          {changements.length > 1 ? 's' : ''} en base au clic ci-dessus.
+  const specialiteCourante = specialites.find(
+    (s) => s.id === specialiteAffichee
+  );
+  const semestresDisponibles = Array.from(
+    new Set(
+      Object.values(SEMESTRES_PAR_TYPE_CURSUS).flatMap((liste) => liste)
+    )
+  );
+
+  // Séances visibles pour la spécialité actuellement affichée : les
+  // siennes en propre + celles de tronc commun dont elle est membre.
+  const seancesAffichees = seances.filter(
+    (s) =>
+      s.specialiteId === specialiteAffichee ||
+      (s.troncCommunId &&
+        specialitesParTronc.get(s.troncCommunId)?.has(specialiteAffichee))
+  );
+
+  if (!enLigne) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <p className="font-extrabold text-2xl text-gray-900 mb-4">
+          Emploi du temps
         </p>
-      )}
-      <p className="text-sm text-gray-400 mb-6">
-        Choisis la spécialité et la semaine, puis remplis chaque créneau à la
-        main.
-      </p>
-      {!enLigne && (
-        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-5">
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
           <WifiOff size={15} className="text-amber-600 shrink-0" />
           <p className="text-xs font-bold text-amber-700">
-            Hors ligne — consultation uniquement. Un emploi du temps déjà
-            ouvert sur cet appareil peut être consulté, mais aucune
-            création ni modification n'est possible sans réseau (conflits
-            de salle vérifiés en direct).
+            Connexion nécessaire pour confectionner l'emploi du temps.
           </p>
         </div>
-      )}
+      </div>
+    );
+  }
 
-      {enLigne && (
-        <div className="bg-white rounded-[20px] p-5 mb-4">
-          <RechercheSpecialite
-            onSelect={handleSelectionRecherche}
-            placeholder="Rechercher directement une spécialité..."
-          />
-        </div>
-      )}
+  return (
+    <div className="max-w-4xl mx-auto">
+      <p className="font-extrabold text-2xl text-gray-900 mb-1">
+        Emploi du temps
+      </p>
+      <p className="text-sm text-gray-400 mb-6">
+        Choisis un cycle, un semestre et une semaine — toutes les
+        spécialités concernées se chargent automatiquement.
+      </p>
 
-      <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-        <select
-          value={ecoleId}
-          onChange={(e) => handleEcoleChange(e.target.value)}
-          className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
-        >
-          <option value="">École...</option>
-          {ecoles.map((e) => (
-            <option key={e.id} value={e.id}>
-              {e.nom}
-            </option>
-          ))}
-        </select>
-
-        <select
-          value={filiereId}
-          onChange={(e) => handleFiliereChange(e.target.value)}
-          disabled={!ecoleId}
-          className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
-        >
-          <option value="">Filière...</option>
-          {filieres.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.nom}
-            </option>
-          ))}
-        </select>
-
+      <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
         <select
           value={cycleKey}
           onChange={(e) => {
             setCycleKey(e.target.value);
-            setSpecialiteId('');
-            setEmploi(null);
+            setSemestre('');
           }}
-          disabled={!filiereId}
-          className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
+          className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
         >
           <option value="">Cycle...</option>
           {cycles.map((c) => (
@@ -664,72 +585,91 @@ export default function GenererEDTPage() {
         </select>
 
         <select
-          value={specialiteId}
-          onChange={(e) => {
-            setSpecialiteId(e.target.value);
-            setEmploi(null);
-          }}
+          value={semestre}
+          onChange={(e) => setSemestre(e.target.value)}
           disabled={!cycleKey}
           className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
         >
-          <option value="">Spécialité...</option>
-          {specialitesDuCycle.map((s) => (
-            <option key={s.id} value={s.id}>
-              {s.nom}
+          <option value="">Semestre...</option>
+          {semestresDisponibles.map((s) => (
+            <option key={s} value={s}>
+              {s}
             </option>
           ))}
         </select>
 
-        <div className="sm:col-span-2">
+        <div>
           <label className="block text-xs font-bold text-gray-500 mb-1.5">
             Semaine (lundi)
           </label>
           <input
             type="date"
             value={semaine}
-            onChange={(e) => {
-              setSemaine(e.target.value);
-              setEmploi(null);
-            }}
+            onChange={(e) => setSemaine(e.target.value)}
             className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
           />
         </div>
       </div>
 
-      {!emploi && (
+      {chargement ? (
+        <div className="flex items-center justify-center py-16 text-gray-300">
+          <Loader2 size={22} className="animate-spin" />
+        </div>
+      ) : erreurChargement ? (
+        <p className="text-sm font-bold text-red-600 mb-4">
+          {erreurChargement}
+        </p>
+      ) : specialites.length === 0 ? (
+        cycleKey && semestre ? (
+          <div className="bg-amber-50 rounded-xl px-4 py-3.5">
+            <p className="text-sm font-bold text-amber-700">
+              Aucune spécialité accessible pour ce cycle et ce semestre.
+            </p>
+          </div>
+        ) : (
+          <div className="bg-white rounded-[20px] p-8 text-center text-sm text-gray-400">
+            Choisis un cycle et un semestre pour commencer.
+          </div>
+        )
+      ) : (
         <>
-          <button
-            onClick={handleCharger}
-            disabled={!specialiteId || !semaine || chargement}
-            className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
-          >
-            {chargement && <Loader2 size={15} className="animate-spin" />}
-            Ouvrir l'emploi du temps
-          </button>
-          {erreurChargement && (
-            <p className="text-xs font-semibold text-amber-600 mt-3 flex items-center gap-1.5">
-              <WifiOff size={13} /> {erreurChargement}
+          <div className="flex items-center justify-between gap-3 flex-wrap mb-4">
+            <select
+              value={specialiteAffichee}
+              onChange={(e) => setSpecialiteAffichee(e.target.value)}
+              className="border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-bold outline-none focus:border-red-600 bg-white"
+            >
+              {specialites.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.nom} — {s.ecoleNom}
+                </option>
+              ))}
+            </select>
+
+            <button
+              onClick={handleAllerValidation}
+              disabled={envoiEnCours}
+              className="flex items-center gap-2 text-red-600 font-bold hover:underline text-sm disabled:opacity-50 disabled:no-underline"
+            >
+              {envoiEnCours && <Loader2 size={14} className="animate-spin" />}
+              {changements.length > 0
+                ? `Enregistrer et aller à la validation (${changements.length}) →`
+                : 'Aller à la validation →'}
+            </button>
+          </div>
+          {changements.length > 0 && (
+            <p className="text-xs font-semibold text-amber-600 mb-4">
+              {changements.length} modification
+              {changements.length > 1 ? 's' : ''} non enregistrée
+              {changements.length > 1 ? 's' : ''} — gardée
+              {changements.length > 1 ? 's' : ''} sur cet appareil, pour
+              toutes les spécialités du cycle/semestre, envoyée
+              {changements.length > 1 ? 's' : ''} en base au clic
+              ci-dessus.
             </p>
           )}
-        </>
-      )}
 
-      {emploi && (
-        <>
-          <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-            <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-gray-100 text-gray-600">
-              {emploi.statut === 'valide'
-                ? 'Validé'
-                : 'En cours de construction'}
-            </span>
-            {nbConflits > 0 && (
-              <span className="text-xs font-bold text-red-600 bg-red-50 px-3 py-1.5 rounded-full">
-                {nbConflits} conflit(s) de salle
-              </span>
-            )}
-          </div>
-
-          <div className="bg-white rounded-[20px] overflow-x-auto">
+          <div className="bg-white rounded-[20px] overflow-x-auto mb-6">
             <table className="w-full text-sm border-collapse">
               <thead>
                 <tr>
@@ -753,7 +693,7 @@ export default function GenererEDTPage() {
                       {jour}
                     </td>
                     {CRENEAUX.map((creneau) => {
-                      const seancesCellule = seances.filter(
+                      const cellules = seancesAffichees.filter(
                         (s) => s.jour === jour && s.creneau === creneau
                       );
                       const modifieeEnAttente = changements.some(
@@ -770,7 +710,7 @@ export default function GenererEDTPage() {
                               className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400"
                             />
                           )}
-                          {seancesCellule.length === 0 ? (
+                          {cellules.length === 0 ? (
                             <button
                               onClick={() => ouvrirModal(jour, creneau)}
                               title="Programmer ce créneau"
@@ -780,7 +720,7 @@ export default function GenererEDTPage() {
                             </button>
                           ) : (
                             <div className="flex flex-col gap-1.5">
-                              {seancesCellule.map((s) => (
+                              {cellules.map((s) => (
                                 <div
                                   key={s.id}
                                   className={`rounded-xl px-3 py-2 ${
@@ -805,10 +745,9 @@ export default function GenererEDTPage() {
                                     onClick={() =>
                                       ouvrirModal(jour, creneau, s)
                                     }
-                                    title="Modifier"
-                                    className="w-6 h-6 flex items-center justify-center rounded-md bg-white text-gray-400 hover:text-red-600 hover:bg-red-50"
+                                    className="flex items-center gap-1 text-[11px] font-bold text-gray-500 hover:text-red-600"
                                   >
-                                    <Pencil size={11} />
+                                    <Pencil size={11} /> Modifier
                                   </button>
                                 </div>
                               ))}
@@ -822,69 +761,51 @@ export default function GenererEDTPage() {
               </tbody>
             </table>
           </div>
-
-          <div className="flex items-center gap-3 mt-5">
-            <Link
-              to={`/emploi-du-temps/validation?specialite=${specialiteId}&semaine=${semaine}`}
-              onClick={() => setEnregistre(true)}
-              className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700"
-            >
-              <CheckCircle2 size={15} /> Enregistrer l'emploi du temps
-            </Link>
-            {enregistre && (
-              <span className="text-xs font-bold text-green-600">
-                Enregistré ✓
-              </span>
-            )}
-          </div>
         </>
       )}
 
       {modal && (
-        <div
-          className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4"
-          onClick={() => setModal(null)}
-        >
-          <div
-            className="bg-white rounded-[20px] p-5 w-full max-w-md max-h-[85vh] overflow-y-auto"
-            onClick={(e) => e.stopPropagation()}
-          >
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-[20px] p-6 w-full max-w-md max-h-[85vh] overflow-y-auto">
             <div className="flex items-center justify-between mb-4">
-              <p className="font-extrabold text-base text-gray-900">
-                {modal.jour} · {modal.creneau}
-              </p>
+              <div>
+                <p className="font-extrabold text-gray-900">
+                  {modal.jour} · {modal.creneau}
+                </p>
+                <p className="text-xs text-gray-400">
+                  {specialiteCourante?.nom}
+                </p>
+              </div>
               <button
                 onClick={() => setModal(null)}
-                className="text-gray-300 hover:text-gray-600"
+                className="text-gray-300 hover:text-gray-500"
               >
                 <X size={18} />
               </button>
             </div>
 
-            <div className="flex flex-col gap-4 mb-4">
+            <div className="flex flex-col gap-4">
               <div>
-                <label className="block text-xs font-bold text-gray-500 mb-2">
-                  UE *
+                <label className="block text-xs font-bold text-gray-500 mb-1.5">
+                  UE
                 </label>
-
                 {(() => {
-                  const idsDisponibles = new Set(
-                    enseignantsDispoModal.map((e) => e.id)
+                  const offres =
+                    offresParSpecialite.get(modal.specialiteId) ?? [];
+                  const disponibles = offres.filter((o) =>
+                    enseignantsDispoModal.some(
+                      (e) => e.id === o.enseignantAttribueId
+                    )
                   );
-                  const disponibles = offresSpecialite.filter(
+                  const autres = offres.filter(
                     (o) =>
-                      o.enseignantAttribueId &&
-                      idsDisponibles.has(o.enseignantAttribueId)
-                  );
-                  const autres = offresSpecialite.filter(
-                    (o) =>
-                      !o.enseignantAttribueId ||
-                      !idsDisponibles.has(o.enseignantAttribueId)
+                      !enseignantsDispoModal.some(
+                        (e) => e.id === o.enseignantAttribueId
+                      )
                   );
 
-                  function ligneUE(o: OffreDeSpecialite, dispo: boolean) {
-                    if (!modal) return null;
-                    const selectionnee = modal.offreId === o.offreId;
+                  function ligneUE(o: OffreDeSpecialite) {
+                    const selectionnee = modal?.offreId === o.offreId;
                     return (
                       <button
                         key={o.offreId}
@@ -898,59 +819,52 @@ export default function GenererEDTPage() {
                         className={`w-full text-left px-3.5 py-2.5 rounded-xl border flex items-center justify-between gap-2 disabled:opacity-40 disabled:cursor-not-allowed ${
                           selectionnee
                             ? 'bg-red-600 border-red-600 text-white'
-                            : dispo
-                            ? 'bg-amber-50 border-amber-200 hover:bg-amber-100'
-                            : 'bg-gray-50 border-gray-100 hover:bg-gray-100'
+                            : 'bg-white border-gray-200 hover:border-red-300'
                         }`}
                       >
                         <span className="text-sm font-bold truncate">
                           {o.ueNom}
                         </span>
                         <span
-                          className={`text-xs font-semibold shrink-0 ${
+                          className={`text-[11px] font-semibold shrink-0 ${
                             selectionnee ? 'text-white/80' : 'text-gray-400'
                           }`}
                         >
-                          {o.enseignantAttribueNom ?? 'non attribué'}
+                          {o.enseignantAttribueNom ?? 'Sans enseignant'}
                         </span>
                       </button>
                     );
                   }
 
                   return (
-                    <div className="flex flex-col gap-3">
-                      <div>
-                        <p className="text-[11px] font-bold text-amber-600 mb-1.5 flex items-center gap-1.5">
-                          <Sparkles size={11} /> Enseignant disponible à ce
-                          créneau ({disponibles.length})
+                    <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+                      {disponibles.length > 0 && (
+                        <>
+                          <p className="text-[11px] font-bold text-green-600 uppercase tracking-wide px-1 mt-1">
+                            Enseignant disponible à ce créneau
+                          </p>
+                          {disponibles.map(ligneUE)}
+                        </>
+                      )}
+                      {autres.length > 0 && (
+                        <>
+                          <p className="text-[11px] font-bold text-gray-400 uppercase tracking-wide px-1 mt-2">
+                            Autres UEs du semestre ({autres.length})
+                          </p>
+                          {autres.map(ligneUE)}
+                        </>
+                      )}
+                      {offres.length === 0 && (
+                        <p className="text-xs text-gray-400 px-1">
+                          Chargement...
                         </p>
-                        {disponibles.length === 0 ? (
-                          <p className="text-xs text-gray-300 italic">Aucune</p>
-                        ) : (
-                          <div className="flex flex-col gap-1.5">
-                            {disponibles.map((o) => ligneUE(o, true))}
-                          </div>
-                        )}
-                      </div>
-
-                      <div>
-                        <p className="text-[11px] font-bold text-gray-400 mb-1.5">
-                          Autres UEs du semestre ({autres.length})
-                        </p>
-                        {autres.length === 0 ? (
-                          <p className="text-xs text-gray-300 italic">Aucune</p>
-                        ) : (
-                          <div className="flex flex-col gap-1.5 max-h-40 overflow-y-auto">
-                            {autres.map((o) => ligneUE(o, false))}
-                          </div>
-                        )}
-                      </div>
+                      )}
                     </div>
                   );
                 })()}
-
-                <p className="text-[10px] text-gray-400 mt-2">
-                  L'enseignant est celui déjà attribué à cette UE (Répartition).
+                <p className="text-[11px] text-gray-400 mt-1.5">
+                  L'enseignant est celui déjà attribué à cette UE
+                  (Répartition).
                 </p>
               </div>
 
@@ -971,17 +885,20 @@ export default function GenererEDTPage() {
                   {toutesSalles.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.code_salle}{' '}
-                      {s.id === salleParDefaut?.id ? '(par défaut)' : ''}
+                      {s.id ===
+                      salleParDefautParSpecialite.get(modal.specialiteId)?.id
+                        ? '(par défaut)'
+                        : ''}
                     </option>
                   ))}
                 </select>
               </div>
             </div>
 
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-3 mt-5">
               <button
                 onClick={handleEnregistrerModal}
-                disabled={!modal.offreId || !enLigne}
+                disabled={!modal.offreId}
                 className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
               >
                 Enregistrer
@@ -989,20 +906,12 @@ export default function GenererEDTPage() {
               {modal.seanceIdExistante && (
                 <button
                   onClick={handleSupprimer}
-                  disabled={!enLigne}
-                  className="flex items-center gap-1.5 text-sm font-bold text-gray-400 hover:text-red-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                  className="flex items-center gap-2 text-sm font-bold text-red-600 hover:underline"
                 >
                   <Trash2 size={14} /> Retirer
                 </button>
               )}
             </div>
-            {!enLigne && (
-              <p className="text-xs font-semibold text-amber-600 mt-3 flex items-center gap-1.5">
-                <WifiOff size={13} /> Hors ligne — la sauvegarde nécessite
-                une connexion (vérification des conflits de salle en
-                direct).
-              </p>
-            )}
           </div>
         </div>
       )}

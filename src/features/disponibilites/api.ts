@@ -147,19 +147,42 @@ export async function lancerCampagne(
     new Set((attributionsData ?? []).map((a) => a.enseignant_id))
   );
 
-  const { data: campagne, error } = await supabase
-    .from('campagnes_disponibilite')
-    .insert({ statut: 'active' })
-    .select('id')
-    .single();
-  if (error) throw error;
+  // Réutilise la campagne déjà active s'il y en a une — évite que deux
+  // responsables demandant des disponibilités qui se recoupent créent
+  // deux campagnes séparées et sollicitent deux fois les mêmes
+  // enseignants. Une seule campagne active à la fois, partagée par
+  // tous les responsables.
+  const campagneActive = await getDerniereCampagne();
+  let campagneId: string;
+  if (campagneActive && campagneActive.statut === 'active') {
+    campagneId = campagneActive.id;
+  } else {
+    const { data: campagne, error } = await supabase
+      .from('campagnes_disponibilite')
+      .insert({ statut: 'active' })
+      .select('id')
+      .single();
+    if (error) throw error;
+    campagneId = campagne.id;
+  }
 
-  if (enseignantIds.length > 0) {
+  // Enseignants déjà sollicités dans cette campagne — pas besoin de les
+  // relier ni de les notifier une deuxième fois.
+  const { data: dejaLies } = await supabase
+    .from('campagne_enseignants')
+    .select('enseignant_id')
+    .eq('campagne_id', campagneId);
+  const dejaLiesIds = new Set((dejaLies ?? []).map((l) => l.enseignant_id));
+  const nouveauxEnseignantIds = enseignantIds.filter(
+    (id) => !dejaLiesIds.has(id)
+  );
+
+  if (nouveauxEnseignantIds.length > 0) {
     const { error: liaisonError } = await supabase
       .from('campagne_enseignants')
       .insert(
-        enseignantIds.map((enseignant_id) => ({
-          campagne_id: campagne.id,
+        nouveauxEnseignantIds.map((enseignant_id) => ({
+          campagne_id: campagneId,
           enseignant_id,
         }))
       );
@@ -171,7 +194,7 @@ export async function lancerCampagne(
     const { data: enseignantsData } = await supabase
       .from('enseignants')
       .select('id, matricule')
-      .in('id', enseignantIds);
+      .in('id', nouveauxEnseignantIds);
     const matricules = (enseignantsData ?? []).map((e) => e.matricule);
 
     const { data: comptesData } = await supabase
@@ -192,7 +215,7 @@ export async function lancerCampagne(
     }
   }
 
-  return { id: campagne.id, nbEnseignants: enseignantIds.length };
+  return { id: campagneId, nbEnseignants: enseignantIds.length };
 }
 
 // ── Étape 4 — Suivi (responsable/admin) ───────────────────────────

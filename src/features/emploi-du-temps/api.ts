@@ -6,6 +6,7 @@ import {
   getDerniereCampagne,
 } from '@/features/disponibilites/api';
 import { genererCodesPourEmploi } from '@/features/codes-journaliers/api';
+import type { TypeCursus } from '@/types';
 
 // ── Chargement de l'emploi du temps (vierge si nouveau) ────────────
 // Nouvelle procédure : on ne génère plus rien automatiquement. Cas A
@@ -168,7 +169,11 @@ export interface SeanceDetail {
   statut: 'ok' | 'conflit';
 }
 
-export async function getSeances(emploiId: string): Promise<SeanceDetail[]> {
+export async function getSeances(
+  emploiId: string,
+  specialiteId: string,
+  semaine: string
+): Promise<SeanceDetail[]> {
   const { data, error } = await supabase
     .from('seances_edt')
     .select(
@@ -183,7 +188,43 @@ export async function getSeances(emploiId: string): Promise<SeanceDetail[]> {
     .eq('emploi_du_temps_id', emploiId);
   if (error) throw error;
 
-  return ((data ?? []) as any[]).map((s) => {
+  // Séances de tronc commun concernant cette spécialité pour cette
+  // semaine — elles n'ont plus d'emploi_du_temps_id (une seule ligne
+  // partagée par tout le groupe), retrouvées via troncs_communs_ues.
+  const { data: offresSpe } = await supabase
+    .from('offres')
+    .select('ue_id')
+    .eq('specialite_id', specialiteId);
+  const ueIds = (offresSpe ?? []).map((o) => o.ue_id);
+
+  let seancesTronc: any[] = [];
+  if (ueIds.length > 0) {
+    const { data: liens } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id')
+      .in('ue_id', ueIds);
+    const troncIds = Array.from(
+      new Set((liens ?? []).map((l) => l.tronc_commun_id))
+    );
+    if (troncIds.length > 0) {
+      const { data: st, error: errTronc } = await supabase
+        .from('seances_edt')
+        .select(
+          `
+          id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
+          tronc_commun:troncs_communs(nom),
+          enseignant:enseignants(nom),
+          salle:salles(code_salle)
+        `
+        )
+        .in('tronc_commun_id', troncIds)
+        .eq('semaine', semaine);
+      if (errTronc) throw errTronc;
+      seancesTronc = st ?? [];
+    }
+  }
+
+  return ([...(data ?? []), ...seancesTronc] as any[]).map((s) => {
     if (s.tronc_commun) {
       return {
         id: s.id,
@@ -279,17 +320,49 @@ export async function lireEmploiExistantDepuisCache(
 }
 
 export async function lireSeancesDepuisCache(
-  emploiId: string
+  emploiId: string,
+  specialiteId: string,
+  semaine: string
 ): Promise<SeanceDetail[]> {
-  const [seances, offres, ues, troncsCommuns, enseignants, salles] =
-    await Promise.all([
-      db.seancesEDT.where('emploi_du_temps_id').equals(emploiId).toArray(),
-      db.offres.toArray(),
-      db.ues.toArray(),
-      db.troncsCommuns.toArray(),
-      db.enseignants.toArray(),
-      db.salles.toArray(),
-    ]);
+  const [
+    seancesSpe,
+    offres,
+    ues,
+    troncsCommuns,
+    enseignants,
+    salles,
+    troncsCommunsUes,
+  ] = await Promise.all([
+    db.seancesEDT.where('emploi_du_temps_id').equals(emploiId).toArray(),
+    db.offres.toArray(),
+    db.ues.toArray(),
+    db.troncsCommuns.toArray(),
+    db.enseignants.toArray(),
+    db.salles.toArray(),
+    db.troncsCommunsUes.toArray(),
+  ]);
+
+  // Séances de tronc commun de cette spécialité pour cette semaine —
+  // plus d'emploi_du_temps_id, retrouvées via troncs_communs_ues.
+  const ueIdsSpe = new Set(
+    (offres as any[])
+      .filter((o) => o.specialite_id === specialiteId)
+      .map((o) => o.ue_id)
+  );
+  const troncIds = new Set(
+    (troncsCommunsUes as any[])
+      .filter((l) => ueIdsSpe.has(l.ue_id))
+      .map((l) => l.tronc_commun_id)
+  );
+  const toutesLesSeances = await db.seancesEDT.toArray();
+  const seancesTronc = (toutesLesSeances as any[]).filter(
+    (s) =>
+      s.tronc_commun_id &&
+      troncIds.has(s.tronc_commun_id) &&
+      s.semaine === semaine
+  );
+
+  const seances = [...seancesSpe, ...seancesTronc];
 
   const offreParId = new Map(offres.map((o: any) => [o.id, o]));
   const ueParId = new Map(ues.map((u: any) => [u.id, u]));
@@ -438,6 +511,9 @@ interface ParamsAssignation {
   creneau: string;
 }
 
+// Crée ou met à jour LA séance unique du tronc commun pour ce créneau —
+// une seule ligne, partagée par toutes les spécialités du groupe (un
+// seul code, un seul rapport), pas une par spécialité.
 async function propagerVersGroupe(
   troncCommunId: string,
   semaine: string,
@@ -446,66 +522,58 @@ async function propagerVersGroupe(
   salleId: string | null,
   enseignantId: string
 ) {
-  const { data: toutesLesUEsDuGroupe } = await supabase
-    .from('troncs_communs_ues')
-    .select('ue:ues(offres(specialite_id))')
-    .eq('tronc_commun_id', troncCommunId);
+  const { data: seanceExistante } = await supabase
+    .from('seances_edt')
+    .select('id')
+    .eq('tronc_commun_id', troncCommunId)
+    .eq('semaine', semaine)
+    .eq('jour', jour)
+    .eq('creneau', creneau)
+    .maybeSingle();
 
-  const specialitesDuGroupe = new Set<string>();
-  for (const l of (toutesLesUEsDuGroupe ?? []) as any[]) {
-    for (const o of l.ue?.offres ?? [])
-      specialitesDuGroupe.add(o.specialite_id);
-  }
+  // Même contrôle que pour une séance simple : un enseignant ou une
+  // salle ne peuvent être occupés qu'une seule fois par créneau, toutes
+  // spécialités confondues.
+  const { data: memeCreneauGlobal } = await supabase
+    .from('seances_edt')
+    .select('id, salle_id, enseignant_id')
+    .eq('semaine', semaine)
+    .eq('jour', jour)
+    .eq('creneau', creneau);
+  const idAExclure = seanceExistante?.id;
+  const conflitEnseignant = (memeCreneauGlobal ?? []).some(
+    (o) => o.id !== idAExclure && o.enseignant_id === enseignantId
+  );
+  const conflitSalle =
+    !!salleId &&
+    (memeCreneauGlobal ?? []).some(
+      (o) => o.id !== idAExclure && o.salle_id === salleId
+    );
+  const statut: 'ok' | 'conflit' =
+    !salleId || conflitEnseignant || conflitSalle ? 'conflit' : 'ok';
 
-  for (const specialiteId of specialitesDuGroupe) {
-    let { data: emploi } = await supabase
-      .from('emplois_du_temps')
-      .select('id')
-      .eq('specialite_id', specialiteId)
-      .eq('semaine', semaine)
-      .maybeSingle();
-
-    if (!emploi) {
-      const { data: nouvelEmploi, error } = await supabase
-        .from('emplois_du_temps')
-        .insert({ specialite_id: specialiteId, semaine, statut: 'genere' })
-        .select('id')
-        .single();
-      if (error) throw error;
-      emploi = nouvelEmploi;
-    }
-
-    const { data: seanceExistante } = await supabase
+  if (seanceExistante) {
+    const { error } = await supabase
       .from('seances_edt')
-      .select('id')
-      .eq('emploi_du_temps_id', emploi.id)
-      .eq('tronc_commun_id', troncCommunId)
-      .eq('jour', jour)
-      .eq('creneau', creneau)
-      .maybeSingle();
-
-    if (seanceExistante) {
-      await supabase
-        .from('seances_edt')
-        .update({
-          jour,
-          creneau,
-          salle_id: salleId,
-          enseignant_id: enseignantId,
-          statut: 'ok',
-        })
-        .eq('id', seanceExistante.id);
-    } else {
-      await supabase.from('seances_edt').insert({
-        emploi_du_temps_id: emploi.id,
-        tronc_commun_id: troncCommunId,
-        enseignant_id: enseignantId,
+      .update({
         salle_id: salleId,
-        jour,
-        creneau,
-        statut: 'ok',
-      });
-    }
+        enseignant_id: enseignantId,
+        statut,
+      })
+      .eq('id', seanceExistante.id);
+    if (error) throw error;
+  } else {
+    const { error } = await supabase.from('seances_edt').insert({
+      emploi_du_temps_id: null,
+      tronc_commun_id: troncCommunId,
+      semaine,
+      jour,
+      creneau,
+      enseignant_id: enseignantId,
+      salle_id: salleId,
+      statut,
+    });
+    if (error) throw error;
   }
 }
 
@@ -556,21 +624,28 @@ export async function assignerSeance(params: ParamsAssignation) {
     return;
   }
 
-  // Cas simple (pas de tronc commun)
-  let statut: 'ok' | 'conflit' = 'ok';
-  if (!salleId) {
-    statut = 'conflit';
-  } else {
-    const { data: occupees } = await supabase
-      .from('seances_edt')
-      .select('id, salle_id')
-      .eq('emploi_du_temps_id', emploiId)
-      .eq('jour', jour)
-      .eq('creneau', creneau)
-      .eq('salle_id', salleId);
-    const conflit = (occupees ?? []).some((o) => o.id !== seanceIdExistante);
-    if (conflit) statut = 'conflit';
-  }
+  // Cas simple (pas de tronc commun) — un enseignant ou une salle ne
+  // peuvent être occupés qu'une seule fois par créneau, TOUTES
+  // spécialités confondues (recherche globale via semaine, plus
+  // seulement dans le même emploi du temps).
+  const { data: memeCreneauGlobal } = await supabase
+    .from('seances_edt')
+    .select('id, salle_id, enseignant_id')
+    .eq('semaine', semaine)
+    .eq('jour', jour)
+    .eq('creneau', creneau);
+
+  const conflitEnseignant = (memeCreneauGlobal ?? []).some(
+    (o) => o.id !== seanceIdExistante && o.enseignant_id === enseignantId
+  );
+  const conflitSalle =
+    !!salleId &&
+    (memeCreneauGlobal ?? []).some(
+      (o) => o.id !== seanceIdExistante && o.salle_id === salleId
+    );
+
+  const statut: 'ok' | 'conflit' =
+    !salleId || conflitEnseignant || conflitSalle ? 'conflit' : 'ok';
 
   if (seanceIdExistante) {
     const { error } = await supabase
@@ -580,6 +655,7 @@ export async function assignerSeance(params: ParamsAssignation) {
         tronc_commun_id: null,
         enseignant_id: enseignantId,
         salle_id: salleId,
+        semaine,
         statut,
       })
       .eq('id', seanceIdExistante);
@@ -590,6 +666,7 @@ export async function assignerSeance(params: ParamsAssignation) {
       offre_id: offreId,
       enseignant_id: enseignantId,
       salle_id: salleId,
+      semaine,
       jour,
       creneau,
       statut,
@@ -635,6 +712,32 @@ export async function uploaderDocumentSigne(
   return url;
 }
 
+// Même document signé pour tout un groupe d'emplois du temps (un cycle +
+// semestre validés ensemble) — un seul envoi, appliqué à chacun.
+export async function uploaderDocumentSigneGroupe(
+  emploiIds: string[],
+  fichier: File
+): Promise<string> {
+  const extension = fichier.name.split('.').pop() ?? 'pdf';
+  const chemin = `groupe-${emploiIds[0]}-${Date.now()}.${extension}`;
+
+  const { error: uploadError } = await supabase.storage
+    .from('documents-edt')
+    .upload(chemin, fichier, { upsert: true });
+  if (uploadError) throw uploadError;
+
+  const { data } = supabase.storage.from('documents-edt').getPublicUrl(chemin);
+  const url = data.publicUrl;
+
+  const { error } = await supabase
+    .from('emplois_du_temps')
+    .update({ pdf_signe_url: url })
+    .in('id', emploiIds);
+  if (error) throw error;
+
+  return url;
+}
+
 // Valide l'emploi du temps (statut → 'valide', verrouillé) et notifie
 // chaque enseignant concerné avec SES SEULS cours (jour, créneau, salle) —
 // journal.md Scénario 6, étapes 7-8. Le rappel automatique la veille de
@@ -642,7 +745,7 @@ export async function uploaderDocumentSigne(
 export async function validerEDT(emploiId: string) {
   const { data: emploi } = await supabase
     .from('emplois_du_temps')
-    .select('pdf_signe_url')
+    .select('pdf_signe_url, specialite_id, semaine')
     .eq('id', emploiId)
     .maybeSingle();
   if (!emploi?.pdf_signe_url) {
@@ -657,15 +760,43 @@ export async function validerEDT(emploiId: string) {
 
   // Scénario 7 — génération automatique des codes d'ouverture/fermeture
   // pour toute la semaine qui vient d'être validée.
-  await genererCodesPourEmploi(emploiId);
+  await genererCodesPourEmploi(emploiId, emploi.specialite_id, emploi.semaine);
 
-  const seances = await getSeances(emploiId);
-  const { data: seancesData } = await supabase
+  const seances = await getSeances(emploiId, emploi.specialite_id, emploi.semaine);
+
+  const { data: seancesSpe } = await supabase
     .from('seances_edt')
     .select(
       'enseignant_id, jour, creneau, offre:offres(ue:ues(nom)), salle:salles(code_salle)'
     )
     .eq('emploi_du_temps_id', emploiId);
+
+  const { data: offresSpe } = await supabase
+    .from('offres')
+    .select('ue_id')
+    .eq('specialite_id', emploi.specialite_id);
+  const ueIds = (offresSpe ?? []).map((o) => o.ue_id);
+  let seancesTronc: any[] = [];
+  if (ueIds.length > 0) {
+    const { data: liens } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id')
+      .in('ue_id', ueIds);
+    const troncIds = Array.from(
+      new Set((liens ?? []).map((l) => l.tronc_commun_id))
+    );
+    if (troncIds.length > 0) {
+      const { data } = await supabase
+        .from('seances_edt')
+        .select(
+          'enseignant_id, jour, creneau, tronc_commun:troncs_communs(nom), salle:salles(code_salle)'
+        )
+        .in('tronc_commun_id', troncIds)
+        .eq('semaine', emploi.semaine);
+      seancesTronc = data ?? [];
+    }
+  }
+  const seancesData = [...(seancesSpe ?? []), ...seancesTronc];
 
   const parEnseignant = new Map<string, string[]>();
   for (const s of (seancesData ?? []) as any[]) {
@@ -840,4 +971,263 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
       pdfSigneUrl: s.emploi_du_temps.pdf_signe_url,
     }))
     .sort((a, b) => a.semaine.localeCompare(b.semaine));
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PHASE 2 — Génération groupée par cycle + semestre + semaine.
+// L'admin (ou le responsable, selon son périmètre) choisit un cycle +
+// un semestre + une semaine, et confectionne d'un coup les emplois de
+// TOUTES les spécialités concernées (même dans des écoles/filières
+// différentes — un tronc commun peut les regrouper).
+// ═══════════════════════════════════════════════════════════════════
+
+export interface CycleOption {
+  key: string; // "cycle::sousCycle"
+  cycle: string;
+  sousCycle: string | null;
+  label: string;
+}
+
+export async function listCyclesDisponibles(
+  perimetreSpecialiteIds: string[] | null
+): Promise<CycleOption[]> {
+  const { data, error } = await supabase
+    .from('specialites')
+    .select('id, cycle, sous_cycle');
+  if (error) throw error;
+
+  const vues = new Map<string, CycleOption>();
+  for (const s of (data ?? []) as any[]) {
+    if (perimetreSpecialiteIds && !perimetreSpecialiteIds.includes(s.id))
+      continue;
+    const key = `${s.cycle}::${s.sous_cycle ?? ''}`;
+    if (!vues.has(key)) {
+      vues.set(key, {
+        key,
+        cycle: s.cycle,
+        sousCycle: s.sous_cycle ?? null,
+        label: s.sous_cycle ? `${s.cycle} (${s.sous_cycle})` : s.cycle,
+      });
+    }
+  }
+  return Array.from(vues.values()).sort((a, b) =>
+    a.label.localeCompare(b.label)
+  );
+}
+
+export interface SpecialiteGroupe {
+  id: string;
+  nom: string;
+  ecoleNom: string;
+  filiereNom: string;
+  typeCursus: TypeCursus;
+}
+
+// Spécialités correspondant à un cycle donné, ayant au moins une UE
+// programmée pour le semestre donné, filtrées par périmètre.
+export async function listSpecialitesDuCycleSemestre(
+  cycle: string,
+  sousCycle: string | null,
+  semestre: string,
+  perimetreSpecialiteIds: string[] | null
+): Promise<SpecialiteGroupe[]> {
+  let query = supabase
+    .from('specialites')
+    .select(
+      `
+      id, nom, type_cursus,
+      filiere:filieres(nom, ecole:ecoles(nom)),
+      offres(semestre)
+    `
+    )
+    .eq('cycle', cycle);
+  query = sousCycle
+    ? query.eq('sous_cycle', sousCycle)
+    : query.is('sous_cycle', null);
+  const { data, error } = await query;
+  if (error) throw error;
+
+  const resultat: SpecialiteGroupe[] = [];
+  for (const s of (data ?? []) as any[]) {
+    if (perimetreSpecialiteIds && !perimetreSpecialiteIds.includes(s.id))
+      continue;
+    const aOffreCeSemestre = (s.offres ?? []).some(
+      (o: any) => o.semestre === semestre
+    );
+    if (!aOffreCeSemestre) continue;
+    resultat.push({
+      id: s.id,
+      nom: s.nom,
+      ecoleNom: s.filiere?.ecole?.nom ?? '',
+      filiereNom: s.filiere?.nom ?? '',
+      typeCursus: s.type_cursus,
+    });
+  }
+  return resultat.sort((a, b) => a.nom.localeCompare(b.nom));
+}
+
+export interface SeanceGroupee extends SeanceDetail {
+  // null si séance de tronc commun (partagée, pas rattachée à une
+  // seule spécialité) — utiliser specialitesParTronc pour savoir sous
+  // quelles spécialités l'afficher.
+  specialiteId: string | null;
+}
+
+export interface DonneesGroupees {
+  seances: SeanceGroupee[];
+  emploiParSpecialite: Map<string, string>;
+  specialitesParTronc: Map<string, Set<string>>;
+  // UE → tronc commun (id + nom) — pour savoir, dès la sélection dans le
+  // sélecteur (avant tout enregistrement), qu'une UE choisie appartient
+  // à un groupe, et propager localement vers les autres spécialités du
+  // groupe déjà chargées dans cette session.
+  ueVersTronc: Map<string, { troncCommunId: string; nom: string }>;
+}
+
+export async function getSeancesGroupees(
+  specialiteIds: string[],
+  semaine: string
+): Promise<DonneesGroupees> {
+  const { data: emplois } = await supabase
+    .from('emplois_du_temps')
+    .select('id, specialite_id')
+    .in('specialite_id', specialiteIds)
+    .eq('semaine', semaine);
+  const emploiParSpecialite = new Map(
+    (emplois ?? []).map((e: any) => [e.specialite_id, e.id])
+  );
+  const emploiIds = (emplois ?? []).map((e: any) => e.id);
+
+  let seancesSpe: any[] = [];
+  if (emploiIds.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        `
+        id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
+        offre:offres(specialite_id, semestre, ue:ues(nom, volume_horaire)),
+        enseignant:enseignants(nom),
+        salle:salles(code_salle)
+      `
+      )
+      .in('emploi_du_temps_id', emploiIds);
+    if (error) throw error;
+    seancesSpe = data ?? [];
+  }
+
+  const { data: offresGroupe } = await supabase
+    .from('offres')
+    .select('ue_id, specialite_id')
+    .in('specialite_id', specialiteIds);
+  const specialiteParUe = new Map(
+    (offresGroupe ?? []).map((o: any) => [o.ue_id, o.specialite_id])
+  );
+  const ueIds = Array.from(specialiteParUe.keys());
+
+  let seancesTronc: any[] = [];
+  const specialitesParTronc = new Map<string, Set<string>>();
+  const ueVersTronc = new Map<string, { troncCommunId: string; nom: string }>();
+  if (ueIds.length > 0) {
+    const { data: liens } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id, ue_id, tronc_commun:troncs_communs(nom)')
+      .in('ue_id', ueIds);
+    for (const l of (liens ?? []) as any[]) {
+      const specialiteId = specialiteParUe.get(l.ue_id);
+      if (!specialiteId) continue;
+      if (!specialitesParTronc.has(l.tronc_commun_id)) {
+        specialitesParTronc.set(l.tronc_commun_id, new Set());
+      }
+      specialitesParTronc.get(l.tronc_commun_id)!.add(specialiteId);
+      ueVersTronc.set(l.ue_id, {
+        troncCommunId: l.tronc_commun_id,
+        nom: l.tronc_commun?.nom ?? '',
+      });
+    }
+    const troncIds = Array.from(specialitesParTronc.keys());
+    if (troncIds.length > 0) {
+      const { data, error } = await supabase
+        .from('seances_edt')
+        .select(
+          `
+          id, jour, creneau, statut, tronc_commun_id, salle_id,
+          tronc_commun:troncs_communs(nom),
+          enseignant:enseignants(nom),
+          salle:salles(code_salle)
+        `
+        )
+        .in('tronc_commun_id', troncIds)
+        .eq('semaine', semaine);
+      if (error) throw error;
+      seancesTronc = data ?? [];
+    }
+  }
+
+  const resultatSpe: SeanceGroupee[] = seancesSpe.map((s) => ({
+    id: s.id,
+    offreId: s.offre_id,
+    troncCommunId: null,
+    ueNom: s.offre?.ue?.nom ?? '',
+    volumeHoraire: s.offre?.ue?.volume_horaire ?? null,
+    semestre: s.offre?.semestre ?? null,
+    enseignantNom: s.enseignant?.nom ?? '',
+    salleCode: s.salle?.code_salle ?? null,
+    salleId: s.salle_id,
+    jour: s.jour,
+    creneau: s.creneau,
+    statut: s.statut,
+    specialiteId: s.offre?.specialite_id ?? null,
+  }));
+
+  const resultatTronc: SeanceGroupee[] = seancesTronc.map((s) => ({
+    id: s.id,
+    offreId: null,
+    troncCommunId: s.tronc_commun_id,
+    ueNom: s.tronc_commun?.nom ?? '',
+    volumeHoraire: null,
+    semestre: null,
+    enseignantNom: s.enseignant?.nom ?? '',
+    salleCode: s.salle?.code_salle ?? null,
+    salleId: s.salle_id,
+    jour: s.jour,
+    creneau: s.creneau,
+    statut: s.statut,
+    specialiteId: null,
+  }));
+
+  return {
+    seances: [...resultatSpe, ...resultatTronc],
+    emploiParSpecialite,
+    specialitesParTronc,
+    ueVersTronc,
+  };
+}
+
+// Trouve ou crée l'emploi du temps (vierge) d'une spécialité pour une
+// semaine — utilisé à l'enregistrement groupé, une fois par spécialité
+// qui n'en a pas encore.
+export async function trouverOuCreerEmploi(
+  specialiteId: string,
+  semaine: string
+): Promise<string> {
+  const { data: existant } = await supabase
+    .from('emplois_du_temps')
+    .select('id')
+    .eq('specialite_id', specialiteId)
+    .eq('semaine', semaine)
+    .maybeSingle();
+  if (existant) return existant.id;
+
+  const campagne = await getDerniereCampagne();
+  if (campagne && campagne.statut === 'active') {
+    await arreterCampagne(campagne.id);
+  }
+
+  const { data, error } = await supabase
+    .from('emplois_du_temps')
+    .insert({ specialite_id: specialiteId, semaine, statut: 'genere' })
+    .select('id')
+    .single();
+  if (error) throw error;
+  return data.id;
 }

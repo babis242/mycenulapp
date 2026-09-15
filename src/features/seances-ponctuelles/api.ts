@@ -69,7 +69,7 @@ export async function listSeancesAnnulees(): Promise<SeanceAnnulee[]> {
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau, annulee_le, motif_annulation, offre_id, tronc_commun_id,
+      id, jour, creneau, annulee_le, motif_annulation, offre_id, tronc_commun_id, semaine,
       offre:offres(ue:ues(nom), specialite_id),
       tronc_commun:troncs_communs(nom),
       enseignant:enseignants(nom),
@@ -86,7 +86,7 @@ export async function listSeancesAnnulees(): Promise<SeanceAnnulee[]> {
     enseignantNom: s.enseignant?.nom ?? '',
     jour: s.jour,
     creneau: s.creneau,
-    semaine: s.emploi_du_temps?.semaine ?? '',
+    semaine: s.emploi_du_temps?.semaine ?? s.semaine ?? '',
     annuleeLe: s.annulee_le,
     motif: s.motif_annulation,
     specialiteId: s.offre?.specialite_id ?? s.emploi_du_temps?.specialite_id ?? null,
@@ -193,8 +193,11 @@ export async function programmerCoursVolant(
     );
   }
 
+  const estTronc = !!input.troncCommunId;
+
   const donneesSeance = {
-    emploi_du_temps_id: emploi.id,
+    emploi_du_temps_id: estTronc ? null : emploi.id,
+    semaine,
     jour,
     creneau: input.creneau,
     offre_id: input.offreId ?? null,
@@ -209,15 +212,26 @@ export async function programmerCoursVolant(
 
   // Toujours vérifier s'il existe déjà une séance sur ce créneau exact
   // (même sans passer par "Programmer un remplacement") — on la
-  // remplace au lieu d'en créer une deuxième en double.
+  // remplace au lieu d'en créer une deuxième en double. Un tronc commun
+  // n'a qu'UNE SEULE ligne partagée (retrouvée par tronc_commun_id +
+  // semaine, pas par emploi_du_temps_id qu'elle n'a plus).
   let idCible = input.remplaceSeanceEdtId ?? null;
   if (!idCible) {
-    const { data: existantes } = await supabase
-      .from('seances_edt')
-      .select('id')
-      .eq('emploi_du_temps_id', emploi.id)
-      .eq('jour', jour)
-      .eq('creneau', input.creneau);
+    const requete = estTronc
+      ? supabase
+          .from('seances_edt')
+          .select('id')
+          .eq('tronc_commun_id', input.troncCommunId)
+          .eq('semaine', semaine)
+          .eq('jour', jour)
+          .eq('creneau', input.creneau)
+      : supabase
+          .from('seances_edt')
+          .select('id')
+          .eq('emploi_du_temps_id', emploi.id)
+          .eq('jour', jour)
+          .eq('creneau', input.creneau);
+    const { data: existantes } = await requete;
     if (existantes && existantes.length > 0) {
       idCible = existantes[0].id;
       // Doublons déjà présents (bug passé, ou créneau saisi deux fois) —

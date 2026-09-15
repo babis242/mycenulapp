@@ -130,7 +130,6 @@ export async function getSeanceDuMoment(
     .eq('semaine', semaine)
     .eq('statut', 'valide');
   const emploiIds = (emplois ?? []).map((e) => e.id);
-  if (emploiIds.length === 0) return null;
   const specialiteParEmploi = new Map(
     (emplois ?? []).map((e: any) => [
       e.id,
@@ -142,28 +141,60 @@ export async function getSeanceDuMoment(
     ])
   );
 
-  const { data, error } = await supabase
-    .from('seances_edt')
-    .select(
-      `
-      id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps_id,
-      tronc_commun_id,
-      offre:offres(semestre, ue:ues(id, nom)),
-      tronc_commun:troncs_communs(nom),
-      salle:salles(code_salle)
-    `
-    )
-    .eq('enseignant_id', enseignant.id)
-    .eq('jour', jour)
-    .eq('creneau', creneau)
-    .eq('annulee', false)
-    .in('emploi_du_temps_id', emploiIds)
-    .order('id')
-    .limit(1);
-  if (error) throw error;
-  if (!data || data.length === 0) return null;
+  // Séance de spécialité (via emplois du temps validés) OU séance de
+  // tronc commun (partagée, plus rattachée à un seul emploi du temps) —
+  // recherchées séparément, elles ne se rattachent pas à la semaine de
+  // la même façon.
+  let s: any = null;
 
-  const s = data[0] as any;
+  if (emploiIds.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        `
+        id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps_id,
+        tronc_commun_id,
+        offre:offres(semestre, ue:ues(id, nom)),
+        tronc_commun:troncs_communs(nom),
+        salle:salles(code_salle)
+      `
+      )
+      .eq('enseignant_id', enseignant.id)
+      .eq('jour', jour)
+      .eq('creneau', creneau)
+      .eq('annulee', false)
+      .in('emploi_du_temps_id', emploiIds)
+      .order('id')
+      .limit(1);
+    if (error) throw error;
+    s = data?.[0] ?? null;
+  }
+
+  if (!s) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        `
+        id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps_id,
+        tronc_commun_id,
+        tronc_commun:troncs_communs(nom),
+        salle:salles(code_salle)
+      `
+      )
+      .eq('enseignant_id', enseignant.id)
+      .eq('jour', jour)
+      .eq('creneau', creneau)
+      .eq('semaine', semaine)
+      .eq('annulee', false)
+      .not('tronc_commun_id', 'is', null)
+      .order('id')
+      .limit(1);
+    if (error) throw error;
+    s = data?.[0] ?? null;
+  }
+
+  if (!s) return null;
+
   const specialiteInfo = specialiteParEmploi.get(s.emploi_du_temps_id);
   return {
     id: s.id,
@@ -256,7 +287,7 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
       db.troncsCommuns.toArray(),
       db.specialites.toArray(),
     ]);
-  if (emplois.length === 0) return [];
+  if (emplois.length === 0 && !troncsCommuns.length) return [];
 
   const emploiParId = new Map(emplois.map((e: any) => [e.id, e]));
   const offreParId = new Map(offres.map((o: any) => [o.id, o]));
@@ -267,7 +298,11 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
 
   const q = recherche.trim().toLowerCase();
   return (seancesToutes as any[])
-    .filter((s) => emploiParId.has(s.emploi_du_temps_id))
+    .filter(
+      (s) =>
+        emploiParId.has(s.emploi_du_temps_id) ||
+        (s.tronc_commun_id && semaines.includes(s.semaine))
+    )
     .map((s) => {
       const emploi = emploiParId.get(s.emploi_du_temps_id);
       const offre = s.offre_id ? offreParId.get(s.offre_id) : null;
@@ -294,7 +329,7 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
         semestre: offre?.semestre ?? null,
         jour: s.jour,
         creneau: s.creneau,
-        semaine: emploi?.semaine ?? '',
+        semaine: emploi?.semaine ?? s.semaine ?? '',
         heureOuverture: s.heure_ouverture ?? null,
         heureFermeture: s.heure_fermeture ?? null,
       } as SeanceRecherche;
@@ -471,7 +506,6 @@ export async function rechercherSeancesPourSaisieManuelle(
     .in('semaine', semaines)
     .eq('statut', 'valide');
   const emploiIds = (emplois ?? []).map((e) => e.id);
-  if (emploiIds.length === 0) return [];
   const infosParEmploi = new Map(
     (emplois ?? []).map((e: any) => [
       e.id,
@@ -484,23 +518,44 @@ export async function rechercherSeancesPourSaisieManuelle(
     ])
   );
 
-  const { data, error } = await supabase
+  let seancesSpe: any[] = [];
+  if (emploiIds.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        `
+        id, jour, creneau, emploi_du_temps_id, heure_ouverture, heure_fermeture,
+        tronc_commun_id,
+        offre:offres(semestre, ue:ues(id, nom)),
+        tronc_commun:troncs_communs(nom),
+        enseignant:enseignants(nom, matricule)
+      `
+      )
+      .in('emploi_du_temps_id', emploiIds);
+    if (error) throw error;
+    seancesSpe = data ?? [];
+  }
+
+  // Séances de tronc commun des dernières semaines — plus rattachées à
+  // un emploi de spécialité (une seule ligne partagée par tout le
+  // groupe).
+  const { data: seancesTronc, error: errorTronc } = await supabase
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau, emploi_du_temps_id, heure_ouverture, heure_fermeture,
+      id, jour, creneau, heure_ouverture, heure_fermeture, semaine,
       tronc_commun_id,
-      offre:offres(semestre, ue:ues(id, nom)),
       tronc_commun:troncs_communs(nom),
       enseignant:enseignants(nom, matricule)
     `
     )
-    .in('emploi_du_temps_id', emploiIds);
-  if (error) throw error;
+    .in('semaine', semaines)
+    .not('tronc_commun_id', 'is', null);
+  if (errorTronc) throw errorTronc;
 
   const q = recherche.trim().toLowerCase();
-  return ((data ?? []) as any[])
-    .map((s) => {
+  return [...seancesSpe, ...(seancesTronc ?? [])]
+    .map((s: any) => {
       const infos = infosParEmploi.get(s.emploi_du_temps_id);
       return {
         id: s.id,
@@ -515,7 +570,7 @@ export async function rechercherSeancesPourSaisieManuelle(
         semestre: s.offre?.semestre ?? null,
         jour: s.jour,
         creneau: s.creneau,
-        semaine: infos?.semaine ?? '',
+        semaine: infos?.semaine ?? s.semaine ?? '',
         heureOuverture: s.heure_ouverture,
         heureFermeture: s.heure_fermeture,
       };

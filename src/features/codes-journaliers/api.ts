@@ -20,13 +20,47 @@ function genererCode(longueur = 6): string {
 // fermeture par séance de la semaine validée. Idempotent — ne recrée pas
 // de code pour une séance qui en possède déjà un (utile si la fonction est
 // rappelée après une re-validation).
-export async function genererCodesPourEmploi(emploiId: string): Promise<void> {
-  const { data: seances, error } = await supabase
+export async function genererCodesPourEmploi(
+  emploiId: string,
+  specialiteId: string,
+  semaine: string
+): Promise<void> {
+  const { data: seancesSpe, error } = await supabase
     .from('seances_edt')
     .select('id, jour, creneau')
     .eq('emploi_du_temps_id', emploiId);
   if (error) throw error;
-  if (!seances || seances.length === 0) return;
+
+  // Séances de tronc commun de cette spécialité pour cette semaine —
+  // elles n'ont plus d'emploi_du_temps_id (une seule ligne partagée par
+  // tout le groupe), retrouvées via troncs_communs_ues.
+  const { data: offresSpe } = await supabase
+    .from('offres')
+    .select('ue_id')
+    .eq('specialite_id', specialiteId);
+  const ueIds = (offresSpe ?? []).map((o) => o.ue_id);
+
+  let seancesTronc: { id: string; jour: string; creneau: string }[] = [];
+  if (ueIds.length > 0) {
+    const { data: liens } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id')
+      .in('ue_id', ueIds);
+    const troncIds = Array.from(
+      new Set((liens ?? []).map((l) => l.tronc_commun_id))
+    );
+    if (troncIds.length > 0) {
+      const { data: st } = await supabase
+        .from('seances_edt')
+        .select('id, jour, creneau')
+        .in('tronc_commun_id', troncIds)
+        .eq('semaine', semaine);
+      seancesTronc = st ?? [];
+    }
+  }
+
+  const seances = [...(seancesSpe ?? []), ...seancesTronc];
+  if (seances.length === 0) return;
 
   const { data: existants } = await supabase
     .from('codes_seances')
@@ -149,7 +183,7 @@ export async function lireCodesDepuisCache(
     db.salles.toArray(),
     db.troncsCommuns.toArray(),
   ]);
-  if (emplois.length === 0) return [];
+  if (emplois.length === 0 && !troncsCommuns.length) return [];
 
   const specialites = await db.specialites.toArray();
   const specialiteParId = new Map(specialites.map((s: any) => [s.id, s]));
@@ -164,7 +198,11 @@ export async function lireCodesDepuisCache(
   );
 
   return (seancesToutes as any[])
-    .filter((s) => emploiParId.has(s.emploi_du_temps_id))
+    .filter(
+      (s) =>
+        emploiParId.has(s.emploi_du_temps_id) ||
+        (s.tronc_commun_id && s.semaine === semaineISO)
+    )
     .map((s) => {
       const code = codeParSeanceId.get(s.id);
       if (!code) return null;
@@ -188,7 +226,7 @@ export async function lireCodesDepuisCache(
         enseignantNom: enseignant?.nom ?? '',
         salleCode: salle?.code_salle ?? null,
         specialiteId: specialite?.id ?? '',
-        specialiteNom: specialite?.nom ?? '',
+        specialiteNom: specialite?.nom ?? (troncCommun ? 'Tronc commun' : ''),
         jour: s.jour,
         creneau: s.creneau,
         codeOuverture: code.code_ouverture,
@@ -215,7 +253,6 @@ export async function listCodesPourSemaine(
     .eq('statut', 'valide');
   if (emploisError) throw emploisError;
   const emploiIds = (emplois ?? []).map((e) => e.id);
-  if (emploiIds.length === 0) return [];
 
   const specialiteParEmploi = new Map(
     (emplois ?? []).map((e) => [
@@ -240,7 +277,25 @@ export async function listCodesPourSemaine(
     )
     .in('emploi_du_temps_id', emploiIds);
   if (error) throw error;
-  if (!seances || seances.length === 0) return [];
+
+  // Séances de tronc commun de cette semaine — plus rattachées à un
+  // emploi_du_temps_id (une seule ligne partagée par tout le groupe).
+  const { data: seancesTronc, error: errorTronc } = await supabase
+    .from('seances_edt')
+    .select(
+      `
+      id, jour, creneau,
+      tronc_commun:troncs_communs(nom),
+      enseignant:enseignants(nom),
+      salle:salles(code_salle)
+    `
+    )
+    .eq('semaine', semaineISO)
+    .not('tronc_commun_id', 'is', null);
+  if (errorTronc) throw errorTronc;
+
+  const toutesLesSeances = [...(seances ?? []), ...(seancesTronc ?? [])];
+  if (toutesLesSeances.length === 0) return [];
 
   const { data: codes, error: codesError } = await supabase
     .from('codes_seances')
@@ -249,12 +304,12 @@ export async function listCodesPourSemaine(
     )
     .in(
       'seance_edt_id',
-      seances.map((s) => s.id)
+      toutesLesSeances.map((s) => s.id)
     );
   if (codesError) throw codesError;
   const codeParSeance = new Map((codes ?? []).map((c) => [c.seance_edt_id, c]));
 
-  return (seances as any[])
+  return (toutesLesSeances as any[])
     .map((s) => {
       const code = codeParSeance.get(s.id);
       if (!code) return null;
@@ -266,7 +321,7 @@ export async function listCodesPourSemaine(
         enseignantNom: s.enseignant?.nom ?? '',
         salleCode: s.salle?.code_salle ?? null,
         specialiteId: specialite?.id ?? '',
-        specialiteNom: specialite?.nom ?? '',
+        specialiteNom: specialite?.nom ?? (s.tronc_commun ? 'Tronc commun' : ''),
         jour: s.jour,
         creneau: s.creneau,
         codeOuverture: code.code_ouverture,
