@@ -8,9 +8,7 @@ import {
   lireSeanceDuMomentDepuisCache,
   ouvrirSeance,
   fermerSeance,
-  diagnostiquerCreneauActuel,
   type SeanceDuMoment,
-  type DiagnosticCreneau,
 } from '../api';
 import { annulerMaSeance } from '@/features/seances-ponctuelles/api';
 import { ecartHorlogeMinutes } from '@/lib/horlogeAppareil';
@@ -35,7 +33,6 @@ export default function MaSeancePage() {
   const [motifAnnulation, setMotifAnnulation] = useState('');
   const [annulationEnCours, setAnnulationEnCours] = useState(false);
   const [ecartHorloge, setEcartHorloge] = useState<number | null>(null);
-  const [diagnostic, setDiagnostic] = useState<DiagnosticCreneau | null>(null);
   // true si l'ouverture/fermeture affichée est une confirmation LOCALE
   // provisoire (saisie hors ligne, pas encore synchronisée) plutôt que
   // l'heure définitive du serveur.
@@ -92,10 +89,6 @@ export default function MaSeancePage() {
   }
 
   useEffect(charger, [user?.matricule]);
-
-  useEffect(() => {
-    diagnostiquerCreneauActuel().then(setDiagnostic).catch(() => {});
-  }, [seance]);
 
   async function handleOuvrir() {
     if (!seance || !code.trim()) return;
@@ -179,23 +172,6 @@ export default function MaSeancePage() {
           <RefreshCw size={16} />
         </button>
       </div>
-
-      {/* DEBUG TEMPORAIRE — à retirer une fois le bug confirmé résolu */}
-      {diagnostic && (
-        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-[11px] font-mono text-amber-800 space-y-1">
-          <p>
-            <strong>DEBUG</strong> — heure Cameroun calculée (serveur) :{' '}
-            {diagnostic.maintenantISO} · jour : {diagnostic.jour ?? '(dimanche)'}{' '}
-            · créneau détecté : {diagnostic.creneauDetecte ?? '(aucun)'}
-          </p>
-          <p>
-            Bornes connues :{' '}
-            {diagnostic.bornes
-              .map((b) => `${b.code} [${b.debut}-${b.fin}]`)
-              .join(' · ')}
-          </p>
-        </div>
-      )}
 
       {ecartHorloge !== null && Math.abs(ecartHorloge) > 3 && (
         <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">

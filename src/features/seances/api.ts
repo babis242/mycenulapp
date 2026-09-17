@@ -167,44 +167,6 @@ export interface SeanceDuMoment {
 // spécialité ET de tronc commun ainsi que le statut de l'emploi du temps
 // associé — le filtre "semaine validée" se fait ensuite en mémoire sur ce
 // petit résultat (au plus quelques lignes, jamais toute l'école).
-// ── Diagnostic (TEMPORAIRE) ─────────────────────────────────────────
-// À retirer une fois le bug confirmé résolu. Expose ce que le code
-// calcule réellement comme "maintenant", "aujourd'hui" et "créneau
-// actuel", pour distinguer en un coup d'œil : (a) un vrai bug dans le
-// calcul de l'heure, de (b) des bornes de créneau de test qui ne
-// couvrent tout simplement pas l'heure réelle actuelle.
-export interface DiagnosticCreneau {
-  maintenantISO: string; // heure Cameroun calculée, affichable
-  jour: string | null;
-  creneauDetecte: string | null;
-  bornes: { code: string; debut: string; fin: string }[];
-}
-
-function minutesVersHHMM(m: number): string {
-  const h = Math.floor(m / 60);
-  const mi = m % 60;
-  return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
-}
-
-export async function diagnostiquerCreneauActuel(): Promise<DiagnosticCreneau> {
-  await synchroniserCreneaux();
-  const maintenant = await maintenantCamerounServeur();
-  const jour = jourDAujourdhui(maintenant);
-  const creneauDetecte = creneauActuel(maintenant);
-  const bornes = Object.entries(bornesCreneaux()).map(([code, b]) => ({
-    code,
-    debut: minutesVersHHMM(b.debut),
-    fin: minutesVersHHMM(b.fin),
-  }));
-  return {
-    maintenantISO: `${String(maintenant.getUTCHours()).padStart(2, '0')}:${String(
-      maintenant.getUTCMinutes()
-    ).padStart(2, '0')}:${String(maintenant.getUTCSeconds()).padStart(2, '0')}`,
-    jour,
-    creneauDetecte,
-    bornes,
-  };
-}
 
 export async function getSeanceDuMoment(
   matricule: string
