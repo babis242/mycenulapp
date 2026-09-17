@@ -412,39 +412,67 @@ async function rejouerAction(action: SyncAction): Promise<void> {
           rapportId: string;
           presences: { etudiantId: string; present: boolean }[];
         };
-        await supabase
-          .from('appels_etudiants')
-          .delete()
-          .eq('rapport_id', rapportId);
+        // upsert (pas insert) + suppression ciblée des seuls étudiants
+        // qui ne sont plus dans la liste — idempotent : rejouer deux
+        // fois la même action (ex: retry après un souci réseau) ne
+        // provoque plus de conflit de clé unique (409), contrairement à
+        // l'ancien "delete tout puis insert tout" qui laissait une
+        // fenêtre où une exécution concurrente pouvait percuter l'autre.
         if (presences.length > 0) {
-          const { error } = await supabase.from('appels_etudiants').insert(
+          const { error } = await supabase.from('appels_etudiants').upsert(
             presences.map((p) => ({
               rapport_id: rapportId,
               etudiant_id: p.etudiantId,
               present: p.present,
-            }))
+            })),
+            { onConflict: 'rapport_id,etudiant_id' }
           );
           if (error) throw error;
+          await supabase
+            .from('appels_etudiants')
+            .delete()
+            .eq('rapport_id', rapportId)
+            .not(
+              'etudiant_id',
+              'in',
+              `(${presences.map((p) => p.etudiantId).join(',')})`
+            );
+        } else {
+          await supabase
+            .from('appels_etudiants')
+            .delete()
+            .eq('rapport_id', rapportId);
         }
       } else if (kind === 'points') {
         const { rapportId, pointIds } = payload as {
           rapportId: string;
           pointIds: string[];
         };
-        await supabase
-          .from('rapports_points_abordes')
-          .delete()
-          .eq('rapport_id', rapportId);
         if (pointIds.length > 0) {
           const { error } = await supabase
             .from('rapports_points_abordes')
-            .insert(
+            .upsert(
               pointIds.map((point_cle_id) => ({
                 rapport_id: rapportId,
                 point_cle_id,
-              }))
+              })),
+              { onConflict: 'rapport_id,point_cle_id' }
             );
           if (error) throw error;
+          await supabase
+            .from('rapports_points_abordes')
+            .delete()
+            .eq('rapport_id', rapportId)
+            .not(
+              'point_cle_id',
+              'in',
+              `(${pointIds.join(',')})`
+            );
+        } else {
+          await supabase
+            .from('rapports_points_abordes')
+            .delete()
+            .eq('rapport_id', rapportId);
         }
       }
       return;
@@ -490,43 +518,59 @@ async function rejouerAction(action: SyncAction): Promise<void> {
   }
 }
 
+// Verrou anti-concurrence : processSyncQueue est appelée depuis
+// plusieurs endroits (tâche de fond après chaque enqueueSyncAction,
+// synchro périodique, et maintenant explicitement attendue avant
+// l'envoi des photos de rapport) — sans ce verrou, deux exécutions en
+// parallèle pouvaient traiter LA MÊME action en même temps (ex : deux
+// "delete puis insert" sur rapports_points_abordes qui se percutent),
+// provoquant un conflit de clé unique (409) qui échoue, reste en
+// attente, et se relance indéfiniment à chaque nouvel appel.
+let syncEnCours = false;
+
 export async function processSyncQueue(): Promise<{
   traitees: number;
   restantes: number;
 }> {
   if (!navigator.onLine) return { traitees: 0, restantes: 0 };
+  if (syncEnCours) return { traitees: 0, restantes: 0 };
+  syncEnCours = true;
 
-  const enAttente = await db.syncQueue
-    .where('status')
-    .anyOf(['pending', 'error'])
-    .toArray();
+  try {
+    const enAttente = await db.syncQueue
+      .where('status')
+      .anyOf(['pending', 'error'])
+      .toArray();
 
-  let traitees = 0;
-  for (const action of enAttente) {
-    try {
-      await db.syncQueue.update(action.id!, { status: 'syncing' });
-      await rejouerAction(action);
-      await db.syncQueue.update(action.id!, { status: 'done' });
-      traitees++;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      // Toujours visible en console, même sans ouvrir le composant qui
-      // affiche l'erreur — utile pour diagnostiquer sans deviner.
-      console.error(
-        `[sync] Échec de "${action.entity}" (${action.operation}) :`,
-        message,
-        action.payload
-      );
-      await db.syncQueue.update(action.id!, { status: 'error', error: message });
+    let traitees = 0;
+    for (const action of enAttente) {
+      try {
+        await db.syncQueue.update(action.id!, { status: 'syncing' });
+        await rejouerAction(action);
+        await db.syncQueue.update(action.id!, { status: 'done' });
+        traitees++;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        // Toujours visible en console, même sans ouvrir le composant qui
+        // affiche l'erreur — utile pour diagnostiquer sans deviner.
+        console.error(
+          `[sync] Échec de "${action.entity}" (${action.operation}) :`,
+          message,
+          action.payload
+        );
+        await db.syncQueue.update(action.id!, { status: 'error', error: message });
+      }
     }
+
+    const restantes = await db.syncQueue
+      .where('status')
+      .anyOf(['pending', 'error'])
+      .count();
+
+    return { traitees, restantes };
+  } finally {
+    syncEnCours = false;
   }
-
-  const restantes = await db.syncQueue
-    .where('status')
-    .anyOf(['pending', 'error'])
-    .count();
-
-  return { traitees, restantes };
 }
 
 // À appeler une fois à la connexion, puis à chaque retour de réseau.
