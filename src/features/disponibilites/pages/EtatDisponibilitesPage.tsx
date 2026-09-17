@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
 import { useAuthStore } from '@/stores/authStore';
-import { JOURS, CRENEAUX } from '@/constants/enums';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import {
   getDerniereCampagne,
   listSuiviCampagne,
@@ -327,7 +327,7 @@ export default function EtatDisponibilitesPage() {
                       <th className="text-left text-xs font-bold text-gray-400 uppercase pb-2">
                         Jour
                       </th>
-                      {CRENEAUX.map((c) => (
+                      {tousLesCreneaux().map((c) => (
                         <th
                           key={c}
                           className="text-center text-xs font-bold text-gray-400 uppercase pb-2"
@@ -341,7 +341,7 @@ export default function EtatDisponibilitesPage() {
                     {JOURS.map((jour) => (
                       <tr key={jour}>
                         <td className="py-2 font-bold text-gray-900">{jour}</td>
-                        {CRENEAUX.map((creneau) => {
+                        {tousLesCreneaux().map((creneau) => {
                           const coche = selection.has(`${jour}|${creneau}`);
                           return (
                             <td key={creneau} className="py-2 text-center">

@@ -41,6 +41,7 @@ class AppDatabase extends Dexie {
   troncsCommunsUes!: EntityTable<any, 'id'>;
   campagneEnseignants!: EntityTable<any, 'id'>;
   etudiants!: EntityTable<any, 'id'>;
+  creneaux!: EntityTable<any, 'code'>;
   syncQueue!: EntityTable<SyncAction, 'id'>;
 
   constructor() {
@@ -83,6 +84,23 @@ class AppDatabase extends Dexie {
     // v4 — étudiants (Scénario 11).
     this.version(4).stores({
       etudiants: 'id, matricule, specialite_id, niveau',
+    });
+
+    // v5 — les étudiants sont rattachés à un semestre précis plutôt qu'à
+    // un niveau dérivé (plus fin : un niveau regroupe 2 semestres) —
+    // suppression des semestres combinés (S3&4, S5&6). L'ancien index
+    // "niveau" disparaît, remplacé par "semestre" ; Dexie garde les
+    // anciennes données déjà en cache, elles seront simplement
+    // remplacées à la prochaine synchronisation complète.
+    this.version(5).stores({
+      etudiants: 'id, matricule, specialite_id, semestre',
+    });
+
+    // v6 — créneaux configurables (Référentiel → Créneaux), remplace les
+    // deux créneaux officiels figés en dur par une vraie table, éditable
+    // et synchronisée comme les autres données de référence.
+    this.version(6).stores({
+      creneaux: 'code, ordre',
     });
   }
 }

@@ -6,7 +6,7 @@ export type Role =
 
 export type Cycle = 'BTS' | 'Licence' | 'Master' | 'HND' | 'Bachelor';
 export type TypeCursus = 'standard' | 'sante_culinaire';
-export type Semestre = 'S1' | 'S2' | 'S3&4' | 'S3' | 'S4' | 'S5&6';
+export type Semestre = 'S1' | 'S2' | 'S3' | 'S4' | 'S5' | 'S6';
 export type Jour =
   | 'Lundi'
   | 'Mardi'
@@ -14,7 +14,10 @@ export type Jour =
   | 'Jeudi'
   | 'Vendredi'
   | 'Samedi';
-export type Creneau = '08h-12h' | '14h-17h';
+// Assoupli en string (avant : union stricte '08h-12h' | '14h-17h') — les
+// créneaux sont désormais configurables (table "creneaux" en base, voir
+// Référentiel → Créneaux), pas juste les deux valeurs historiques.
+export type Creneau = string;
 export type StatutCompte = 'actif' | 'inactif';
 
 // 1. Référentiel académique
@@ -190,7 +193,9 @@ export type SyncEntity =
   | 'disponibilites'
   | 'emploisDuTemps'
   | 'seancesEDT'
-  | 'troncsCommuns';
+  | 'troncsCommuns'
+  | 'rapportsSeances'
+  | 'ouvertureFermetureSeance';
 
 export type SyncOperation = 'create' | 'update' | 'delete';
 export type SyncStatus = 'pending' | 'syncing' | 'error' | 'done';

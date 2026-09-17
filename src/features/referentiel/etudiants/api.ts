@@ -7,19 +7,19 @@ export interface Etudiant {
   matricule: string;
   nom_complet: string;
   specialite_id: string;
-  niveau: string;
+  semestre: string;
   created_at: string;
 }
 
 export async function listEtudiants(
   specialiteId: string,
-  niveau: string
+  semestre: string
 ): Promise<Etudiant[]> {
   const { data, error } = await supabase
     .from('etudiants')
-    .select('id, matricule, nom_complet, specialite_id, niveau, created_at')
+    .select('id, matricule, nom_complet, specialite_id, semestre, created_at')
     .eq('specialite_id', specialiteId)
-    .eq('niveau', niveau)
+    .eq('semestre', semestre)
     .order('nom_complet', { ascending: true });
   if (error) throw error;
   return data ?? [];
@@ -28,12 +28,12 @@ export async function listEtudiants(
 // Lecture hors-ligne — même filtre, depuis Dexie.
 export async function lireEtudiantsDepuisCache(
   specialiteId: string,
-  niveau: string
+  semestre: string
 ): Promise<Etudiant[]> {
   const data = await db.etudiants
     .where('specialite_id')
     .equals(specialiteId)
-    .and((e: any) => e.niveau === niveau)
+    .and((e: any) => e.semestre === semestre)
     .toArray();
   return (data as Etudiant[]).sort((a, b) =>
     a.nom_complet.localeCompare(b.nom_complet)
@@ -47,10 +47,10 @@ export interface NouvelEtudiant {
 
 // Ajout en masse (manuel ou depuis un import Excel — même chemin) : ignore
 // silencieusement les doublons (même matricule déjà présent dans ce groupe
-// spécialité/niveau) plutôt que de faire échouer tout le lot.
+// spécialité/semestre) plutôt que de faire échouer tout le lot.
 export async function ajouterEtudiants(
   specialiteId: string,
-  niveau: string,
+  semestre: string,
   etudiants: NouvelEtudiant[]
 ): Promise<{ ajoutes: number; doublons: number }> {
   if (etudiants.length === 0) return { ajoutes: 0, doublons: 0 };
@@ -59,7 +59,7 @@ export async function ajouterEtudiants(
     .from('etudiants')
     .select('matricule')
     .eq('specialite_id', specialiteId)
-    .eq('niveau', niveau);
+    .eq('semestre', semestre);
   const matriculesExistants = new Set(
     (existants ?? []).map((e) => e.matricule.trim().toLowerCase())
   );
@@ -75,7 +75,7 @@ export async function ajouterEtudiants(
       matricule: e.matricule.trim(),
       nom_complet: e.nom_complet.trim(),
       specialite_id: specialiteId,
-      niveau,
+      semestre,
     }))
   );
   if (error) throw error;

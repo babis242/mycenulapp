@@ -12,7 +12,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
-import { niveauxPourTypeCursus } from '@/constants/enums';
+import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import type { Specialite } from '@/types';
 import {
   listEtudiants,
@@ -34,8 +34,9 @@ interface Filiere {
 }
 
 // Écran Scénario 11 — Liste des étudiants, rattachée à une spécialité +
-// un niveau précis. Même cascade École → Filière → Cycle → Spécialité que
-// les autres écrans du référentiel, + le niveau en plus.
+// un semestre précis (plus fin qu'un niveau — un niveau regroupe 2
+// semestres). Même cascade École → Filière → Cycle → Spécialité que les
+// autres écrans du référentiel, + le semestre en plus.
 export default function EtudiantsPage() {
   const [ecoles, setEcoles] = useState<Ecole[]>([]);
   const [ecoleId, setEcoleId] = useState('');
@@ -48,7 +49,7 @@ export default function EtudiantsPage() {
   >({});
   const [cycleKey, setCycleKey] = useState('');
   const [specialiteId, setSpecialiteId] = useState('');
-  const [niveau, setNiveau] = useState('');
+  const [semestre, setSemestre] = useState('');
 
   const [etudiants, setEtudiants] = useState<Etudiant[]>([]);
   const [chargement, setChargement] = useState(false);
@@ -86,7 +87,7 @@ export default function EtudiantsPage() {
     setFiliereId('');
     setCycleKey('');
     setSpecialiteId('');
-    setNiveau('');
+    setSemestre('');
     setEtudiants([]);
     if (id && !filieresByEcole[id]) {
       if (navigator.onLine) {
@@ -110,7 +111,7 @@ export default function EtudiantsPage() {
     setFiliereId(id);
     setCycleKey('');
     setSpecialiteId('');
-    setNiveau('');
+    setSemestre('');
     setEtudiants([]);
     if (id && !specialitesByFiliere[id]) {
       if (navigator.onLine) {
@@ -152,17 +153,17 @@ export default function EtudiantsPage() {
   const specialiteChoisie = specialitesDuCycle.find(
     (s) => s.id === specialiteId
   );
-  const niveauxDisponibles = specialiteChoisie
-    ? niveauxPourTypeCursus(specialiteChoisie.type_cursus)
+  const semestresDisponibles = specialiteChoisie
+    ? SEMESTRES_PAR_TYPE_CURSUS[specialiteChoisie.type_cursus]
     : [];
 
   async function charger() {
-    if (!specialiteId || !niveau) return;
+    if (!specialiteId || !semestre) return;
     setChargement(true);
     setErreur(null);
     let aDesDonneesLocales = false;
     try {
-      const local = await lireEtudiantsDepuisCache(specialiteId, niveau);
+      const local = await lireEtudiantsDepuisCache(specialiteId, semestre);
       if (local.length > 0) {
         setEtudiants(local);
         setDepuisCache(true);
@@ -176,7 +177,7 @@ export default function EtudiantsPage() {
       return;
     }
     try {
-      const frais = await listEtudiants(specialiteId, niveau);
+      const frais = await listEtudiants(specialiteId, semestre);
       setEtudiants(frais);
       setDepuisCache(false);
     } catch (err) {
@@ -193,7 +194,7 @@ export default function EtudiantsPage() {
   useEffect(() => {
     charger();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [specialiteId, niveau]);
+  }, [specialiteId, semestre]);
 
   const filtres = etudiants.filter((e) =>
     recherche.trim()
@@ -231,7 +232,7 @@ export default function EtudiantsPage() {
     try {
       const { ajoutes, doublons } = await ajouterEtudiants(
         specialiteId,
-        niveau,
+        semestre,
         valides
       );
       setMessageAjout(
@@ -292,7 +293,7 @@ export default function EtudiantsPage() {
         setSaving(true);
         const { ajoutes, doublons } = await ajouterEtudiants(
           specialiteId,
-          niveau,
+          semestre,
           aAjouter
         );
         setMessageAjout(
@@ -321,8 +322,8 @@ export default function EtudiantsPage() {
     <div>
       <p className="font-extrabold text-2xl text-gray-900 mb-1">Étudiants</p>
       <p className="text-sm text-gray-400 mb-6">
-        Liste des étudiants par spécialité et niveau — utilisée pour l'appel
-        (Scénario 13).
+        Liste des étudiants par spécialité et semestre — utilisée pour
+        l'appel (Scénario 13).
       </p>
 
       <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
@@ -370,7 +371,7 @@ export default function EtudiantsPage() {
             onChange={(e) => {
               setCycleKey(e.target.value);
               setSpecialiteId('');
-              setNiveau('');
+              setSemestre('');
               setEtudiants([]);
             }}
             disabled={!filiereId}
@@ -392,7 +393,7 @@ export default function EtudiantsPage() {
             value={specialiteId}
             onChange={(e) => {
               setSpecialiteId(e.target.value);
-              setNiveau('');
+              setSemestre('');
               setEtudiants([]);
             }}
             disabled={!cycleKey}
@@ -408,27 +409,27 @@ export default function EtudiantsPage() {
         </div>
         <div>
           <label className="text-xs font-bold text-gray-500 mb-1.5 block">
-            Niveau
+            Semestre
           </label>
           <select
-            value={niveau}
-            onChange={(e) => setNiveau(e.target.value)}
+            value={semestre}
+            onChange={(e) => setSemestre(e.target.value)}
             disabled={!specialiteId}
             className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none disabled:opacity-50"
           >
-            <option value="">Niveau...</option>
-            {niveauxDisponibles.map((n) => (
-              <option key={n} value={n}>
-                {n}
+            <option value="">Semestre...</option>
+            {semestresDisponibles.map((s) => (
+              <option key={s} value={s}>
+                {s}
               </option>
             ))}
           </select>
         </div>
       </div>
 
-      {!specialiteId || !niveau ? (
+      {!specialiteId || !semestre ? (
         <div className="bg-white rounded-[20px] p-10 text-center text-sm font-semibold text-gray-300">
-          Choisis une spécialité et un niveau pour voir/ajouter des
+          Choisis une spécialité et un semestre pour voir/ajouter des
           étudiants.
         </div>
       ) : (
@@ -436,7 +437,7 @@ export default function EtudiantsPage() {
           <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
             <div>
               <p className="font-extrabold text-gray-900">
-                {specialiteChoisie?.nom} — {niveau}
+                {specialiteChoisie?.nom} — {semestre}
               </p>
               {depuisCache && (
                 <p className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mt-1">

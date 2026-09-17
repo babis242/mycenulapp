@@ -4,7 +4,7 @@ import { Loader2, CheckCircle2, WifiOff } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useAuthStore } from '@/stores/authStore';
-import { JOURS, CRENEAUX } from '@/constants/enums';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 
 interface CampagneActive {
   id: string;
@@ -175,7 +175,7 @@ export default function SaisieDisponibilitesPage() {
     setSaving(true);
     try {
       const lignes = JOURS.flatMap((jour) =>
-        CRENEAUX.map((creneau) => ({
+        tousLesCreneaux().map((creneau) => ({
           jour,
           creneau,
           disponible: selection.has(`${jour}|${creneau}`),
@@ -302,7 +302,7 @@ export default function SaisieDisponibilitesPage() {
               <th className="px-4 py-3 text-left text-xs font-bold text-gray-400 uppercase tracking-wide">
                 Jour
               </th>
-              {CRENEAUX.map((c) => (
+              {tousLesCreneaux().map((c) => (
                 <th
                   key={c}
                   className="px-4 py-3 text-center text-xs font-bold text-gray-400 uppercase tracking-wide"
@@ -316,7 +316,7 @@ export default function SaisieDisponibilitesPage() {
             {JOURS.map((jour) => (
               <tr key={jour} className="border-b border-gray-50 last:border-0">
                 <td className="px-4 py-4 font-bold text-gray-900">{jour}</td>
-                {CRENEAUX.map((creneau) => {
+                {tousLesCreneaux().map((creneau) => {
                   const coche = selection.has(`${jour}|${creneau}`);
                   return (
                     <td key={creneau} className="px-4 py-4 text-center">

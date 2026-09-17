@@ -10,6 +10,7 @@ const TABS = [
   { to: '/referentiel/secretaires', label: 'Secrétaires' },
   { to: '/referentiel/salles', label: 'Salles' },
   { to: '/referentiel/troncs-communs', label: 'Troncs communs' },
+  { to: '/referentiel/creneaux', label: 'Créneaux' },
 ];
 
 // Onglets du module Référentiel (Scénario 1) — chaque sous-module (UEs,

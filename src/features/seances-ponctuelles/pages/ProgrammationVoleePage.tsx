@@ -9,7 +9,7 @@ import {
   CheckCircle2,
   X,
 } from 'lucide-react';
-import { CRENEAUX } from '@/constants/enums';
+import { tousLesCreneaux, CRENEAUX } from '@/constants/enums';
 import type { Creneau } from '@/types';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
@@ -250,7 +250,7 @@ export default function ProgrammationVoleePage() {
                 onChange={(e) => setCreneau(e.target.value as Creneau)}
                 className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
               >
-                {CRENEAUX.map((c) => (
+                {tousLesCreneaux().map((c) => (
                   <option key={c} value={c}>
                     {c}
                   </option>

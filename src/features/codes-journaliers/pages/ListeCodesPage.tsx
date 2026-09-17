@@ -1,7 +1,7 @@
 // src/features/codes-journaliers/pages/ListeCodesPage.tsx
 import { Fragment, useEffect, useState } from 'react';
 import { Loader2, Search, Printer, ChevronLeft, ChevronRight, WifiOff } from 'lucide-react';
-import { JOURS, CRENEAUX } from '@/constants/enums';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
 import {
@@ -170,7 +170,7 @@ export default function ListeCodesPage() {
   // Regroupement jour → créneau pour la vue imprimable.
   const groupes = JOURS.map((jour) => ({
     jour,
-    creneaux: CRENEAUX.map((creneau) => ({
+    creneaux: tousLesCreneaux().map((creneau) => ({
       creneau,
       lignes: filtres.filter((c) => c.jour === jour && c.creneau === creneau),
     })).filter((c) => c.lignes.length > 0),
@@ -264,7 +264,7 @@ export default function ListeCodesPage() {
             className="bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 outline-none shrink-0"
           >
             <option value="Tous">Tous les créneaux</option>
-            {CRENEAUX.map((c) => (
+            {tousLesCreneaux().map((c) => (
               <option key={c} value={c}>
                 {c}
               </option>

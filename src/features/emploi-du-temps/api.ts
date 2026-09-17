@@ -614,24 +614,34 @@ async function propagerVersGroupe(
   salleId: string | null,
   enseignantId: string
 ) {
-  const { data: seanceExistante } = await supabase
-    .from('seances_edt')
-    .select('id')
-    .eq('tronc_commun_id', troncCommunId)
-    .eq('semaine', semaine)
-    .eq('jour', jour)
-    .eq('creneau', creneau)
-    .maybeSingle();
+  // Les deux lectures ci-dessous sont indépendantes (l'une cherche la
+  // séance de tronc commun existante, l'autre vérifie les conflits
+  // globaux du créneau) — elles partaient en série avant, chacune
+  // attendant la précédente pour rien. En parallèle, on divise par ~2
+  // le temps d'attente réseau de cette étape.
+  const [{ data: seanceExistante }, { data: memeCreneauGlobal }] =
+    await Promise.all([
+      supabase
+        .from('seances_edt')
+        .select('id')
+        .eq('tronc_commun_id', troncCommunId)
+        .eq('semaine', semaine)
+        .eq('jour', jour)
+        .eq('creneau', creneau)
+        .maybeSingle(),
+      // Même contrôle que pour une séance simple : un enseignant ou une
+      // salle ne peuvent être occupés qu'une seule fois par créneau,
+      // toutes spécialités confondues. Nécessite l'index
+      // idx_seances_edt_semaine_jour_creneau (voir migration SQL) pour
+      // rester rapide quand la table grossit.
+      supabase
+        .from('seances_edt')
+        .select('id, salle_id, enseignant_id')
+        .eq('semaine', semaine)
+        .eq('jour', jour)
+        .eq('creneau', creneau),
+    ]);
 
-  // Même contrôle que pour une séance simple : un enseignant ou une
-  // salle ne peuvent être occupés qu'une seule fois par créneau, toutes
-  // spécialités confondues.
-  const { data: memeCreneauGlobal } = await supabase
-    .from('seances_edt')
-    .select('id, salle_id, enseignant_id')
-    .eq('semaine', semaine)
-    .eq('jour', jour)
-    .eq('creneau', creneau);
   const idAExclure = seanceExistante?.id;
   const conflitEnseignant = (memeCreneauGlobal ?? []).some(
     (o) => o.id !== idAExclure && o.enseignant_id === enseignantId
@@ -682,21 +692,25 @@ export async function assignerSeance(params: ParamsAssignation) {
     creneau,
   } = params;
 
+  // Une seule requête au lieu de deux : récupère l'ue_id de l'offre ET
+  // son éventuel tronc commun d'un coup, via la relation imbriquée,
+  // plutôt que d'attendre la première requête avant de lancer la
+  // seconde. Économise un aller-retour réseau complet à chaque
+  // sauvegarde de case.
   const { data: offre, error: offreError } = await supabase
     .from('offres')
-    .select('ue_id')
+    .select('ue_id, ue:ues(troncs_communs_ues(tronc_commun_id))')
     .eq('id', offreId)
     .single();
   if (offreError || !offre) throw offreError ?? new Error('Offre introuvable.');
-  const { data: lienTronc } = await supabase
-    .from('troncs_communs_ues')
-    .select('tronc_commun_id')
-    .eq('ue_id', offre.ue_id)
-    .maybeSingle();
+  const lienTroncId: string | null =
+    ((offre as any).ue?.troncs_communs_ues?.[0]?.tronc_commun_id as
+      | string
+      | undefined) ?? null;
 
-  if (lienTronc) {
+  if (lienTroncId) {
     await propagerVersGroupe(
-      lienTronc.tronc_commun_id,
+      lienTroncId,
       semaine,
       jour,
       creneau,
@@ -719,7 +733,8 @@ export async function assignerSeance(params: ParamsAssignation) {
   // Cas simple (pas de tronc commun) — un enseignant ou une salle ne
   // peuvent être occupés qu'une seule fois par créneau, TOUTES
   // spécialités confondues (recherche globale via semaine, plus
-  // seulement dans le même emploi du temps).
+  // seulement dans le même emploi du temps). Nécessite l'index
+  // idx_seances_edt_semaine_jour_creneau pour rester rapide.
   const { data: memeCreneauGlobal } = await supabase
     .from('seances_edt')
     .select('id, salle_id, enseignant_id')
@@ -774,6 +789,272 @@ export async function supprimerSeance(seanceId: string) {
     .delete()
     .eq('id', seanceId);
   if (error) throw error;
+}
+
+// ── Enregistrement groupé (ÉTAPE 1 — optimisation) ──────────────────
+// Remplace la boucle "une case modifiée = 4 à 6 requêtes séquentielles"
+// (trouverOuCreerEmploi + assignerSeance appelés un par un dans un
+// for...of) par un nombre CONSTANT de requêtes, quel que soit le nombre
+// de cases modifiées :
+//   1. une requête groupée pour créer les emplois du temps manquants,
+//   2. une requête groupée pour résoudre offre → tronc commun pour
+//      toutes les cases à la fois,
+//   3. une requête "photo" de toute la semaine (conflits calculés
+//      ensuite en mémoire, pas requête par requête),
+//   4. au plus 3 requêtes d'écriture groupées (suppressions, séances
+//      simples, séances de tronc commun).
+// Avant : N cases → jusqu'à N×6 requêtes. Maintenant : toujours ~6-7
+// requêtes, peu importe N.
+
+// Garantit qu'un emploi du temps existe (même vide) pour chaque
+// spécialité du groupe, pour cette semaine — en 1 lecture + au plus 1
+// écriture groupée, au lieu d'une création par spécialité.
+export async function garantirEmploisPourGroupe(
+  specialiteIds: string[],
+  semaine: string
+): Promise<Map<string, string>> {
+  if (specialiteIds.length === 0) return new Map();
+
+  const { data: existants, error } = await supabase
+    .from('emplois_du_temps')
+    .select('id, specialite_id')
+    .in('specialite_id', specialiteIds)
+    .eq('semaine', semaine);
+  if (error) throw error;
+
+  const emploiParSpecialite = new Map<string, string>(
+    (existants ?? []).map((e: any) => [e.specialite_id, e.id])
+  );
+
+  const manquantes = specialiteIds.filter(
+    (id) => !emploiParSpecialite.has(id)
+  );
+  if (manquantes.length > 0) {
+    // Une campagne de disponibilités active doit être arrêtée avant de
+    // créer de nouveaux emplois du temps (comme trouverOuCreerEmploi) —
+    // vérifié UNE FOIS pour tout le lot, pas par spécialité.
+    const campagne = await getDerniereCampagne();
+    if (campagne && campagne.statut === 'active') {
+      await arreterCampagne(campagne.id);
+    }
+
+    const { data: crees, error: insError } = await supabase
+      .from('emplois_du_temps')
+      .insert(
+        manquantes.map((specialite_id) => ({
+          specialite_id,
+          semaine,
+          statut: 'genere',
+        }))
+      )
+      .select('id, specialite_id');
+    if (insError) throw insError;
+    for (const e of (crees ?? []) as any[]) {
+      emploiParSpecialite.set(e.specialite_id, e.id);
+    }
+  }
+
+  return emploiParSpecialite;
+}
+
+export interface AssignationLot {
+  specialiteId: string;
+  offreId: string;
+  enseignantId: string;
+  salleId: string | null;
+  jour: string;
+  creneau: string;
+  // id réel d'une séance existante à modifier, ou null pour une
+  // nouvelle case (jamais un id "local-..." — le caller doit déjà avoir
+  // filtré ça).
+  seanceIdExistante: string | null;
+}
+
+export async function enregistrerChangementsEnLot(
+  assignations: AssignationLot[],
+  suppressions: string[],
+  emploiParSpecialite: Map<string, string>,
+  semaine: string
+): Promise<void> {
+  // Suppressions explicites (cases vidées par l'utilisateur) — un seul
+  // aller-retour pour toutes, au lieu d'un par case supprimée.
+  if (suppressions.length > 0) {
+    const { error } = await supabase
+      .from('seances_edt')
+      .delete()
+      .in('id', suppressions);
+    if (error) throw error;
+  }
+  if (assignations.length === 0) return;
+
+  // 1) Résout offre → UE → tronc commun pour TOUTES les offres du lot en
+  // une seule requête (au lieu d'une par case).
+  const offreIds = Array.from(new Set(assignations.map((a) => a.offreId)));
+  const { data: offresData, error: offresError } = await supabase
+    .from('offres')
+    .select('id, ue:ues(troncs_communs_ues(tronc_commun_id))')
+    .in('id', offreIds);
+  if (offresError) throw offresError;
+  const troncParOffre = new Map<string, string | null>();
+  for (const o of (offresData ?? []) as any[]) {
+    troncParOffre.set(
+      o.id,
+      o.ue?.troncs_communs_ues?.[0]?.tronc_commun_id ?? null
+    );
+  }
+
+  // 2) Photo de TOUTES les séances de cette semaine, toutes spécialités
+  // confondues — une seule requête sert de base au calcul de conflit
+  // pour l'ensemble du lot (au lieu d'une requête de conflit par case).
+  const { data: semaineData, error: semaineError } = await supabase
+    .from('seances_edt')
+    .select('id, jour, creneau, salle_id, enseignant_id, tronc_commun_id')
+    .eq('semaine', semaine);
+  if (semaineError) throw semaineError;
+
+  interface LigneEtat {
+    id: string | null;
+    salle_id: string | null;
+    enseignant_id: string;
+    tronc_commun_id: string | null;
+  }
+  const cle = (jour: string, creneau: string) => `${jour}|${creneau}`;
+  const etatParCreneau = new Map<string, LigneEtat[]>();
+  for (const s of (semaineData ?? []) as any[]) {
+    const k = cle(s.jour, s.creneau);
+    if (!etatParCreneau.has(k)) etatParCreneau.set(k, []);
+    etatParCreneau.get(k)!.push({
+      id: s.id,
+      salle_id: s.salle_id,
+      enseignant_id: s.enseignant_id,
+      tronc_commun_id: s.tronc_commun_id,
+    });
+  }
+
+  // 3) Calcul des conflits ET construction des lignes finales, en
+  // mémoire — aucune requête réseau dans cette boucle. L'état en
+  // mémoire est mis à jour au fil du traitement pour que les cases
+  // suivantes du MÊME lot voient déjà les précédentes (même logique
+  // qu'un traitement séquentiel, mais sans aller-retour réseau).
+  const lignesSimplesParCle = new Map<string, any>();
+  const lignesTroncParCle = new Map<string, any>();
+  const idsASupprimerEnPlus: string[] = [];
+
+  for (const a of assignations) {
+    const troncId = troncParOffre.get(a.offreId) ?? null;
+    const k = cle(a.jour, a.creneau);
+    const lignesDuCreneau = etatParCreneau.get(k) ?? [];
+
+    if (troncId) {
+      const existante = lignesDuCreneau.find(
+        (l) => l.tronc_commun_id === troncId
+      );
+      const idAExclure = existante?.id ?? null;
+      const conflitEnseignant = lignesDuCreneau.some(
+        (l) => l.id !== idAExclure && l.enseignant_id === a.enseignantId
+      );
+      const conflitSalle =
+        !!a.salleId &&
+        lignesDuCreneau.some(
+          (l) => l.id !== idAExclure && l.salle_id === a.salleId
+        );
+      const statut: 'ok' | 'conflit' =
+        !a.salleId || conflitEnseignant || conflitSalle ? 'conflit' : 'ok';
+
+      const cleTronc = `${troncId}|${k}`;
+      lignesTroncParCle.set(cleTronc, {
+        ...(existante?.id ? { id: existante.id } : {}),
+        tronc_commun_id: troncId,
+        semaine,
+        jour: a.jour,
+        creneau: a.creneau,
+        enseignant_id: a.enseignantId,
+        salle_id: a.salleId,
+        statut,
+      });
+
+      const sansAncienne = lignesDuCreneau.filter(
+        (l) => l.tronc_commun_id !== troncId
+      );
+      sansAncienne.push({
+        id: existante?.id ?? `en-attente-${cleTronc}`,
+        salle_id: a.salleId,
+        enseignant_id: a.enseignantId,
+        tronc_commun_id: troncId,
+      });
+      etatParCreneau.set(k, sansAncienne);
+
+      // Si on modifiait une ancienne séance "simple" sur cette case et
+      // qu'elle devient une séance de groupe, l'ancienne doit disparaître.
+      if (a.seanceIdExistante) idsASupprimerEnPlus.push(a.seanceIdExistante);
+      continue;
+    }
+
+    // Cas simple (pas de tronc commun).
+    const conflitEnseignant = lignesDuCreneau.some(
+      (l) => l.id !== a.seanceIdExistante && l.enseignant_id === a.enseignantId
+    );
+    const conflitSalle =
+      !!a.salleId &&
+      lignesDuCreneau.some(
+        (l) => l.id !== a.seanceIdExistante && l.salle_id === a.salleId
+      );
+    const statut: 'ok' | 'conflit' =
+      !a.salleId || conflitEnseignant || conflitSalle ? 'conflit' : 'ok';
+
+    const cleSimple =
+      a.seanceIdExistante ??
+      `nouvelle|${a.specialiteId}|${k}|${a.offreId}`;
+    lignesSimplesParCle.set(cleSimple, {
+      ...(a.seanceIdExistante ? { id: a.seanceIdExistante } : {}),
+      emploi_du_temps_id: emploiParSpecialite.get(a.specialiteId) ?? null,
+      offre_id: a.offreId,
+      tronc_commun_id: null,
+      enseignant_id: a.enseignantId,
+      salle_id: a.salleId,
+      semaine,
+      jour: a.jour,
+      creneau: a.creneau,
+      statut,
+    });
+
+    const sansAncienne = lignesDuCreneau.filter(
+      (l) => l.id !== a.seanceIdExistante
+    );
+    sansAncienne.push({
+      id: a.seanceIdExistante ?? `en-attente-${cleSimple}`,
+      salle_id: a.salleId,
+      enseignant_id: a.enseignantId,
+      tronc_commun_id: null,
+    });
+    etatParCreneau.set(k, sansAncienne);
+  }
+
+  // 4) Écriture : au plus 3 requêtes pour TOUT le lot, peu importe le
+  // nombre de cases (au lieu d'une par case).
+  if (idsASupprimerEnPlus.length > 0) {
+    const { error } = await supabase
+      .from('seances_edt')
+      .delete()
+      .in('id', idsASupprimerEnPlus);
+    if (error) throw error;
+  }
+
+  const lignesSimples = Array.from(lignesSimplesParCle.values());
+  if (lignesSimples.length > 0) {
+    const { error } = await supabase
+      .from('seances_edt')
+      .upsert(lignesSimples, { onConflict: 'id' });
+    if (error) throw error;
+  }
+
+  const lignesTronc = Array.from(lignesTroncParCle.values());
+  if (lignesTronc.length > 0) {
+    const { error } = await supabase
+      .from('seances_edt')
+      .upsert(lignesTronc, { onConflict: 'id' });
+    if (error) throw error;
+  }
 }
 
 // ── Scénario 5.5 (NOUVEAU) — Sélection des spécialités à envoyer en
@@ -1253,7 +1534,71 @@ export interface DonneesGroupees {
   ueVersTronc: Map<string, { troncCommunId: string; nom: string }>;
 }
 
+// ── Cache mémoire (ÉTAPE 3 — optimisation) ──────────────────────────
+// Naviguer entre "Génération EDT" et "Validation", ou changer de semaine
+// puis y revenir, rechargeait tout depuis zéro à chaque fois (5+
+// requêtes). On garde en mémoire le dernier résultat par
+// (spécialités, semaine), pendant une courte durée — assez pour couvrir
+// un aller-retour de navigation, assez court pour rester à jour si
+// quelqu'un d'autre modifie l'emploi du temps entre-temps. Ce cache vit
+// en mémoire JS (pas localStorage/Dexie) : il disparaît naturellement à
+// chaque rechargement complet de page, ce qui est le comportement voulu.
+const DUREE_CACHE_MS = 30_000;
+interface EntreeCacheGroupe {
+  donnees: DonneesGroupees;
+  expireA: number;
+}
+const cacheSeancesGroupees = new Map<string, EntreeCacheGroupe>();
+
+function cleCacheGroupe(specialiteIds: string[], semaine: string): string {
+  return `${[...specialiteIds].sort().join(',')}|${semaine}`;
+}
+
+// À appeler après toute écriture qui touche ce groupe (enregistrement de
+// cases, upload du document signé, validation) — sans ça, la page
+// afficherait des données périmées pendant jusqu'à 30 secondes après
+// avoir soi-même modifié quelque chose.
+export function invaliderCacheSeancesGroupees(
+  specialiteIds: string[],
+  semaine: string
+): void {
+  cacheSeancesGroupees.delete(cleCacheGroupe(specialiteIds, semaine));
+}
+
 export async function getSeancesGroupees(
+  specialiteIds: string[],
+  semaine: string,
+  options?: { forcerRafraichissement?: boolean }
+): Promise<DonneesGroupees> {
+  const cle = cleCacheGroupe(specialiteIds, semaine);
+  const entree = cacheSeancesGroupees.get(cle);
+  if (
+    !options?.forcerRafraichissement &&
+    entree &&
+    entree.expireA > Date.now()
+  ) {
+    return entree.donnees;
+  }
+
+  const donnees = await chargerSeancesGroupeesDepuisSupabase(
+    specialiteIds,
+    semaine
+  );
+
+  // Nettoyage léger : évite une croissance illimitée du cache sur une
+  // session très longue (beaucoup de semaines/cycles consultés).
+  if (cacheSeancesGroupees.size > 20) {
+    const maintenant = Date.now();
+    for (const [k, v] of cacheSeancesGroupees) {
+      if (v.expireA <= maintenant) cacheSeancesGroupees.delete(k);
+    }
+  }
+
+  cacheSeancesGroupees.set(cle, { donnees, expireA: Date.now() + DUREE_CACHE_MS });
+  return donnees;
+}
+
+async function chargerSeancesGroupeesDepuisSupabase(
   specialiteIds: string[],
   semaine: string
 ): Promise<DonneesGroupees> {

@@ -26,6 +26,7 @@ const TABLES_A_SYNCHRONISER: Record<string, string> = {
   troncsCommunsUes: 'troncs_communs_ues',
   campagneEnseignants: 'campagne_enseignants',
   etudiants: 'etudiants',
+  creneaux: 'creneaux',
 };
 
 export type EtatSync = 'idle' | 'syncing' | 'error';
@@ -44,39 +45,135 @@ export function onSyncStateChange(cb: (etat: EtatSync) => void) {
   return () => abonnes.delete(cb);
 }
 
-// Descend chaque table de référence de Supabase vers Dexie. Chaque table
-// est isolée dans son propre try/catch : si une table échoue (droit RLS
-// refusé pour ce rôle, par exemple — un enseignant n'a pas accès à
-// codes_seances), les autres continuent d'être synchronisées normalement.
+// Descend chaque table de référence de Supabase vers Dexie.
+//
+// AVANT : select('*') sans filtre sur les 19 tables, à CHAQUE sync — donc
+// à chaque refresh automatique du token (~toutes les heures) et à chaque
+// retour de réseau. Sur des tables qui grossissent (disponibilites,
+// seances_edt, etudiants...), ça retéléchargeait des Mo de données déjà
+// connues, en boucle, ce qui expliquait une bonne partie de la lenteur.
+//
+// MAINTENANT : chaque table retient (dans localStorage) la date/heure de
+// son dernier sync réussi, et ne redemande que les lignes dont
+// updated_at est postérieur à cette date (".gt('updated_at', ...)"),
+// via upsert (bulkPut) — jamais de clear() en mode incrémental, donc
+// aucune donnée locale perdue entre deux syncs. Nécessite la colonne
+// updated_at + trigger sur chaque table (voir migration SQL fournie
+// séparément).
+//
+// Limite connue : une synchro incrémentale ne peut PAS détecter une
+// ligne supprimée côté serveur (elle n'apparaît simplement plus dans les
+// résultats, mais reste dans Dexie). Filet de sécurité : une fois par
+// jour calendaire, la sync redevient complète (clear + tout retélécharger)
+// pour rattraper d'éventuelles suppressions — un coût qu'on accepte une
+// fois par jour, pas à chaque refresh de token.
+//
+// Chaque table reste isolée dans son propre try/catch : si une table
+// échoue (droit RLS refusé pour ce rôle, par exemple — un enseignant n'a
+// pas accès à codes_seances), les autres continuent d'être synchronisées
+// normalement.
+const PREFIXE_CLE_DERNIER_SYNC = 'edt-sync:derniere-maj:';
+const CLE_DERNIER_SYNC_COMPLET_JOUR = 'edt-sync:dernier-complet-jour';
+
+function lireDernierSync(tableDexie: string): string | null {
+  try {
+    return localStorage.getItem(PREFIXE_CLE_DERNIER_SYNC + tableDexie);
+  } catch {
+    return null;
+  }
+}
+
+function ecrireDernierSync(tableDexie: string, isoMaintenant: string) {
+  try {
+    localStorage.setItem(PREFIXE_CLE_DERNIER_SYNC + tableDexie, isoMaintenant);
+  } catch {
+    // Stockage indisponible — pas bloquant, la prochaine sync sera juste
+    // complète par défaut (pas de date de référence trouvée).
+  }
+}
+
+// Un resync complet est dû si on n'en a jamais fait, ou si le dernier
+// remonte à un jour calendaire différent d'aujourd'hui (peu importe
+// l'heure exacte — juste "au moins une fois par jour").
+function resyncCompletDu(): boolean {
+  try {
+    const dernier = localStorage.getItem(CLE_DERNIER_SYNC_COMPLET_JOUR);
+    const aujourdHui = new Date().toISOString().slice(0, 10);
+    return dernier !== aujourdHui;
+  } catch {
+    return true;
+  }
+}
+
+function marquerResyncCompletFait() {
+  try {
+    const aujourdHui = new Date().toISOString().slice(0, 10);
+    localStorage.setItem(CLE_DERNIER_SYNC_COMPLET_JOUR, aujourdHui);
+  } catch {
+    // Pas bloquant — au pire on refait un resync complet à la prochaine
+    // sync aussi, ce qui reste correct, juste pas optimal.
+  }
+}
+
+async function synchroniserUneTable(
+  tableDexie: string,
+  tableSupabase: string,
+  complet: boolean
+): Promise<void> {
+  const table = (db as any)[tableDexie];
+  if (!table) return;
+
+  const maintenant = new Date().toISOString();
+
+  if (complet) {
+    const { data, error } = await supabase.from(tableSupabase).select('*');
+    if (error) throw error;
+    await db.transaction('rw', table, async () => {
+      await table.clear();
+      if (data && data.length > 0) await table.bulkPut(data);
+    });
+  } else {
+    const depuis = lireDernierSync(tableDexie);
+    let requete = supabase.from(tableSupabase).select('*');
+    if (depuis) requete = requete.gt('updated_at', depuis);
+    const { data, error } = await requete;
+    if (error) throw error;
+    // Upsert seulement — jamais de clear() en incrémental, sinon on
+    // perdrait toutes les lignes non renvoyées (= non modifiées).
+    if (data && data.length > 0) await table.bulkPut(data);
+  }
+
+  ecrireDernierSync(tableDexie, maintenant);
+}
+
 export async function syncReferenceData(): Promise<void> {
   if (!navigator.onLine) return;
   notifier('syncing');
   let uneErreur = false;
 
-  for (const [tableDexie, tableSupabase] of Object.entries(
-    TABLES_A_SYNCHRONISER
-  )) {
-    try {
-      const { data, error } = await supabase
-        .from(tableSupabase)
-        .select('*');
-      if (error) throw error;
-      if (!data) continue;
+  const complet = resyncCompletDu();
 
-      const table = (db as any)[tableDexie];
-      if (!table) continue;
+  // En parallèle plutôt qu'en séquence : sur une connexion à forte
+  // latence, attendre chaque table l'une après l'autre (19 allers-retours
+  // successifs) coûte bien plus cher que la bande passante elle-même.
+  // Chaque table garde son propre try/catch (via synchroniserUneTable
+  // qui peut lever), donc une table en échec (RLS, etc.) ne bloque pas
+  // les autres.
+  const resultats = await Promise.allSettled(
+    Object.entries(TABLES_A_SYNCHRONISER).map(([tableDexie, tableSupabase]) =>
+      synchroniserUneTable(tableDexie, tableSupabase, complet)
+    )
+  );
+  uneErreur = resultats.some((r) => r.status === 'rejected');
 
-      await db.transaction('rw', table, async () => {
-        await table.clear();
-        if (data.length > 0) await table.bulkPut(data);
-      });
-    } catch {
-      // Une table indisponible pour ce rôle (RLS) ou hors ligne ne doit
-      // pas bloquer la synchronisation des autres.
-      uneErreur = true;
-    }
-  }
+  // Les créneaux sont lus depuis un petit cache mémoire (lib/creneaux.ts,
+  // pour un accès synchrone dans les grilles) — on le rafraîchit depuis
+  // Dexie juste après chaque sync, pour refléter un créneau ajouté par
+  // un autre admin entre-temps.
+  const { rafraichirCacheCreneaux } = await import('./creneaux');
+  await rafraichirCacheCreneaux();
 
+  if (complet && !uneErreur) marquerResyncCompletFait();
   notifier(uneErreur ? 'error' : 'idle');
 }
 
@@ -264,6 +361,91 @@ async function rejouerAction(action: SyncAction): Promise<void> {
           p_heure_fermeture: heureFermeture || null,
         });
         if (error) throw error;
+      }
+      return;
+    }
+    // Ouverture/fermeture de séance saisie hors ligne (code d'ouverture ou
+    // de fermeture tapé sans réseau) — le code n'est vérifié qu'ici, au
+    // moment du rejeu, par la fonction RPC "security definer" côté base
+    // (jamais côté client). Si le code s'avère invalide, l'action reste en
+    // erreur dans la file (visible dans le bandeau hors ligne) — impossible
+    // de la corriger automatiquement, l'enseignant doit retaper le bon code.
+    case 'ouvertureFermetureSeance': {
+      const { seanceId, code, type } = payload as {
+        seanceId: string;
+        code: string;
+        type: 'ouvrir' | 'fermer';
+      };
+      const { error } = await supabase.rpc(
+        type === 'ouvrir' ? 'ouvrir_seance' : 'fermer_seance',
+        { p_seance_id: seanceId, p_code: code }
+      );
+      if (error) throw new Error(error.message);
+      return;
+    }
+    // Rapport de séance saisi hors ligne (appel, points abordés, niveau et
+    // contenu texte) — le "kind" du payload distingue les trois écritures,
+    // rejouées indépendamment (l'échec de l'une ne bloque pas les autres,
+    // chacune est sa propre entrée de file). L'id du rapport est généré
+    // côté client (crypto.randomUUID()) dès le départ — pas besoin
+    // d'attendre un aller-retour réseau pour l'obtenir, et pas de
+    // réconciliation d'id à faire après coup : le même id sert partout,
+    // en ligne comme hors ligne.
+    case 'rapportsSeances': {
+      const kind = (payload as any).kind as 'rapport' | 'appel' | 'points';
+      if (kind === 'rapport') {
+        const { rapportId, seanceId, enseignantId, niveau } = payload as {
+          rapportId: string;
+          seanceId: string;
+          enseignantId: string;
+          niveau: string;
+        };
+        const { error } = await supabase.from('rapports_seances').upsert({
+          id: rapportId,
+          seance_edt_id: seanceId,
+          enseignant_id: enseignantId,
+          niveau,
+        });
+        if (error) throw error;
+      } else if (kind === 'appel') {
+        const { rapportId, presences } = payload as {
+          rapportId: string;
+          presences: { etudiantId: string; present: boolean }[];
+        };
+        await supabase
+          .from('appels_etudiants')
+          .delete()
+          .eq('rapport_id', rapportId);
+        if (presences.length > 0) {
+          const { error } = await supabase.from('appels_etudiants').insert(
+            presences.map((p) => ({
+              rapport_id: rapportId,
+              etudiant_id: p.etudiantId,
+              present: p.present,
+            }))
+          );
+          if (error) throw error;
+        }
+      } else if (kind === 'points') {
+        const { rapportId, pointIds } = payload as {
+          rapportId: string;
+          pointIds: string[];
+        };
+        await supabase
+          .from('rapports_points_abordes')
+          .delete()
+          .eq('rapport_id', rapportId);
+        if (pointIds.length > 0) {
+          const { error } = await supabase
+            .from('rapports_points_abordes')
+            .insert(
+              pointIds.map((point_cle_id) => ({
+                rapport_id: rapportId,
+                point_cle_id,
+              }))
+            );
+          if (error) throw error;
+        }
       }
       return;
     }

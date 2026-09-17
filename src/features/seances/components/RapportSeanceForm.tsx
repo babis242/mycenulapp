@@ -1,11 +1,12 @@
 // src/features/seances/components/RapportSeanceForm.tsx
 import { useEffect, useState } from 'react';
 import { Loader2, ListChecks, Layers, GraduationCap, X, Plus } from 'lucide-react';
-import { niveauDeSemestre } from '@/constants/enums';
 import type { TypeCursus } from '@/types';
 import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
+import { processSyncQueue } from '@/lib/sync';
 import {
   listEtudiants,
+  lireEtudiantsDepuisCache,
   type Etudiant,
 } from '@/features/referentiel/etudiants/api';
 import { listPointsCles, type PointCle } from '@/features/referentiel/ues/api';
@@ -15,22 +16,23 @@ import {
 } from '@/features/referentiel/troncs-communs/api';
 import {
   getRapportPourSeance,
-  creerOuRecupererRapport,
   getAppelExistant,
-  enregistrerAppel,
   getPointsAbordesExistants,
-  enregistrerPointsAbordes,
+  enregistrerRapportEnFile,
   retirerImageCahierTexte,
 } from '../api';
 
-// Une spécialité concernée par le rapport, avec son niveau déduit (ou
-// null si non déductible — cas rare, ex. semestre non reconnu). Pour une
-// UE simple, un seul élément ; pour un tronc commun, un par spécialité du
-// groupe (chacune gardant sa propre offre/semestre).
+// Une spécialité concernée par le rapport, avec son semestre — TOUJOURS
+// connu directement depuis l'offre de la séance, plus besoin de le
+// déduire ni de le demander à l'enseignant (avant : un "niveau" dérivé
+// du semestre, avec un repli manuel si la déduction échouait — plus
+// nécessaire, le semestre est une donnée déjà présente, jamais à
+// deviner). Pour une UE simple, un seul élément ; pour un tronc commun,
+// un par spécialité du groupe (chacune gardant son propre semestre).
 interface GroupeCible {
   specialiteId: string;
   specialiteNom: string;
-  niveau: string | null;
+  semestre: string;
 }
 
 interface RapportSeanceFormProps {
@@ -45,8 +47,6 @@ interface RapportSeanceFormProps {
   titre?: string;
   sousTitre?: string;
 }
-
-const NIVEAUX_PAR_DEFAUT = ['Niveau 1', 'Niveau 2', 'Niveau 3'];
 
 // Rapport de séance (Scénario 13) — appel des étudiants, points abordés
 // durant le cours et cahier de texte. Pour un tronc commun, les étudiants
@@ -65,7 +65,6 @@ export default function RapportSeanceForm({
   sousTitre = 'Appel, points abordés et cahier de texte, à faire à chaque cours.',
 }: RapportSeanceFormProps) {
   const [groupes, setGroupes] = useState<GroupeCible[] | null>(null);
-  const [niveauManuel, setNiveauManuel] = useState('');
 
   const [rapportId, setRapportId] = useState<string | null>(null);
 
@@ -88,6 +87,46 @@ export default function RapportSeanceForm({
   const [succes, setSucces] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
+  // Brouillon local du rapport — clé de secours pour survivre à un
+  // rechargement de page hors ligne, AVANT même le premier clic sur
+  // "Enregistrer" (ex: l'enseignant coche des présences, la page se
+  // recharge par accident, la connexion n'est pas revenue). Contient
+  // aussi l'id du rapport, généré côté client dès le départ.
+  const cleBrouillon = `rapport-brouillon:${seanceId}`;
+  function lireBrouillon(): {
+    rapportId: string;
+    presences: Record<string, boolean>;
+    pointsAbordes: Record<string, boolean>;
+  } | null {
+    try {
+      const brut = localStorage.getItem(cleBrouillon);
+      return brut ? JSON.parse(brut) : null;
+    } catch {
+      return null;
+    }
+  }
+  function ecrireBrouillon(patch: {
+    rapportId: string;
+    presences?: Record<string, boolean>;
+    pointsAbordes?: Record<string, boolean>;
+  }) {
+    try {
+      const actuel = lireBrouillon();
+      localStorage.setItem(
+        cleBrouillon,
+        JSON.stringify({
+          rapportId: patch.rapportId,
+          presences: patch.presences ?? actuel?.presences ?? {},
+          pointsAbordes: patch.pointsAbordes ?? actuel?.pointsAbordes ?? {},
+        })
+      );
+    } catch {
+      // Pas grave — pire cas, le brouillon local n'est pas mis à jour,
+      // mais la file de synchronisation (db.syncQueue), elle, contient
+      // toujours l'écriture réelle une fois "Enregistrer" cliqué.
+    }
+  }
+
   // Les groupes (spécialité + niveau déduit) et les points clés viennent
   // soit du tronc commun (partagés par tout le groupe), soit de l'UE
   // seule — selon le cas.
@@ -96,21 +135,17 @@ export default function RapportSeanceForm({
       if (troncCommunId) {
         const groupesTronc = await getGroupesSpecialitesTronc(troncCommunId);
         setGroupes(
-          groupesTronc.map((g) => ({
-            specialiteId: g.specialiteId,
-            specialiteNom: g.specialiteNom,
-            niveau: g.semestre ? niveauDeSemestre(g.typeCursus, g.semestre) : null,
-          }))
+          groupesTronc
+            .filter((g) => !!g.semestre)
+            .map((g) => ({
+              specialiteId: g.specialiteId,
+              specialiteNom: g.specialiteNom,
+              semestre: g.semestre as string,
+            }))
         );
         listPointsClesTronc(troncCommunId).then(setPointsCles);
-      } else if (ueId && specialiteId && specialiteNom && typeCursus && semestre) {
-        setGroupes([
-          {
-            specialiteId,
-            specialiteNom,
-            niveau: niveauDeSemestre(typeCursus, semestre),
-          },
-        ]);
+      } else if (ueId && specialiteId && specialiteNom && semestre) {
+        setGroupes([{ specialiteId, specialiteNom, semestre }]);
         listPointsCles(ueId).then(setPointsCles);
       } else {
         setGroupes([]);
@@ -120,62 +155,150 @@ export default function RapportSeanceForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seanceId, ueId, troncCommunId]);
 
-  // Rapport déjà commencé pour cette séance, s'il existe.
+  // Rapport déjà commencé pour cette séance : brouillon local d'abord
+  // (instantané, fonctionne hors ligne), réseau ensuite pour compléter
+  // (photos déjà envoyées — ça, ça ne peut venir que du serveur). Si
+  // rien nulle part, on génère un nouvel id CÔTÉ CLIENT
+  // (crypto.randomUUID()) — pas besoin d'un aller-retour réseau pour en
+  // obtenir un, et le même id sert directement à l'écriture finale, en
+  // ligne comme hors ligne.
   useEffect(() => {
-    getRapportPourSeance(seanceId).then(async (r) => {
-      if (r) {
-        setRapportId(r.id);
-        setNiveauManuel(r.niveau);
-        setImagesExistantes(
-          r.cahierTexteKeys.map((key, i) => ({
-            key,
-            nom: r.cahierTexteNoms[i] ?? key,
-          }))
-        );
-        const abordes = await getPointsAbordesExistants(r.id);
-        setPointsAbordes(
-          Object.fromEntries(Array.from(abordes).map((id) => [id, true]))
-        );
+    let annule = false;
+
+    async function initialiserRapport() {
+      const brouillon = lireBrouillon();
+      if (brouillon) {
+        if (!annule) {
+          setRapportId(brouillon.rapportId);
+          setPointsAbordes(brouillon.pointsAbordes);
+        }
       }
-    });
+
+      if (navigator.onLine) {
+        try {
+          const r = await getRapportPourSeance(seanceId);
+          if (annule) return;
+          if (r) {
+            // Un rapport existe déjà côté serveur (créé ici même
+            // précédemment, ou depuis un autre appareil) — on garde SON
+            // id comme référence, et on complète avec ce que le brouillon
+            // local n'a pas (les photos, notamment, qui n'existent que
+            // côté serveur une fois vraiment envoyées).
+            setRapportId(r.id);
+            setImagesExistantes(
+              r.cahierTexteKeys.map((key, i) => ({
+                key,
+                nom: r.cahierTexteNoms[i] ?? key,
+              }))
+            );
+            const abordes = await getPointsAbordesExistants(r.id);
+            if (!annule && !brouillon) {
+              setPointsAbordes(
+                Object.fromEntries(Array.from(abordes).map((id) => [id, true]))
+              );
+            }
+            return;
+          }
+        } catch {
+          // Réseau indisponible au moment de l'appel — pas grave, on
+          // continue avec le brouillon local (ou un nouvel id ci-dessous).
+        }
+      }
+
+      if (!brouillon && !annule) {
+        setRapportId(crypto.randomUUID());
+      }
+    }
+
+    initialiserRapport();
+    return () => {
+      annule = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seanceId]);
 
-  // Aucun niveau déductible sur aucun groupe (rare) : secours manuel,
-  // appliqué à toutes les spécialités concernées.
-  const toutesResolues = groupes?.every((g) => g.niveau) ?? false;
-  const groupesEffectifs: GroupeCible[] | null = groupes
-    ? toutesResolues
-      ? groupes
-      : groupes.map((g) => ({ ...g, niveau: g.niveau ?? (niveauManuel || null) }))
-    : null;
+  // Le semestre de chaque groupe est TOUJOURS connu directement (offre
+  // de la séance) — plus de déduction ni de repli manuel à gérer, donc
+  // plus de cas "aucun niveau déductible" à traiter. Prêt dès que la
+  // liste des groupes est chargée et non vide.
+  const groupesEffectifs = groupes;
   const pretAFaireAppel =
-    groupesEffectifs !== null &&
-    groupesEffectifs.length > 0 &&
-    groupesEffectifs.every((g) => g.niveau);
+    groupesEffectifs !== null && groupesEffectifs.length > 0;
 
   // Union des étudiants de toutes les spécialités concernées, dès que
-  // chaque groupe a un niveau connu.
+  // les groupes (et leur semestre) sont connus. Cache local d'abord
+  // (affichage instantané, ça marche même en salle de classe avec un
+  // mauvais signal), réseau ensuite pour confirmer/rafraîchir — même
+  // pattern stale-while-revalidate que le reste de l'app (MesCoursPage,
+  // MesUEsPage...), qui manquait ici.
   useEffect(() => {
     if (!pretAFaireAppel || !groupesEffectifs) return;
+    let annule = false;
     setChargementEtudiants(true);
-    Promise.all(
-      groupesEffectifs.map((g) => listEtudiants(g.specialiteId, g.niveau!))
-    )
-      .then(async (listes) => {
+
+    async function initialiserPresences(tousEtudiants: Etudiant[]) {
+      // Le brouillon local (déjà coché par l'enseignant, potentiellement
+      // hors ligne) prime sur l'appel réseau — sinon un rechargement de
+      // page hors ligne perdrait les présences déjà cochées.
+      const brouillon = lireBrouillon();
+      if (brouillon && Object.keys(brouillon.presences).length > 0) {
+        if (!annule) setPresences(brouillon.presences);
+        return;
+      }
+      const appelExistant =
+        rapportId && navigator.onLine ? await getAppelExistant(rapportId) : {};
+      if (annule) return;
+      const initial: Record<string, boolean> = {};
+      for (const e of tousEtudiants)
+        initial[e.id] = appelExistant[e.id] ?? true;
+      setPresences(initial);
+    }
+
+    async function charger() {
+      // 1. Cache local d'abord.
+      try {
+        const listesLocales = await Promise.all(
+          groupesEffectifs!.map((g) =>
+            lireEtudiantsDepuisCache(g.specialiteId, g.semestre)
+          )
+        );
+        const fusionLocale = new Map<string, Etudiant>();
+        for (const liste of listesLocales)
+          for (const e of liste) fusionLocale.set(e.id, e);
+        const etudiantsLocaux = Array.from(fusionLocale.values());
+        if (!annule && etudiantsLocaux.length > 0) {
+          setEtudiants(etudiantsLocaux);
+          await initialiserPresences(etudiantsLocaux);
+        }
+      } catch {
+        // Pas grave, on retombe sur le réseau ci-dessous.
+      }
+
+      // 2. Réseau ensuite, pour confirmer/rafraîchir.
+      if (!navigator.onLine) {
+        if (!annule) setChargementEtudiants(false);
+        return;
+      }
+      try {
+        const listes = await Promise.all(
+          groupesEffectifs!.map((g) => listEtudiants(g.specialiteId, g.semestre))
+        );
         const fusion = new Map<string, Etudiant>();
         for (const liste of listes) for (const e of liste) fusion.set(e.id, e);
         const tousEtudiants = Array.from(fusion.values());
-        setEtudiants(tousEtudiants);
+        if (!annule) {
+          setEtudiants(tousEtudiants);
+          await initialiserPresences(tousEtudiants);
+        }
+      } finally {
+        if (!annule) setChargementEtudiants(false);
+      }
+    }
 
-        const appelExistant = rapportId
-          ? await getAppelExistant(rapportId)
-          : {};
-        const initial: Record<string, boolean> = {};
-        for (const e of tousEtudiants)
-          initial[e.id] = appelExistant[e.id] ?? true;
-        setPresences(initial);
-      })
-      .finally(() => setChargementEtudiants(false));
+    charger();
+    return () => {
+      annule = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pretAFaireAppel, JSON.stringify(groupesEffectifs)]);
 
@@ -222,59 +345,114 @@ export default function RapportSeanceForm({
   }
 
   async function handleEnregistrer() {
-    if (!pretAFaireAppel || !groupesEffectifs) {
-      setErreur('Choisis le niveau de la classe.');
+    if (!pretAFaireAppel || !groupesEffectifs || !rapportId) {
+      setErreur('Impossible de déterminer le semestre de cette séance.');
       return;
     }
     setEnregistrement(true);
     setErreur(null);
     setSucces(false);
+    setErreurPhotos(null);
     try {
-      // Un seul champ "niveau" en base : on y met la liste dédupliquée des
-      // niveaux réellement concernés (généralement un seul, même pour un
-      // tronc commun — les spécialités regroupées sont en pratique au
-      // même niveau).
-      const niveauEnregistre = Array.from(
-        new Set(groupesEffectifs.map((g) => g.niveau).filter(Boolean))
+      // Un seul champ "niveau" en base (nom de colonne historique) : on y
+      // met désormais la liste dédupliquée des SEMESTRES réellement
+      // concernés (généralement un seul, même pour un tronc commun — les
+      // spécialités regroupées sont en pratique sur le même semestre).
+      // Toujours connu directement, jamais saisi par l'enseignant.
+      const semestresEnregistres = Array.from(
+        new Set(groupesEffectifs.map((g) => g.semestre))
       ).join(', ');
 
-      const id = await creerOuRecupererRapport(
+      const presencesAEnvoyer = etudiants.map((e) => ({
+        etudiantId: e.id,
+        present: presences[e.id] ?? true,
+      }));
+      const pointIdsAEnvoyer = Object.entries(pointsAbordes)
+        .filter(([, coche]) => coche)
+        .map(([pointId]) => pointId);
+
+      // Écriture TOUJOURS en file d'attente locale — jamais d'attente
+      // réseau, jamais d'échec sec. Résout dès que c'est écrit
+      // localement (db.syncQueue), que le réseau soit là ou pas ; la
+      // synchronisation réelle se fait en tâche de fond.
+      await enregistrerRapportEnFile({
+        rapportId,
         seanceId,
         enseignantMatricule,
-        niveauEnregistre
-      );
-      setRapportId(id);
+        niveau: semestresEnregistres,
+        presences: presencesAEnvoyer,
+        pointIds: pointIdsAEnvoyer,
+      });
 
-      await enregistrerAppel(
-        id,
-        etudiants.map((e) => ({
-          etudiantId: e.id,
-          present: presences[e.id] ?? true,
-        }))
-      );
-
-      await enregistrerPointsAbordes(
-        id,
-        Object.entries(pointsAbordes)
-          .filter(([, coche]) => coche)
-          .map(([pointId]) => pointId)
-      );
-
-      if (nouvellesPhotos.length > 0) {
-        const nouvellesEntrees: { key: string; nom: string }[] = [];
-        for (const photo of nouvellesPhotos) {
-          const { key, nom } = await televerserFichier(
-            'cahier-texte',
-            id,
-            photo
-          );
-          nouvellesEntrees.push({ key, nom });
-        }
-        setImagesExistantes((prev) => [...prev, ...nouvellesEntrees]);
-        setNouvellesPhotos([]);
-      }
+      // Brouillon local mis à jour avec ce qui vient d'être "enregistré"
+      // — survit à un rechargement de page même hors ligne, tant que la
+      // synchronisation réelle n'a pas encore eu lieu.
+      ecrireBrouillon({
+        rapportId,
+        presences,
+        pointsAbordes,
+      });
 
       setSucces(true);
+
+      // L'envoi des photos reste séparé et isolé : un échec ici (le cas
+      // le plus fragile — fichiers volumineux, sensible à une connexion
+      // faible) ne remet plus en cause le succès de l'appel et des points
+      // abordés, déjà enregistrés ci-dessus.
+      if (nouvellesPhotos.length > 0) {
+        if (!navigator.onLine) {
+          // Pas la peine de tenter : ni le rapport (encore en file), ni
+          // les photos, ne peuvent atteindre le serveur sans réseau.
+          setErreurPhotos(
+            `Rapport enregistré localement. ${nouvellesPhotos.length} photo${
+              nouvellesPhotos.length > 1 ? 's' : ''
+            } à envoyer dès le retour de la connexion — reviens sur cet écran à ce moment-là.`
+          );
+        } else {
+          // Attend que le rapport soit VRAIMENT arrivé côté serveur avant
+          // de tenter l'envoi des photos — sinon la fonction Edge qui
+          // signe l'URL d'upload (elle vérifie que ce rapport existe et
+          // appartient à cet enseignant) le refuse, puisque l'écriture du
+          // rapport ci-dessus part en tâche de fond et peut ne pas encore
+          // avoir abouti au moment où l'upload démarre. C'était la cause
+          // de l'essentiel des échecs de photos.
+          await processSyncQueue().catch(() => {});
+
+          const photosEnEchec: File[] = [];
+          const nouvellesEntrees: { key: string; nom: string }[] = [];
+          // En série (pas en parallèle) — plusieurs photos envoyées en
+          // même temps se partagent la même bande passante limitée, ce
+          // qui augmente le risque de timeout sur une connexion faible
+          // plutôt que de le réduire.
+          for (const photo of nouvellesPhotos) {
+            try {
+              const entree = await televerserFichier(
+                'cahier-texte',
+                rapportId,
+                photo
+              );
+              nouvellesEntrees.push(entree);
+            } catch {
+              photosEnEchec.push(photo);
+            }
+          }
+          if (nouvellesEntrees.length > 0) {
+            setImagesExistantes((prev) => [...prev, ...nouvellesEntrees]);
+          }
+          // Seules les photos en échec restent à renvoyer — pas besoin
+          // de tout recommencer.
+          setNouvellesPhotos(photosEnEchec);
+          if (photosEnEchec.length > 0) {
+            setErreurPhotos(
+              `Rapport enregistré. ${photosEnEchec.length} photo${
+                photosEnEchec.length > 1 ? 's' : ''
+              } sur ${nouvellesPhotos.length} n'a/ont pas pu être envoyée${
+                photosEnEchec.length > 1 ? 's' : ''
+              } (connexion faible) — réessaie l'envoi un peu plus tard.`
+            );
+          }
+        }
+      }
     } catch (err) {
       setErreur(
         err instanceof Error ? err.message : "Erreur lors de l'enregistrement."
@@ -311,40 +489,16 @@ export default function RapportSeanceForm({
         </div>
       )}
 
-      {toutesResolues ? (
+      {groupes.length > 0 && (
         <div className="flex items-center gap-2 bg-gray-50 rounded-xl px-3.5 py-2.5 mb-4">
           <Layers size={14} className="text-gray-400 shrink-0" />
           <p className="text-sm font-semibold text-gray-700">
-            {groupes.length > 1 ? 'Niveaux' : 'Niveau'} :{' '}
+            {groupes.length > 1 ? 'Semestres' : 'Semestre'} :{' '}
             <span className="font-bold">
-              {Array.from(new Set(groupes.map((g) => g.niveau))).join(', ')}
-            </span>{' '}
-            <span className="text-xs text-gray-400 font-normal">
-              (déduit du semestre)
+              {Array.from(new Set(groupes.map((g) => g.semestre))).join(', ')}
             </span>
           </p>
         </div>
-      ) : (
-        <>
-          <label className="text-xs font-bold text-gray-500 mb-1.5 block">
-            Niveau de la classe{' '}
-            <span className="text-gray-300 font-normal">
-              (non déductible automatiquement)
-            </span>
-          </label>
-          <select
-            value={niveauManuel}
-            onChange={(e) => setNiveauManuel(e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none mb-4"
-          >
-            <option value="">Choisir...</option>
-            {NIVEAUX_PAR_DEFAUT.map((n) => (
-              <option key={n} value={n}>
-                {n}
-              </option>
-            ))}
-          </select>
-        </>
       )}
 
       {pretAFaireAppel && (
@@ -392,7 +546,7 @@ export default function RapportSeanceForm({
             </div>
           ) : etudiants.length === 0 ? (
             <p className="text-sm text-gray-400 mb-4">
-              Aucun étudiant enregistré pour ce niveau — demande à l'admin de
+              Aucun étudiant enregistré pour ce semestre — demande à l'admin de
               les ajouter (Référentiel → Étudiants).
             </p>
           ) : (
@@ -500,7 +654,8 @@ export default function RapportSeanceForm({
 
           {succes && (
             <p className="text-xs font-semibold text-green-600 mt-3 text-center">
-              Rapport enregistré.
+              Rapport enregistré — synchronisé automatiquement dès que la
+              connexion est disponible.
             </p>
           )}
           {erreur && (

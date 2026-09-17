@@ -17,109 +17,168 @@ export interface UEPourCampagne {
 // (heures totales - heures déjà effectuées) et la pré-sélection automatique
 // des UEs non achevées (Scénario 4) nécessitent les données de séances, pas
 // encore disponibles (Scénario 5/9) — à ajouter plus tard.
+//
+// AVANT : une requête "offres" par paire (spécialité, semestre), PUIS deux
+// requêtes ("attributions" + "troncs_communs_ues") par offre trouvée, PUIS
+// une requête "tronc" + une requête "liaisons groupe" + une requête
+// "attribution" par UE sœur de tronc commun — pour une campagne portant sur
+// une quinzaine de spécialités, ça faisait facilement 300+ requêtes
+// séquentielles, chacune attendant la précédente.
+// MAINTENANT : chaque étape est une seule requête groupée (.in(...)) sur
+// l'ensemble des identifiants concernés — 5 requêtes au total, peu importe
+// le nombre de spécialités/semestres demandés.
 export async function listUEsPourCampagne(
   paires: { specialiteId: string; semestre: string }[]
 ): Promise<UEPourCampagne[]> {
   if (paires.length === 0) return [];
 
-  const resultats: UEPourCampagne[] = [];
+  // 1) Toutes les offres des spécialités concernées, en une requête —
+  // puis on filtre en mémoire sur les paires (spécialité, semestre)
+  // exactes demandées (une même spécialité peut apparaître avec des
+  // semestres différents selon l'appelant).
+  const specialiteIds = Array.from(new Set(paires.map((p) => p.specialiteId)));
+  const clesPaires = new Set(
+    paires.map((p) => `${p.specialiteId}|${p.semestre}`)
+  );
+  const { data: offresBrutes, error: offresError } = await supabase
+    .from('offres')
+    .select(
+      'id, semestre, specialite_id, ue:ues(id, nom), specialite:specialites(nom)'
+    )
+    .in('specialite_id', specialiteIds);
+  if (offresError) throw offresError;
 
-  for (const { specialiteId, semestre } of paires) {
-    const { data: offresData, error } = await supabase
-      .from('offres')
-      .select('id, semestre, ue:ues(id, nom), specialite:specialites(nom)')
-      .eq('specialite_id', specialiteId)
-      .eq('semestre', semestre);
+  const offresRetenues = ((offresBrutes ?? []) as any[]).filter((o) =>
+    clesPaires.has(`${o.specialite_id}|${o.semestre}`)
+  );
+  if (offresRetenues.length === 0) return [];
 
-    if (error) throw error;
+  const offreIds = offresRetenues.map((o) => o.id);
+  const ueIds = Array.from(new Set(offresRetenues.map((o) => o.ue.id)));
 
-    for (const o of (offresData ?? []) as any[]) {
-      const { data: attribution } = await supabase
-        .from('attributions')
-        .select('enseignant_id, enseignant:enseignants(nom)')
-        .eq('offre_id', o.id)
-        .eq('statut', 'actif')
-        .maybeSingle();
+  // 2) Toutes les attributions actives des offres retenues, en une
+  // requête (au lieu d'une par offre).
+  const { data: attributionsData, error: attribError } = await supabase
+    .from('attributions')
+    .select('offre_id, enseignant_id, enseignant:enseignants(nom)')
+    .in('offre_id', offreIds)
+    .eq('statut', 'actif');
+  if (attribError) throw attribError;
+  const attributionParOffre = new Map(
+    (attributionsData ?? []).map((a: any) => [a.offre_id, a])
+  );
 
-      const { data: lienTronc } = await supabase
-        .from('troncs_communs_ues')
-        .select('tronc_commun:troncs_communs(nom)')
-        .eq('ue_id', o.ue.id)
-        .maybeSingle();
+  // 3) Tous les liens tronc commun des UEs retenues, en une requête (au
+  // lieu d'une par UE).
+  const { data: liensTronc, error: liensError } = await supabase
+    .from('troncs_communs_ues')
+    .select('ue_id, tronc_commun_id, tronc_commun:troncs_communs(nom)')
+    .in('ue_id', ueIds);
+  if (liensError) throw liensError;
+  const troncParUe = new Map(
+    (liensTronc ?? []).map((l: any) => [l.ue_id, l])
+  );
 
-      resultats.push({
-        ueId: o.ue.id,
-        ueNom: o.ue.nom,
-        offreId: o.id,
-        specialiteNom: o.specialite.nom,
-        semestre: o.semestre,
-        enseignantId: attribution?.enseignant_id ?? null,
-        enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
-        troncCommunNom: (lienTronc as any)?.tronc_commun?.nom ?? null,
-      });
-    }
+  const vues = new Map<string, UEPourCampagne>();
+  for (const o of offresRetenues) {
+    const attribution = attributionParOffre.get(o.id);
+    const lienTronc = troncParUe.get(o.ue.id);
+    vues.set(o.id, {
+      ueId: o.ue.id,
+      ueNom: o.ue.nom,
+      offreId: o.id,
+      specialiteNom: o.specialite.nom,
+      semestre: o.semestre,
+      enseignantId: attribution?.enseignant_id ?? null,
+      enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
+      troncCommunNom: lienTronc?.tronc_commun?.nom ?? null,
+    });
   }
 
-  // Dédoublonnage (une même UE peut ressortir via plusieurs paires
-  // spécialité/semestre sélectionnées, même si ce cas est rare vu qu'une
-  // offre est propre à une spécialité+semestre).
-  const vues = new Map<string, UEPourCampagne>();
-  for (const r of resultats) vues.set(r.offreId, r);
-
-  // Auto-inclusion des UEs sœurs d'un tronc commun : si l'une des UEs
+  // 4) Auto-inclusion des UEs sœurs d'un tronc commun : si l'une des UEs
   // trouvées appartient à un groupe, les autres UEs du même groupe sont
   // concernées elles aussi, même si leur spécialité/semestre n'a pas été
-  // ajouté explicitement par l'admin — un tronc commun se demande/se
-  // programme toujours en bloc.
+  // ajouté explicitement par l'admin. Une seule requête pour TOUS les
+  // troncs concernés à la fois (au lieu d'une par tronc + une par UE
+  // sœur).
   const idsDejaVus = new Set(Array.from(vues.values()).map((r) => r.ueId));
-  const troncsDejaTraites = new Set<string>();
-  for (const r of Array.from(vues.values())) {
-    if (!r.troncCommunNom) continue;
+  const troncIdsConcernes = Array.from(
+    new Set(
+      Array.from(vues.values())
+        .map((r) => troncParUe.get(r.ueId)?.tronc_commun_id)
+        .filter((id): id is string => !!id)
+    )
+  );
 
-    const { data: lien } = await supabase
-      .from('troncs_communs_ues')
-      .select('tronc_commun_id')
-      .eq('ue_id', r.ueId)
-      .maybeSingle();
-    const troncId = lien?.tronc_commun_id;
-    if (!troncId || troncsDejaTraites.has(troncId)) continue;
-    troncsDejaTraites.add(troncId);
-
-    const { data: liaisonsGroupe } = await supabase
+  if (troncIdsConcernes.length > 0) {
+    const { data: liaisonsGroupe, error: groupeError } = await supabase
       .from('troncs_communs_ues')
       .select(
         `
+        tronc_commun_id,
+        tronc_commun:troncs_communs(nom),
         ue:ues(
           id, nom,
-          offres(id, semestre, specialite:specialites(nom))
+          offres(id, semestre, specialite_id, specialite:specialites(nom))
         )
       `
       )
-      .eq('tronc_commun_id', troncId);
+      .in('tronc_commun_id', troncIdsConcernes);
+    if (groupeError) throw groupeError;
 
+    const nouvellesLignes: {
+      ueId: string;
+      ueNom: string;
+      offreId: string;
+      specialiteNom: string;
+      semestre: string;
+      troncCommunNom: string | null;
+    }[] = [];
     for (const l of (liaisonsGroupe ?? []) as any[]) {
       const ue = l.ue;
       const offre = ue?.offres?.[0];
       if (!ue || !offre || idsDejaVus.has(ue.id)) continue;
-
-      const { data: attribution } = await supabase
-        .from('attributions')
-        .select('enseignant_id, enseignant:enseignants(nom)')
-        .eq('offre_id', offre.id)
-        .eq('statut', 'actif')
-        .maybeSingle();
-
       idsDejaVus.add(ue.id);
-      vues.set(offre.id, {
+      nouvellesLignes.push({
         ueId: ue.id,
         ueNom: ue.nom,
         offreId: offre.id,
         specialiteNom: offre.specialite?.nom ?? '',
         semestre: offre.semestre,
-        enseignantId: attribution?.enseignant_id ?? null,
-        enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
-        troncCommunNom: r.troncCommunNom,
+        troncCommunNom: l.tronc_commun?.nom ?? null,
       });
+    }
+
+    if (nouvellesLignes.length > 0) {
+      // Attributions des UEs sœurs nouvellement incluses — une seule
+      // requête pour toutes, au lieu d'une par UE sœur.
+      const { data: attributionsSoeurs, error: attribSoeursError } =
+        await supabase
+          .from('attributions')
+          .select('offre_id, enseignant_id, enseignant:enseignants(nom)')
+          .in(
+            'offre_id',
+            nouvellesLignes.map((l) => l.offreId)
+          )
+          .eq('statut', 'actif');
+      if (attribSoeursError) throw attribSoeursError;
+      const attributionParOffreSoeur = new Map(
+        (attributionsSoeurs ?? []).map((a: any) => [a.offre_id, a])
+      );
+
+      for (const l of nouvellesLignes) {
+        const attribution = attributionParOffreSoeur.get(l.offreId);
+        vues.set(l.offreId, {
+          ueId: l.ueId,
+          ueNom: l.ueNom,
+          offreId: l.offreId,
+          specialiteNom: l.specialiteNom,
+          semestre: l.semestre,
+          enseignantId: attribution?.enseignant_id ?? null,
+          enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
+          troncCommunNom: l.troncCommunNom,
+        });
+      }
     }
   }
 
@@ -318,9 +377,9 @@ export async function enregistrerDisponibiliteManuelle(
     .eq('campagne_id', campagneId)
     .eq('enseignant_id', enseignantId);
 
-  const { JOURS, CRENEAUX } = await import('@/constants/enums');
+  const { JOURS, tousLesCreneaux } = await import('@/constants/enums');
   const lignes = JOURS.flatMap((jour) =>
-    CRENEAUX.map((creneau) => ({
+    tousLesCreneaux().map((creneau) => ({
       campagne_id: campagneId,
       enseignant_id: enseignantId,
       jour,

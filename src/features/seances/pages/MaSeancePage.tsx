@@ -5,9 +5,12 @@ import { useAuthStore } from '@/stores/authStore';
 import RapportSeanceForm from '../components/RapportSeanceForm';
 import {
   getSeanceDuMoment,
+  lireSeanceDuMomentDepuisCache,
   ouvrirSeance,
   fermerSeance,
+  diagnostiquerCreneauActuel,
   type SeanceDuMoment,
+  type DiagnosticCreneau,
 } from '../api';
 import { annulerMaSeance } from '@/features/seances-ponctuelles/api';
 import { ecartHorlogeMinutes } from '@/lib/horlogeAppareil';
@@ -32,24 +35,67 @@ export default function MaSeancePage() {
   const [motifAnnulation, setMotifAnnulation] = useState('');
   const [annulationEnCours, setAnnulationEnCours] = useState(false);
   const [ecartHorloge, setEcartHorloge] = useState<number | null>(null);
+  const [diagnostic, setDiagnostic] = useState<DiagnosticCreneau | null>(null);
+  // true si l'ouverture/fermeture affichée est une confirmation LOCALE
+  // provisoire (saisie hors ligne, pas encore synchronisée) plutôt que
+  // l'heure définitive du serveur.
+  const [ouvertureEnAttente, setOuvertureEnAttente] = useState(false);
+  const [fermetureEnAttente, setFermetureEnAttente] = useState(false);
 
   useEffect(() => {
     ecartHorlogeMinutes().then(setEcartHorloge);
   }, []);
 
+  // Cache local d'abord (affichage instantané, fonctionne hors ligne —
+  // jusqu'ici "Ma séance" n'avait AUCUN filet de secours réseau : hors
+  // ligne, l'écran affichait juste "Aucun cours en ce moment", que le
+  // cours soit en cours ou pas), réseau ensuite pour confirmer/rafraîchir.
+  //
+  // Important : on ne pré-filtre PLUS sur navigator.onLine avant de
+  // tenter le réseau — ce indicateur peut être faux (retourner "hors
+  // ligne" alors que la connexion fonctionne, notamment dans certains
+  // environnements de test/sandbox), ce qui empêchait alors TOUJOURS
+  // l'appel réseau (donc la détection fiable, basée sur l'heure serveur,
+  // de getSeanceDuMoment) et laissait l'écran bloqué sur le cache local
+  // (basé sur l'horloge de l'appareil, moins fiable). On tente
+  // maintenant le réseau à chaque fois ; seul un véritable échec de la
+  // requête fait retomber sur le cache déjà affiché.
   function charger() {
     if (!user) return;
     setChargement(true);
     setErreur(null);
-    getSeanceDuMoment(user.matricule)
-      .then(setSeance)
-      .catch((err) =>
-        setErreur(err instanceof Error ? err.message : 'Erreur de chargement')
-      )
-      .finally(() => setChargement(false));
+    let aDesDonneesLocales = false;
+
+    lireSeanceDuMomentDepuisCache(user.matricule)
+      .then((local) => {
+        if (local) {
+          setSeance(local);
+          aDesDonneesLocales = true;
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        getSeanceDuMoment(user.matricule)
+          .then((frais) => {
+            setSeance(frais);
+            setErreur(null);
+          })
+          .catch((err) => {
+            if (!aDesDonneesLocales) {
+              setErreur(
+                err instanceof Error ? err.message : 'Erreur de chargement'
+              );
+            }
+          })
+          .finally(() => setChargement(false));
+      });
   }
 
   useEffect(charger, [user?.matricule]);
+
+  useEffect(() => {
+    diagnostiquerCreneauActuel().then(setDiagnostic).catch(() => {});
+  }, [seance]);
 
   async function handleOuvrir() {
     if (!seance || !code.trim()) return;
@@ -57,9 +103,14 @@ export default function MaSeancePage() {
     setErreur(null);
     setMessageSucces(null);
     try {
-      const heure = await ouvrirSeance(seance.id, code.trim());
+      const { heure, horsLigne } = await ouvrirSeance(seance.id, code.trim());
       setSeance((prev) => (prev ? { ...prev, heureOuverture: heure } : prev));
-      setMessageSucces(`Séance ouverte à ${formatHeure(heure)}.`);
+      setOuvertureEnAttente(horsLigne);
+      setMessageSucces(
+        horsLigne
+          ? `Ouverture enregistrée localement — sera confirmée dès le retour du réseau.`
+          : `Séance ouverte à ${formatHeure(heure)}.`
+      );
       setCode('');
     } catch (err) {
       setErreur(err instanceof Error ? err.message : 'Code incorrect.');
@@ -74,9 +125,14 @@ export default function MaSeancePage() {
     setErreur(null);
     setMessageSucces(null);
     try {
-      const heure = await fermerSeance(seance.id, code.trim());
+      const { heure, horsLigne } = await fermerSeance(seance.id, code.trim());
       setSeance((prev) => (prev ? { ...prev, heureFermeture: heure } : prev));
-      setMessageSucces(`Séance fermée à ${formatHeure(heure)}.`);
+      setFermetureEnAttente(horsLigne);
+      setMessageSucces(
+        horsLigne
+          ? `Fermeture enregistrée localement — sera confirmée dès le retour du réseau.`
+          : `Séance fermée à ${formatHeure(heure)}.`
+      );
       setCode('');
     } catch (err) {
       setErreur(err instanceof Error ? err.message : 'Code incorrect.');
@@ -103,7 +159,7 @@ export default function MaSeancePage() {
   }
 
   const rapportVerrouille = seance
-    ? finCreneauAvecMargeDepassee(seance.creneau, 30)
+    ? finCreneauAvecMargeDepassee(seance.creneau, 60)
     : false;
 
   return (
@@ -123,6 +179,23 @@ export default function MaSeancePage() {
           <RefreshCw size={16} />
         </button>
       </div>
+
+      {/* DEBUG TEMPORAIRE — à retirer une fois le bug confirmé résolu */}
+      {diagnostic && (
+        <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4 text-[11px] font-mono text-amber-800 space-y-1">
+          <p>
+            <strong>DEBUG</strong> — heure Cameroun calculée (serveur) :{' '}
+            {diagnostic.maintenantISO} · jour : {diagnostic.jour ?? '(dimanche)'}{' '}
+            · créneau détecté : {diagnostic.creneauDetecte ?? '(aucun)'}
+          </p>
+          <p>
+            Bornes connues :{' '}
+            {diagnostic.bornes
+              .map((b) => `${b.code} [${b.debut}-${b.fin}]`)
+              .join(' · ')}
+          </p>
+        </div>
+      )}
 
       {ecartHorloge !== null && Math.abs(ecartHorloge) > 3 && (
         <div className="flex items-start gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
@@ -165,6 +238,11 @@ export default function MaSeancePage() {
               <p className="text-xs font-bold text-green-600 mb-1 flex items-center gap-1.5">
                 <CheckCircle2 size={14} /> Ouverte à{' '}
                 {formatHeure(seance.heureOuverture)}
+                {ouvertureEnAttente && (
+                  <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                    en attente de confirmation réseau
+                  </span>
+                )}
               </p>
             )}
             {seance.heureOuverture && (
@@ -178,6 +256,11 @@ export default function MaSeancePage() {
               <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
                 <CheckCircle2 size={14} /> Fermée à{' '}
                 {formatHeure(seance.heureFermeture)}
+                {fermetureEnAttente && (
+                  <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                    en attente de confirmation réseau
+                  </span>
+                )}
               </p>
             )}
 
@@ -253,7 +336,7 @@ export default function MaSeancePage() {
             <div className="bg-white rounded-[20px] p-6 text-center">
               <p className="text-sm font-bold text-gray-500">
                 Le rapport de cette séance n'est plus modifiable (plus de
-                30 min après la fin du cours).
+                1h après la fin du cours).
               </p>
             </div>
           )}

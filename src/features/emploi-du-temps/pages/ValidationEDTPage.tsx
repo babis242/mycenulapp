@@ -11,7 +11,7 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
-import { JOURS, CRENEAUX } from '@/constants/enums';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { supabase } from '@/lib/supabase';
 import {
   listCyclesDisponibles,
@@ -403,7 +403,7 @@ export default function ValidationEDTPage() {
             className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
           >
             <option value="">Semestre...</option>
-            {['S1', 'S2', 'S3', 'S4', 'S3&4', 'S5&6'].map((s) => (
+            {['S1', 'S2', 'S3', 'S4', 'S5', 'S6'].map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -511,7 +511,7 @@ export default function ValidationEDTPage() {
                     <th className="px-3 py-3 text-left text-xs font-bold text-gray-400 uppercase tracking-wide border-b border-gray-50 w-24">
                       Jour
                     </th>
-                    {CRENEAUX.map((c) => (
+                    {tousLesCreneaux().map((c) => (
                       <th
                         key={c}
                         className="px-3 py-3 text-left text-xs font-bold text-gray-400 uppercase tracking-wide border-b border-gray-50"
@@ -527,7 +527,7 @@ export default function ValidationEDTPage() {
                       <td className="px-3 py-3 font-bold text-gray-900 border-b border-gray-50 align-top">
                         {jour}
                       </td>
-                      {CRENEAUX.map((creneau) => {
+                      {tousLesCreneaux().map((creneau) => {
                         const cellules = seances.filter(
                           (s) =>
                             s.jour === jour &&
@@ -729,7 +729,7 @@ export default function ValidationEDTPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {CRENEAUX.map((creneau, cidx) => (
+                        {tousLesCreneaux().map((creneau, cidx) => (
                           <Fragment key={creneau}>
                             <tr>
                               <td className="border border-black px-2 py-2 text-red-600 font-bold text-center align-middle">

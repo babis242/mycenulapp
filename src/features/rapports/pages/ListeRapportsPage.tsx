@@ -47,7 +47,7 @@ export default function ListeRapportsPage() {
           <input
             value={recherche}
             onChange={(e) => setRecherche(e.target.value)}
-            placeholder="Enseignant, UE, niveau..."
+            placeholder="Enseignant, UE, semestre..."
             className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
           />
         </div>

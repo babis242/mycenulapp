@@ -13,14 +13,14 @@ import {
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
-import { JOURS, CRENEAUX, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
+import { JOURS, tousLesCreneaux, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
   getSeancesGroupees,
-  trouverOuCreerEmploi,
-  assignerSeance,
-  supprimerSeance,
+  invaliderCacheSeancesGroupees,
+  garantirEmploisPourGroupe,
+  enregistrerChangementsEnLot,
   listOffresDeSpecialite,
   getEnseignantsDisponibles,
   getSalleParDefautSpecialite,
@@ -532,57 +532,73 @@ export default function GenererEDTPage() {
     setModal(null);
   }
 
-  // ── Étape "Enregistrer" : (1) sauvegarde les modifications de grille
-  // en attente, (2) garantit qu'un emploi du temps existe en base pour
-  // TOUTES les spécialités du groupe — même vide, pour celles qu'on n'a
-  // pas touchées cette session — puis (3) ouvre la sélection de ce qui
-  // part en validation.
+  // ── Étape "Enregistrer" : (1) garantit un emploi du temps pour
+  // TOUTES les spécialités du groupe en un lot, (2) sauvegarde toutes
+  // les cases modifiées en un lot (au lieu d'une boucle séquentielle
+  // case par case), puis (3) ouvre la sélection de ce qui part en
+  // validation.
   async function handleOuvrirEnregistrement() {
     setEnvoiEnCours(true);
     setErreurChargement(null);
     try {
-      // 1) Modifications de grille en attente (comme avant).
+      // 1) Garantit qu'un emploi du temps existe pour CHAQUE spécialité
+      // du groupe, cette semaine — y compris celles jamais éditées cette
+      // session. Une seule lecture + au plus un insert groupé, au lieu
+      // d'une création par spécialité.
+      const emploiParSpecialiteAJour = await garantirEmploisPourGroupe(
+        specialites.map((s) => s.id),
+        semaine
+      );
+
+      // 2) Toutes les cases modifiées en un seul lot — au plus 6-7
+      // requêtes au total, peu importe le nombre de cases (au lieu de
+      // jusqu'à 6 requêtes PAR case, en série).
       if (changements.length > 0) {
-        const emplois = new Map(emploiParSpecialite);
-        for (const c of changements) {
-          if (c.action === 'delete') {
-            await supprimerSeance(c.seanceId);
-            continue;
-          }
-          let emploiId = emplois.get(c.specialiteId);
-          if (!emploiId) {
-            emploiId = await trouverOuCreerEmploi(c.specialiteId, semaine);
-            emplois.set(c.specialiteId, emploiId);
-          }
-          await assignerSeance({
-            emploiId,
+        const assignations = changements
+          .filter(
+            (c): c is Extract<ChangementCellule, { action: 'set' }> =>
+              c.action === 'set'
+          )
+          .map((c) => ({
             specialiteId: c.specialiteId,
-            semaine,
-            seanceIdExistante: c.seanceIdExistante?.startsWith('local-')
-              ? null
-              : c.seanceIdExistante,
             offreId: c.offreId,
             enseignantId: c.enseignantId,
             salleId: c.salleId,
             jour: c.jour,
             creneau: c.creneau,
-          });
-        }
+            seanceIdExistante:
+              c.seanceIdExistante && !c.seanceIdExistante.startsWith('local-')
+                ? c.seanceIdExistante
+                : null,
+          }));
+        const suppressions = changements
+          .filter(
+            (c): c is Extract<ChangementCellule, { action: 'delete' }> =>
+              c.action === 'delete'
+          )
+          .map((c) => c.seanceId);
+
+        await enregistrerChangementsEnLot(
+          assignations,
+          suppressions,
+          emploiParSpecialiteAJour,
+          semaine
+        );
+
+        // Le cache de getSeancesGroupees pour ce groupe contient
+        // maintenant des données périmées (on vient de les modifier) —
+        // sans ça, "Enregistrer" pourrait réafficher l'ancien contenu
+        // pendant jusqu'à 30 secondes.
+        invaliderCacheSeancesGroupees(
+          specialites.map((s) => s.id),
+          semaine
+        );
+
         localStorage.removeItem(
           `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`
         );
         setChangements([]);
       }
-
-      // 2) Garantit qu'un emploi du temps existe pour CHAQUE spécialité
-      // du groupe, cette semaine — y compris celles qu'on n'a jamais
-      // ouvertes/éditées dans cette session. Sans ça, elles n'ont aucune
-      // ligne en base et restent grisées, non sélectionnables, dans la
-      // modale qui suit. trouverOuCreerEmploi ne recrée rien si un
-      // emploi existe déjà (idempotent).
-      await Promise.all(
-        specialites.map((s) => trouverOuCreerEmploi(s.id, semaine))
-      );
 
       // 3) Recharge emploiParSpecialite / statutParSpecialite / seances
       // à jour avant d'ouvrir la sélection.
@@ -809,7 +825,7 @@ export default function GenererEDTPage() {
                   <th className="px-3 py-3 text-left text-xs font-bold text-gray-400 uppercase tracking-wide border-b border-gray-50 w-24">
                     Jour
                   </th>
-                  {CRENEAUX.map((c) => (
+                  {tousLesCreneaux().map((c) => (
                     <th
                       key={c}
                       className="px-3 py-3 text-left text-xs font-bold text-gray-400 uppercase tracking-wide border-b border-gray-50"
@@ -825,7 +841,7 @@ export default function GenererEDTPage() {
                     <td className="px-3 py-3 font-bold text-gray-900 border-b border-gray-50 align-top">
                       {jour}
                     </td>
-                    {CRENEAUX.map((creneau) => {
+                    {tousLesCreneaux().map((creneau) => {
                       const cellules = seancesAffichees.filter(
                         (s) => s.jour === jour && s.creneau === creneau
                       );

@@ -42,6 +42,7 @@ import ListeSallesPage from '@/features/referentiel/salles/pages/ListeSallesPage
 import ListeTroncsCommunsPage from '@/features/referentiel/troncs-communs/pages/ListeTroncsCommunsPage';
 import CreerTroncCommunPage from '@/features/referentiel/troncs-communs/pages/CreerTroncCommunPage';
 import DetailTroncCommunPage from '@/features/referentiel/troncs-communs/pages/DetailTroncCommunPage';
+import CreneauxPage from '@/features/referentiel/creneaux/pages/CreneauxPage';
 import AjouterSallePage from '@/features/referentiel/salles/pages/AjouterSallePage';
 import ImporterSallesPage from '@/features/referentiel/salles/pages/ImporterSallesPage';
 import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
@@ -122,6 +123,7 @@ export default function AppRoutes() {
                 element={<DetailTroncCommunPage />}
               />
               <Route path="salles/importer" element={<ImporterSallesPage />} />
+              <Route path="creneaux" element={<CreneauxPage />} />
             </Route>
           </Route>
 
