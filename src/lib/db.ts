@@ -41,7 +41,10 @@ class AppDatabase extends Dexie {
   troncsCommunsUes!: EntityTable<any, 'id'>;
   campagneEnseignants!: EntityTable<any, 'id'>;
   etudiants!: EntityTable<any, 'id'>;
-  creneaux!: EntityTable<any, 'code'>;
+  creneaux!: EntityTable<
+    { code: string; heure_debut: number; heure_fin: number; ordre: number },
+    'code'
+  >;
   syncQueue!: EntityTable<SyncAction, 'id'>;
 
   constructor() {

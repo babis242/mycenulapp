@@ -58,7 +58,6 @@ export default function RapportSeanceForm({
   troncCommunId,
   specialiteId,
   specialiteNom,
-  typeCursus,
   semestre,
   enseignantMatricule,
   titre = 'Rapport de séance',
