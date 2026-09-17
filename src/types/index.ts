@@ -198,7 +198,7 @@ export type SyncEntity =
   | 'ouvertureFermetureSeance';
 
 export type SyncOperation = 'create' | 'update' | 'delete';
-export type SyncStatus = 'pending' | 'syncing' | 'error' | 'done';
+export type SyncStatus = 'pending' | 'syncing' | 'error' | 'done' | 'abandonnee';
 
 export interface SyncAction {
   id?: number;
@@ -208,6 +208,7 @@ export interface SyncAction {
   createdAt: string;
   status: SyncStatus;
   error?: string;
+  tentatives?: number;
 }
 
 // Utilisateur authentifié (session)

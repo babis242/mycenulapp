@@ -11,6 +11,7 @@ import { onSyncStateChange, synchroniserTout } from '@/lib/sync';
 export default function OfflineBanner() {
   const enLigne = useOnlineStatus();
   const [enAttente, setEnAttente] = useState(0);
+  const [abandonnees, setAbandonnees] = useState(0);
   const [derniereErreur, setDerniereErreur] = useState<string | null>(null);
   const [syncEnCours, setSyncEnCours] = useState(false);
   const [detailOuvert, setDetailOuvert] = useState(false);
@@ -20,11 +21,17 @@ export default function OfflineBanner() {
     async function compter() {
       const actions = await db.syncQueue
         .where('status')
-        .anyOf(['pending', 'error'])
+        .anyOf(['pending', 'error', 'abandonnee'])
         .toArray();
       if (annule) return;
-      setEnAttente(actions.length);
-      const enErreur = actions.find((a: any) => a.status === 'error');
+      const actives = actions.filter((a: any) => a.status !== 'abandonnee');
+      setEnAttente(actives.length);
+      setAbandonnees(
+        actions.filter((a: any) => a.status === 'abandonnee').length
+      );
+      const enErreur = actions.find(
+        (a: any) => a.status === 'error' || a.status === 'abandonnee'
+      );
       setDerniereErreur(enErreur?.error ?? null);
     }
     compter();
@@ -39,7 +46,26 @@ export default function OfflineBanner() {
     };
   }, []);
 
-  if (enLigne && enAttente === 0) return null;
+  // "Réessayer" redonne explicitement une chance aux actions abandonnées
+  // (remise à zéro du compteur de tentatives) — l'abandon automatique
+  // évite le martèlement en tâche de fond, mais une demande explicite de
+  // l'utilisateur (ex : après qu'un admin a corrigé le souci côté
+  // serveur) doit pouvoir relancer une dernière fois.
+  async function handleReessayer() {
+    const abandonneesActuelles = await db.syncQueue
+      .where('status')
+      .equals('abandonnee')
+      .toArray();
+    for (const a of abandonneesActuelles) {
+      await db.syncQueue.update((a as any).id, {
+        status: 'pending',
+        tentatives: 0,
+      });
+    }
+    synchroniserTout();
+  }
+
+  if (enLigne && enAttente === 0 && abandonnees === 0) return null;
 
   return (
     <div className="print:hidden">
@@ -55,13 +81,13 @@ export default function OfflineBanner() {
             ) : (
               <RefreshCw size={13} />
             )}
-            {enAttente} action{enAttente > 1 ? 's' : ''} en attente de
-            synchronisation
+            {enAttente > 0 &&
+              `${enAttente} action${enAttente > 1 ? 's' : ''} en attente de synchronisation`}
+            {enAttente > 0 && abandonnees > 0 && ' · '}
+            {abandonnees > 0 &&
+              `${abandonnees} bloquée${abandonnees > 1 ? 's' : ''} après plusieurs échecs`}
             {!syncEnCours && (
-              <button
-                onClick={() => synchroniserTout()}
-                className="underline ml-1"
-              >
+              <button onClick={handleReessayer} className="underline ml-1">
                 Réessayer
               </button>
             )}
