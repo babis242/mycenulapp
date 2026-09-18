@@ -305,29 +305,37 @@ export async function attribuerCoursEtGroupe(
     );
   }
 
-  // Pour chaque UE du groupe, retrouve son offre (même spécialité+semestre
-  // n'est pas garanti pour toutes — chaque UE du tronc commun a sa propre
-  // offre indépendante) et son attribution active éventuelle, puis attribue.
+  // Pour chaque UE du groupe, retrouve TOUTES ses offres (une UE de
+  // tronc commun est par nature partagée par plusieurs spécialités —
+  // donc plusieurs lignes "offres" avec le même ue_id, une par
+  // spécialité) et attribue chacune. AVANT : .maybeSingle() exigeait au
+  // plus une seule ligne ; dès qu'une UE avait 2+ offres (le cas normal
+  // pour un vrai tronc commun), Supabase renvoyait une erreur interne,
+  // data devenait null, et le code passait silencieusement à l'UE
+  // suivante sans jamais l'attribuer — d'où la propagation qui semblait
+  // s'arrêter en cours de route sans qu'aucune erreur ne s'affiche.
   for (const ue of cours.troncCommun.ues) {
-    const { data: offreDeCetteUE } = await supabase
+    const { data: offresDeCetteUE, error: offresError } = await supabase
       .from('offres')
       .select('id')
-      .eq('ue_id', ue.id)
-      .maybeSingle();
-    if (!offreDeCetteUE) continue;
+      .eq('ue_id', ue.id);
+    if (offresError) throw offresError;
+    if (!offresDeCetteUE || offresDeCetteUE.length === 0) continue;
 
-    const { data: attributionActive } = await supabase
-      .from('attributions')
-      .select('id')
-      .eq('offre_id', offreDeCetteUE.id)
-      .eq('statut', 'actif')
-      .maybeSingle();
+    for (const offre of offresDeCetteUE) {
+      const { data: attributionActive } = await supabase
+        .from('attributions')
+        .select('id')
+        .eq('offre_id', offre.id)
+        .eq('statut', 'actif')
+        .maybeSingle();
 
-    await attribuerUneOffre(
-      offreDeCetteUE.id,
-      enseignantId,
-      attributionActive?.id ?? null
-    );
+      await attribuerUneOffre(
+        offre.id,
+        enseignantId,
+        attributionActive?.id ?? null
+      );
+    }
   }
 
   await setEnseignantTroncCommun(cours.troncCommun.id, enseignantId);
