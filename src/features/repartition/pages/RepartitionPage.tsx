@@ -5,6 +5,8 @@ import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { supabase } from '@/lib/supabase';
 import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   listCoursPourSpecialiteSemestre,
   listEnseignantsOptions,
@@ -122,6 +124,16 @@ export default function RepartitionPage() {
     setSemestre('');
   }
 
+  // Raccourci : sélectionne directement une spécialité trouvée par
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle —
+  // même logique que sur "Ajouter une UE".
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    await handleEcoleChange(s.ecoleId);
+    await handleFiliereChange(s.filiereId);
+    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
+    setSpecialiteId(s.id);
+  }
+
   function handleSpecialiteChange(id: string) {
     setSpecialiteId(id);
     setSemestre('');
@@ -234,6 +246,10 @@ export default function RepartitionPage() {
             <UploadCloud size={16} /> Importer Excel
           </button>
         </div>
+      </div>
+
+      <div className="mb-4">
+        <RechercheSpecialite onSelect={handleSelectionRecherche} />
       </div>
 
       <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
