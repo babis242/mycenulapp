@@ -692,21 +692,25 @@ export async function assignerSeance(params: ParamsAssignation) {
     creneau,
   } = params;
 
-  // Une seule requête au lieu de deux : récupère l'ue_id de l'offre ET
-  // son éventuel tronc commun d'un coup, via la relation imbriquée,
-  // plutôt que d'attendre la première requête avant de lancer la
-  // seconde. Économise un aller-retour réseau complet à chaque
-  // sauvegarde de case.
+  // Deux requêtes simples et explicites plutôt qu'une jointure imbriquée
+  // — celle-ci ne fonctionne que si PostgREST détecte une vraie
+  // contrainte de clé étrangère entre troncs_communs_ues et ues ; sans
+  // cette contrainte (un simple index ne suffit pas), la requête
+  // réussissait silencieusement mais ne renvoyait jamais le lien vers le
+  // tronc commun, sans la moindre erreur.
   const { data: offre, error: offreError } = await supabase
     .from('offres')
-    .select('ue_id, ue:ues(troncs_communs_ues(tronc_commun_id))')
+    .select('ue_id')
     .eq('id', offreId)
     .single();
   if (offreError || !offre) throw offreError ?? new Error('Offre introuvable.');
-  const lienTroncId: string | null =
-    ((offre as any).ue?.troncs_communs_ues?.[0]?.tronc_commun_id as
-      | string
-      | undefined) ?? null;
+
+  const { data: lienTronc } = await supabase
+    .from('troncs_communs_ues')
+    .select('tronc_commun_id')
+    .eq('ue_id', offre.ue_id)
+    .maybeSingle();
+  const lienTroncId: string | null = lienTronc?.tronc_commun_id ?? null;
 
   if (lienTroncId) {
     await propagerVersGroupe(
@@ -887,20 +891,48 @@ export async function enregistrerChangementsEnLot(
   }
   if (assignations.length === 0) return;
 
-  // 1) Résout offre → UE → tronc commun pour TOUTES les offres du lot en
-  // une seule requête (au lieu d'une par case).
+  // 1) Résout offre → UE → tronc commun pour TOUTES les offres du lot.
+  //
+  // AVANT : une seule requête avec jointure imbriquée
+  // (offres -> ue:ues(troncs_communs_ues(tronc_commun_id))) — mais ce
+  // type de jointure imbriquée ne fonctionne QUE si PostgREST détecte
+  // une vraie contrainte de clé étrangère entre troncs_communs_ues et
+  // ues. S'il n'y a qu'un index unique sans contrainte FK explicite (cas
+  // possible), la requête réussit quand même, mais renvoie
+  // silencieusement un lien vide pour CHAQUE offre — sans la moindre
+  // erreur. Résultat : toute case programmée sur une UE de tronc commun
+  // était alors traitée comme une UE de spécialité normale, jamais
+  // propagée au groupe.
+  // MAINTENANT : deux requêtes simples et explicites, sans jointure
+  // imbriquée — fonctionnent quelle que soit la présence ou non d'une
+  // contrainte FK, puisqu'elles filtrent juste sur des colonnes brutes.
   const offreIds = Array.from(new Set(assignations.map((a) => a.offreId)));
   const { data: offresData, error: offresError } = await supabase
     .from('offres')
-    .select('id, ue:ues(troncs_communs_ues(tronc_commun_id))')
+    .select('id, ue_id')
     .in('id', offreIds);
   if (offresError) throw offresError;
-  const troncParOffre = new Map<string, string | null>();
+  const ueIdParOffre = new Map<string, string>();
   for (const o of (offresData ?? []) as any[]) {
-    troncParOffre.set(
-      o.id,
-      o.ue?.troncs_communs_ues?.[0]?.tronc_commun_id ?? null
-    );
+    ueIdParOffre.set(o.id, o.ue_id);
+  }
+
+  const ueIds = Array.from(new Set(Array.from(ueIdParOffre.values())));
+  const troncParUe = new Map<string, string>();
+  if (ueIds.length > 0) {
+    const { data: liensTronc, error: liensError } = await supabase
+      .from('troncs_communs_ues')
+      .select('ue_id, tronc_commun_id')
+      .in('ue_id', ueIds);
+    if (liensError) throw liensError;
+    for (const l of (liensTronc ?? []) as any[]) {
+      troncParUe.set(l.ue_id, l.tronc_commun_id);
+    }
+  }
+
+  const troncParOffre = new Map<string, string | null>();
+  for (const [offreId, ueId] of ueIdParOffre) {
+    troncParOffre.set(offreId, troncParUe.get(ueId) ?? null);
   }
 
   // 2) Photo de TOUTES les séances de cette semaine, toutes spécialités
@@ -1649,13 +1681,16 @@ async function chargerSeancesGroupeesDepuisSupabase(
         'tronc_commun_id, ue_id, tronc_commun:troncs_communs(nom), ue:ues(volume_horaire)'
       )
       .in('ue_id', ueIds);
+    const troncsDetectes = new Set<string>();
     for (const l of (liens ?? []) as any[]) {
       const specialiteId = specialiteParUe.get(l.ue_id);
-      if (!specialiteId) continue;
-      if (!specialitesParTronc.has(l.tronc_commun_id)) {
-        specialitesParTronc.set(l.tronc_commun_id, new Set());
+      if (specialiteId) {
+        if (!specialitesParTronc.has(l.tronc_commun_id)) {
+          specialitesParTronc.set(l.tronc_commun_id, new Set());
+        }
+        specialitesParTronc.get(l.tronc_commun_id)!.add(specialiteId);
       }
-      specialitesParTronc.get(l.tronc_commun_id)!.add(specialiteId);
+      troncsDetectes.add(l.tronc_commun_id);
       ueVersTronc.set(l.ue_id, {
         troncCommunId: l.tronc_commun_id,
         nom: l.tronc_commun?.nom ?? '',
@@ -1667,6 +1702,41 @@ async function chargerSeancesGroupeesDepuisSupabase(
         volumeHoraireParTronc.set(l.tronc_commun_id, l.ue.volume_horaire);
       }
     }
+
+    // Retrouve TOUTES les UE sœurs de ces troncs communs, y compris
+    // celles dont la spécialité n'est PAS dans le cycle/semestre
+    // actuellement chargé (ex : tronc commun entre deux spécialités de
+    // cycles/filières différents, cas courant en pratique) — sans ça,
+    // specialitesParTronc ne contenait que les spécialités déjà visibles
+    // à l'écran, et la propagation restait invisible tant qu'on n'allait
+    // pas charger séparément le cycle/semestre de l'autre spécialité.
+    if (troncsDetectes.size > 0) {
+      const { data: toutesLesUesDuTronc } = await supabase
+        .from('troncs_communs_ues')
+        .select('tronc_commun_id, ue_id')
+        .in('tronc_commun_id', Array.from(troncsDetectes));
+      const troncParUeSoeur = new Map(
+        (toutesLesUesDuTronc ?? []).map((l: any) => [l.ue_id, l.tronc_commun_id])
+      );
+      const ueIdsSoeurs = Array.from(troncParUeSoeur.keys()).filter(
+        (id) => !specialiteParUe.has(id)
+      );
+      if (ueIdsSoeurs.length > 0) {
+        const { data: offresSoeurs } = await supabase
+          .from('offres')
+          .select('ue_id, specialite_id')
+          .in('ue_id', ueIdsSoeurs);
+        for (const o of (offresSoeurs ?? []) as any[]) {
+          const troncId = troncParUeSoeur.get(o.ue_id);
+          if (!troncId) continue;
+          if (!specialitesParTronc.has(troncId)) {
+            specialitesParTronc.set(troncId, new Set());
+          }
+          specialitesParTronc.get(troncId)!.add(o.specialite_id);
+        }
+      }
+    }
+
     const troncIds = Array.from(specialitesParTronc.keys());
     if (troncIds.length > 0) {
       const { data, error } = await supabase

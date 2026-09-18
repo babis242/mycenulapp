@@ -42,15 +42,24 @@ interface Salle {
   capacite: number;
 }
 
+// Le Cameroun est en UTC+1 toute l'année — même logique que
+// seances/api.ts (voir maintenantCameroun là-bas). AVANT : cette
+// fonction utilisait new Date() = l'horloge LOCALE du navigateur, qui
+// peut être dans un fuseau différent (ex : UTC dans un environnement de
+// test/sandbox) — décalant le "lundi par défaut" d'un jour selon
+// l'heure exacte du test.
 function lundiDeLaSemaine(): string {
-  const d = new Date();
-  const jour = d.getDay();
+  const d = new Date(Date.now() + 60 * 60 * 1000);
+  const jour = d.getUTCDay();
   const decalage = jour === 0 ? -6 : 1 - jour;
-  d.setDate(d.getDate() + decalage);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const jourDuMois = d.getUTCDate() + decalage;
+  const date = new Date(Date.UTC(y, m, jourDuMois));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
     2,
     '0'
-  )}-${String(d.getDate()).padStart(2, '0')}`;
+  )}-${String(date.getUTCDate()).padStart(2, '0')}`;
 }
 
 interface ModalCellule {
