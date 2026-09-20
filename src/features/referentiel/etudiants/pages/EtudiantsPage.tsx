@@ -12,6 +12,8 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import type { Specialite } from '@/types';
 import {
@@ -132,6 +134,64 @@ export default function EtudiantsPage() {
         setSpecialitesByFiliere((prev) => ({
           ...prev,
           [id]: (data as Specialite[]).sort((a, b) =>
+            a.nom.localeCompare(b.nom)
+          ),
+        }));
+      }
+    }
+  }
+
+  async function handleSelectionRecherche(s: SpecialiteRecherche) {
+    setEcoleId(s.ecoleId);
+    setFiliereId(s.filiereId);
+    setCycleKey(s.cycle);
+    setSpecialiteId(s.id);
+    setSemestre('');
+    setEtudiants([]);
+
+    // Précharge les filières de cette école et les spécialités de cette
+    // filière si pas déjà en cache — pour que les menus déroulants de la
+    // cascade affichent bien les bonnes options plutôt que rien.
+    if (!filieresByEcole[s.ecoleId]) {
+      if (navigator.onLine) {
+        const { data } = await supabase
+          .from('filieres')
+          .select('id, nom, ecole_id')
+          .eq('ecole_id', s.ecoleId)
+          .order('nom');
+        setFilieresByEcole((prev) => ({ ...prev, [s.ecoleId]: data ?? [] }));
+      } else {
+        const data = await db.filieres
+          .where('ecole_id')
+          .equals(s.ecoleId)
+          .toArray();
+        setFilieresByEcole((prev) => ({
+          ...prev,
+          [s.ecoleId]: (data as any[]).sort((a, b) =>
+            a.nom.localeCompare(b.nom)
+          ),
+        }));
+      }
+    }
+    if (!specialitesByFiliere[s.filiereId]) {
+      if (navigator.onLine) {
+        const { data } = await supabase
+          .from('specialites')
+          .select('id, nom, filiere_id, cycle, sous_cycle, type_cursus')
+          .eq('filiere_id', s.filiereId)
+          .order('nom');
+        setSpecialitesByFiliere((prev) => ({
+          ...prev,
+          [s.filiereId]: (data ?? []) as Specialite[],
+        }));
+      } else {
+        const data = await db.specialites
+          .where('filiere_id')
+          .equals(s.filiereId)
+          .toArray();
+        setSpecialitesByFiliere((prev) => ({
+          ...prev,
+          [s.filiereId]: (data as Specialite[]).sort((a, b) =>
             a.nom.localeCompare(b.nom)
           ),
         }));
@@ -325,6 +385,10 @@ export default function EtudiantsPage() {
         Liste des étudiants par spécialité et semestre — utilisée pour
         l'appel (Scénario 13).
       </p>
+
+      <div className="mb-4">
+        <RechercheSpecialite onSelect={handleSelectionRecherche} />
+      </div>
 
       <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-2 gap-3 mb-5">
         <div>
