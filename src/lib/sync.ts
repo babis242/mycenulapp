@@ -444,17 +444,18 @@ async function rejouerAction(action: SyncAction): Promise<void> {
             .eq('rapport_id', rapportId);
         }
       } else if (kind === 'points') {
-        const { rapportId, pointIds } = payload as {
+        const { rapportId, points } = payload as {
           rapportId: string;
-          pointIds: string[];
+          points: { pointId: string; termine: boolean }[];
         };
-        if (pointIds.length > 0) {
+        if (points.length > 0) {
           const { error } = await supabase
             .from('rapports_points_abordes')
             .upsert(
-              pointIds.map((point_cle_id) => ({
+              points.map((p) => ({
                 rapport_id: rapportId,
-                point_cle_id,
+                point_cle_id: p.pointId,
+                termine: p.termine,
               })),
               { onConflict: 'rapport_id,point_cle_id' }
             );
@@ -466,7 +467,7 @@ async function rejouerAction(action: SyncAction): Promise<void> {
             .not(
               'point_cle_id',
               'in',
-              `(${pointIds.join(',')})`
+              `(${points.map((p) => p.pointId).join(',')})`
             );
         } else {
           await supabase
@@ -520,73 +521,94 @@ async function rejouerAction(action: SyncAction): Promise<void> {
 
 // Verrou anti-concurrence : processSyncQueue est appelée depuis
 // plusieurs endroits (tâche de fond après chaque enqueueSyncAction,
-// synchro périodique, et maintenant explicitement attendue avant
-// l'envoi des photos de rapport) — sans ce verrou, deux exécutions en
-// parallèle pouvaient traiter LA MÊME action en même temps (ex : deux
-// "delete puis insert" sur rapports_points_abordes qui se percutent),
-// provoquant un conflit de clé unique (409) qui échoue, reste en
-// attente, et se relance indéfiniment à chaque nouvel appel.
-let syncEnCours = false;
+// synchro périodique, et explicitement attendue avant l'envoi des
+// photos de rapport) — sans lui, deux exécutions en parallèle pouvaient
+// traiter LA MÊME action en même temps (ex : deux "delete puis insert"
+// sur rapports_points_abordes qui se percutent), provoquant un conflit
+// de clé unique (409).
+//
+// AVANT : un simple booléen — si une synchro était déjà en cours, l'appel
+// suivant renvoyait immédiatement SANS RIEN FAIRE. Ça empêchait bien la
+// concurrence, mais cassait tout appelant qui attend explicitement la
+// fin d'une synchro pour être sûr qu'une écriture a bien atteint le
+// serveur (RapportSeanceForm, avant d'envoyer une photo — voir plus
+// haut le bug déjà corrigé une fois sur ce point précis). Si une synchro
+// tournait déjà au moment de cet appel, il se terminait aussitôt sans
+// rien avoir synchronisé, et la photo pouvait repartir AVANT que le
+// rapport n'existe vraiment côté serveur — le même bug revenait, de
+// façon intermittente.
+// MAINTENANT : une promesse partagée. Un appel qui arrive pendant qu'une
+// synchro tourne déjà ATTEND la fin de CETTE synchro (au lieu de
+// déclencher la sienne, ou de ne rien faire) — aucun appelant ne peut
+// plus croire qu'une synchro a eu lieu alors qu'elle vient seulement de
+// commencer ou n'a pas eu lieu du tout.
+let syncEnCoursPromise: Promise<{
+  traitees: number;
+  restantes: number;
+}> | null = null;
 
 export async function processSyncQueue(): Promise<{
   traitees: number;
   restantes: number;
 }> {
   if (!navigator.onLine) return { traitees: 0, restantes: 0 };
-  if (syncEnCours) return { traitees: 0, restantes: 0 };
-  syncEnCours = true;
+  if (syncEnCoursPromise) return syncEnCoursPromise;
 
-  try {
-    // Trié explicitement par id (= ordre de création) — sans ça, rien ne
-    // garantit que l'action "rapport" (qui crée la ligne rapports_seances)
-    // soit traitée AVANT les actions "appel"/"points" du même rapport, qui
-    // en dépendent (clé étrangère rapport_id). where().anyOf() ne garantit
-    // aucun ordre particulier.
-    const enAttente = await db.syncQueue
-      .where('status')
-      .anyOf(['pending', 'error'])
-      .sortBy('id');
+  syncEnCoursPromise = (async () => {
+    try {
+      // Trié explicitement par id (= ordre de création) — sans ça, rien
+      // ne garantit que l'action "rapport" (qui crée la ligne
+      // rapports_seances) soit traitée AVANT les actions "appel"/"points"
+      // du même rapport, qui en dépendent (clé étrangère rapport_id).
+      // where().anyOf() ne garantit aucun ordre particulier.
+      const enAttente = await db.syncQueue
+        .where('status')
+        .anyOf(['pending', 'error'])
+        .sortBy('id');
 
-    let traitees = 0;
-    for (const action of enAttente) {
-      try {
-        await db.syncQueue.update(action.id!, { status: 'syncing' });
-        await rejouerAction(action);
-        await db.syncQueue.update(action.id!, { status: 'done' });
-        traitees++;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const tentatives = (action.tentatives ?? 0) + 1;
-        // Toujours visible en console, même sans ouvrir le composant qui
-        // affiche l'erreur — utile pour diagnostiquer sans deviner.
-        console.error(
-          `[sync] Échec de "${action.entity}" (${action.operation}) — tentative ${tentatives} :`,
-          message,
-          action.payload
-        );
-        // Après plusieurs échecs, on arrête de relancer automatiquement
-        // cette action — sinon une entrée durablement cassée (ex :
-        // rapport orphelin jamais créé côté serveur) martèle le serveur
-        // indéfiniment à chaque synchro, sans jamais réussir. L'erreur
-        // reste visible (statut "abandonnee"), mais n'est plus rejouée
-        // toute seule.
-        await db.syncQueue.update(action.id!, {
-          status: tentatives >= 5 ? 'abandonnee' : 'error',
-          error: message,
-          tentatives,
-        });
+      let traitees = 0;
+      for (const action of enAttente) {
+        try {
+          await db.syncQueue.update(action.id!, { status: 'syncing' });
+          await rejouerAction(action);
+          await db.syncQueue.update(action.id!, { status: 'done' });
+          traitees++;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          const tentatives = (action.tentatives ?? 0) + 1;
+          // Toujours visible en console, même sans ouvrir le composant
+          // qui affiche l'erreur — utile pour diagnostiquer sans deviner.
+          console.error(
+            `[sync] Échec de "${action.entity}" (${action.operation}) — tentative ${tentatives} :`,
+            message,
+            action.payload
+          );
+          // Après plusieurs échecs, on arrête de relancer automatiquement
+          // cette action — sinon une entrée durablement cassée (ex :
+          // rapport orphelin jamais créé côté serveur) martèle le
+          // serveur indéfiniment à chaque synchro, sans jamais réussir.
+          // L'erreur reste visible (statut "abandonnee"), mais n'est
+          // plus rejouée toute seule.
+          await db.syncQueue.update(action.id!, {
+            status: tentatives >= 5 ? 'abandonnee' : 'error',
+            error: message,
+            tentatives,
+          });
+        }
       }
+
+      const restantes = await db.syncQueue
+        .where('status')
+        .anyOf(['pending', 'error'])
+        .count();
+
+      return { traitees, restantes };
+    } finally {
+      syncEnCoursPromise = null;
     }
+  })();
 
-    const restantes = await db.syncQueue
-      .where('status')
-      .anyOf(['pending', 'error'])
-      .count();
-
-    return { traitees, restantes };
-  } finally {
-    syncEnCours = false;
-  }
+  return syncEnCoursPromise;
 }
 
 // À appeler une fois à la connexion, puis à chaque retour de réseau.

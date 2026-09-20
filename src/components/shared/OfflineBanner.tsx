@@ -1,6 +1,6 @@
 // src/components/shared/OfflineBanner.tsx
 import { useEffect, useState } from 'react';
-import { WifiOff, RefreshCw, AlertTriangle } from 'lucide-react';
+import { WifiOff, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { db } from '@/lib/db';
 import { onSyncStateChange, synchroniserTout } from '@/lib/sync';
@@ -15,6 +15,7 @@ export default function OfflineBanner() {
   const [derniereErreur, setDerniereErreur] = useState<string | null>(null);
   const [syncEnCours, setSyncEnCours] = useState(false);
   const [detailOuvert, setDetailOuvert] = useState(false);
+  const [suppressionEnCours, setSuppressionEnCours] = useState(false);
 
   useEffect(() => {
     let annule = false;
@@ -65,6 +66,38 @@ export default function OfflineBanner() {
     synchroniserTout();
   }
 
+  // Supprime définitivement les actions abandonnées — pour une entrée
+  // durablement cassée (ex : un rapport dont la ligne correspondante
+  // n'existe plus côté serveur), aucun nombre de tentatives ne la fera
+  // jamais réussir. Sans ce bouton, elle resterait affichée comme
+  // "bloquée" indéfiniment, sans aucun moyen de s'en débarrasser.
+  async function handleVider() {
+    if (
+      !window.confirm(
+        `Supprimer définitivement ${abandonnees} action${
+          abandonnees > 1 ? 's' : ''
+        } bloquée${
+          abandonnees > 1 ? 's' : ''
+        } ? Cette modification faite hors ligne ne sera jamais envoyée au serveur — si elle était importante, il faudra la refaire depuis le début.`
+      )
+    )
+      return;
+    setSuppressionEnCours(true);
+    try {
+      const abandonneesActuelles = await db.syncQueue
+        .where('status')
+        .equals('abandonnee')
+        .toArray();
+      for (const a of abandonneesActuelles) {
+        await db.syncQueue.delete((a as any).id);
+      }
+      setAbandonnees(0);
+      setDetailOuvert(false);
+    } finally {
+      setSuppressionEnCours(false);
+    }
+  }
+
   if (enLigne && enAttente === 0 && abandonnees === 0) return null;
 
   return (
@@ -89,6 +122,15 @@ export default function OfflineBanner() {
             {!syncEnCours && (
               <button onClick={handleReessayer} className="underline ml-1">
                 Réessayer
+              </button>
+            )}
+            {abandonnees > 0 && !syncEnCours && (
+              <button
+                onClick={handleVider}
+                disabled={suppressionEnCours}
+                className="flex items-center gap-1 underline ml-1 disabled:opacity-50"
+              >
+                <Trash2 size={12} /> Vider
               </button>
             )}
             {derniereErreur && !syncEnCours && (

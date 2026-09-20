@@ -5,6 +5,7 @@ import {
   setEnseignantTroncCommun,
   type TroncCommunAvecUEs,
 } from '@/features/referentiel/troncs-communs/api';
+import { getDetailCouverture } from '@/features/seances/api';
 
 export interface SpecialiteOption {
   id: string;
@@ -91,6 +92,7 @@ export interface SupportCoursLigne {
   cle: string;
   attributionIds: string[];
   troncCommunId: string | null;
+  ueId: string | null;
   ueNom: string;
   specialiteNoms: string[];
   enseignantNom: string;
@@ -116,7 +118,7 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
       offre:offres(
         specialite:specialites(nom),
         ue:ues(
-          nom,
+          id, nom,
           troncs_communs_ues(
             tronc_commun_id,
             tronc_commun:troncs_communs(
@@ -153,6 +155,7 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
           cle,
           attributionIds: [a.id],
           troncCommunId: lienTronc.tronc_commun_id,
+          ueId: null,
           ueNom: tronc.nom,
           specialiteNoms: [specialiteNom],
           enseignantNom,
@@ -168,6 +171,7 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
         cle: a.id,
         attributionIds: [a.id],
         troncCommunId: null,
+        ueId: ue?.id ?? null,
         ueNom: ue?.nom ?? '',
         specialiteNoms: [specialiteNom],
         enseignantNom,
@@ -379,4 +383,163 @@ export async function annulerSupportCours(
     .from('support_cours_couverture')
     .delete()
     .eq('attribution_id', cible.attributionId);
+}
+
+// ── État de couverture par spécialité/semestre (admin) ─────────────
+// Basé sur le contenu du syllabus (points clés) et les rapports que les
+// enseignants remplissent — PAS sur le support de cours envoyé (ça,
+// c'est listSupportsCours, une notion différente, volontairement laissée
+// de côté ici).
+
+export interface LigneEtatCouverture {
+  cle: string; // "ue:<id>" ou "tronc:<id>"
+  ueId: string | null;
+  troncCommunId: string | null;
+  ueNom: string;
+  volumeHoraire: number | null;
+  quantitatif: number | null;
+  qualitatif: number | null;
+}
+
+export interface EtatCouvertureSpecialite {
+  lignes: LigneEtatCouverture[];
+  // Taux global du semestre pour cette spécialité — PONDÉRÉ (somme des
+  // heures faites / somme des volumes horaires, somme des points
+  // pondérés / somme du total des points), pas une simple moyenne des
+  // pourcentages par UE, qui donnerait le même poids à une UE de 10h et
+  // une UE de 60h.
+  globalQuantitatif: number | null;
+  globalQualitatif: number | null;
+}
+
+export async function getEtatCouvertureSpecialite(
+  specialiteId: string,
+  semestre: string
+): Promise<EtatCouvertureSpecialite> {
+  // Plusieurs requêtes simples et explicites plutôt qu'une jointure
+  // imbriquée sur 3 niveaux (offres -> ues -> troncs_communs_ues ->
+  // troncs_communs) — ce genre de jointure profonde échoue avec un 400
+  // dès que PostgREST n'arrive pas à résoudre sans ambiguïté la relation
+  // à un des niveaux, même quand chaque relation prise séparément existe
+  // bien. Même correctif déjà appliqué ailleurs dans l'app pour la même
+  // raison (détection des troncs communs à l'enregistrement d'une case
+  // d'emploi du temps).
+  const { data: offres, error: erreurOffres } = await supabase
+    .from('offres')
+    .select('id, ue_id')
+    .eq('specialite_id', specialiteId)
+    .eq('semestre', semestre);
+  if (erreurOffres) throw erreurOffres;
+
+  const ueIds = Array.from(
+    new Set((offres ?? []).map((o: any) => o.ue_id).filter(Boolean))
+  );
+
+  const [uesResult, liensTroncResult] = await Promise.all([
+    ueIds.length > 0
+      ? supabase.from('ues').select('id, nom, volume_horaire').in('id', ueIds)
+      : Promise.resolve({ data: [], error: null }),
+    ueIds.length > 0
+      ? supabase
+          .from('troncs_communs_ues')
+          .select('ue_id, tronc_commun_id')
+          .in('ue_id', ueIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (uesResult.error) throw uesResult.error;
+  if (liensTroncResult.error) throw liensTroncResult.error;
+
+  const ueParId = new Map((uesResult.data ?? []).map((u: any) => [u.id, u]));
+  const troncCommunIdParUe = new Map(
+    (liensTroncResult.data ?? []).map((l: any) => [l.ue_id, l.tronc_commun_id])
+  );
+
+  const troncIds = Array.from(new Set(Array.from(troncCommunIdParUe.values())));
+  const { data: troncs, error: erreurTroncs } =
+    troncIds.length > 0
+      ? await supabase
+          .from('troncs_communs')
+          .select('id, nom')
+          .in('id', troncIds)
+      : { data: [], error: null };
+  if (erreurTroncs) throw erreurTroncs;
+  const troncParId = new Map((troncs ?? []).map((t: any) => [t.id, t]));
+
+  // Regroupe par UE simple, ou par tronc commun (une seule ligne pour
+  // tout le groupe, même principe que listSupportsCours plus haut).
+  // troncs_communs n'a pas de colonne volume_horaire propre — toutes les
+  // UE membres du groupe partagent le même volume horaire, donc celui de
+  // la première UE membre rencontrée sert de référence pour le tronc.
+  const cibles = new Map<
+    string,
+    {
+      ueId: string | null;
+      troncCommunId: string | null;
+      ueNom: string;
+      volumeHoraire: number | null;
+    }
+  >();
+  for (const ueId of ueIds) {
+    const ue = ueParId.get(ueId);
+    if (!ue) continue;
+    const troncCommunId = troncCommunIdParUe.get(ueId);
+    const tronc = troncCommunId ? troncParId.get(troncCommunId) : null;
+    if (troncCommunId && tronc) {
+      const cle = `tronc:${troncCommunId}`;
+      if (!cibles.has(cle)) {
+        cibles.set(cle, {
+          ueId: null,
+          troncCommunId,
+          ueNom: tronc.nom,
+          volumeHoraire: ue.volume_horaire,
+        });
+      }
+    } else {
+      cibles.set(`ue:${ue.id}`, {
+        ueId: ue.id,
+        troncCommunId: null,
+        ueNom: ue.nom,
+        volumeHoraire: ue.volume_horaire,
+      });
+    }
+  }
+
+  const detailsBruts = await Promise.all(
+    Array.from(cibles.entries()).map(async ([cle, c]) => {
+      const detail = await getDetailCouverture(c.ueId, c.troncCommunId);
+      return { cle, ...c, ...detail };
+    })
+  );
+
+  const lignes: LigneEtatCouverture[] = detailsBruts
+    .map((d) => ({
+      cle: d.cle,
+      ueId: d.ueId,
+      troncCommunId: d.troncCommunId,
+      ueNom: d.ueNom,
+      volumeHoraire: d.volumeHoraire,
+      quantitatif: d.quantitatif,
+      qualitatif: d.qualitatif,
+    }))
+    .sort((a, b) => a.ueNom.localeCompare(b.ueNom));
+
+  const sommeHeuresFaites = detailsBruts.reduce((s, d) => s + d.heuresFaites, 0);
+  const sommeVolumeHoraire = detailsBruts.reduce(
+    (s, d) => s + (d.volumeHoraire ?? 0),
+    0
+  );
+  const sommePointsPondere = detailsBruts.reduce((s, d) => s + d.pointsPondere, 0);
+  const sommeTotalPoints = detailsBruts.reduce((s, d) => s + d.totalPoints, 0);
+
+  return {
+    lignes,
+    globalQuantitatif:
+      sommeVolumeHoraire > 0
+        ? Math.min(100, Math.round((sommeHeuresFaites / sommeVolumeHoraire) * 100))
+        : null,
+    globalQualitatif:
+      sommeTotalPoints > 0
+        ? Math.round((sommePointsPondere / sommeTotalPoints) * 100)
+        : null,
+  };
 }

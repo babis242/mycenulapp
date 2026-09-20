@@ -1,6 +1,14 @@
 // src/features/seances/components/RapportSeanceForm.tsx
 import { useEffect, useState } from 'react';
-import { Loader2, ListChecks, Layers, GraduationCap, X, Plus } from 'lucide-react';
+import {
+  Loader2,
+  ListChecks,
+  Layers,
+  GraduationCap,
+  X,
+  Plus,
+  TrendingUp,
+} from 'lucide-react';
 import type { TypeCursus } from '@/types';
 import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
 import { processSyncQueue } from '@/lib/sync';
@@ -18,8 +26,11 @@ import {
   getRapportPourSeance,
   getAppelExistant,
   getPointsAbordesExistants,
+  getDernierEtatPointsAbordes,
+  getTauxCouverture,
   enregistrerRapportEnFile,
   retirerImageCahierTexte,
+  type TauxCouverture,
 } from '../api';
 
 // Une spécialité concernée par le rapport, avec son semestre — TOUJOURS
@@ -72,8 +83,17 @@ export default function RapportSeanceForm({
   const [chargementEtudiants, setChargementEtudiants] = useState(false);
 
   const [pointsCles, setPointsCles] = useState<PointCle[]>([]);
-  const [pointsAbordes, setPointsAbordes] = useState<Record<string, boolean>>(
+  // Un point coché sans être marqué "partiel" = chapitre FINI (100%
+  // dans le taux de couverture qualitatif) ; coché ET marqué "partiel" =
+  // chapitre abordé mais pas terminé (50%) ; pas coché = pas abordé (0%).
+  const [pointsCoches, setPointsCoches] = useState<Record<string, boolean>>(
     {}
+  );
+  const [pointsPartiels, setPointsPartiels] = useState<Record<string, boolean>>(
+    {}
+  );
+  const [tauxCouverture, setTauxCouverture] = useState<TauxCouverture | null>(
+    null
   );
 
   const [imagesExistantes, setImagesExistantes] = useState<
@@ -95,7 +115,8 @@ export default function RapportSeanceForm({
   function lireBrouillon(): {
     rapportId: string;
     presences: Record<string, boolean>;
-    pointsAbordes: Record<string, boolean>;
+    pointsCoches: Record<string, boolean>;
+    pointsPartiels: Record<string, boolean>;
   } | null {
     try {
       const brut = localStorage.getItem(cleBrouillon);
@@ -107,7 +128,8 @@ export default function RapportSeanceForm({
   function ecrireBrouillon(patch: {
     rapportId: string;
     presences?: Record<string, boolean>;
-    pointsAbordes?: Record<string, boolean>;
+    pointsCoches?: Record<string, boolean>;
+    pointsPartiels?: Record<string, boolean>;
   }) {
     try {
       const actuel = lireBrouillon();
@@ -116,7 +138,9 @@ export default function RapportSeanceForm({
         JSON.stringify({
           rapportId: patch.rapportId,
           presences: patch.presences ?? actuel?.presences ?? {},
-          pointsAbordes: patch.pointsAbordes ?? actuel?.pointsAbordes ?? {},
+          pointsCoches: patch.pointsCoches ?? actuel?.pointsCoches ?? {},
+          pointsPartiels:
+            patch.pointsPartiels ?? actuel?.pointsPartiels ?? {},
         })
       );
     } catch {
@@ -154,6 +178,21 @@ export default function RapportSeanceForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [seanceId, ueId, troncCommunId]);
 
+  // Taux de couverture (quantitatif = heures faites / volume horaire ;
+  // qualitatif = chapitres couverts, fini = 100%, partiel = 50%) —
+  // rechargé aussi après un enregistrement, puisque les points abordés
+  // ou les heures effectuées peuvent avoir changé.
+  function chargerTauxCouverture() {
+    if (!ueId && !troncCommunId) {
+      setTauxCouverture(null);
+      return;
+    }
+    getTauxCouverture(ueId, troncCommunId)
+      .then(setTauxCouverture)
+      .catch(() => {});
+  }
+  useEffect(chargerTauxCouverture, [ueId, troncCommunId]);
+
   // Rapport déjà commencé pour cette séance : brouillon local d'abord
   // (instantané, fonctionne hors ligne), réseau ensuite pour compléter
   // (photos déjà envoyées — ça, ça ne peut venir que du serveur). Si
@@ -164,12 +203,28 @@ export default function RapportSeanceForm({
   useEffect(() => {
     let annule = false;
 
+    // Convertit la Map<pointId, termine> renvoyée par l'API en les deux
+    // records utilisés par l'UI (coché / partiel).
+    function appliquerEtatPoints(etat: Map<string, boolean>) {
+      const coches: Record<string, boolean> = {};
+      const partiels: Record<string, boolean> = {};
+      for (const [id, termine] of etat) {
+        coches[id] = true;
+        partiels[id] = !termine;
+      }
+      setPointsCoches(coches);
+      setPointsPartiels(partiels);
+    }
+
     async function initialiserRapport() {
       const brouillon = lireBrouillon();
+      const brouillonAPoints =
+        !!brouillon && Object.keys(brouillon.pointsCoches).length > 0;
       if (brouillon) {
         if (!annule) {
           setRapportId(brouillon.rapportId);
-          setPointsAbordes(brouillon.pointsAbordes);
+          setPointsCoches(brouillon.pointsCoches);
+          setPointsPartiels(brouillon.pointsPartiels);
         }
       }
 
@@ -190,13 +245,24 @@ export default function RapportSeanceForm({
                 nom: r.cahierTexteNoms[i] ?? key,
               }))
             );
-            const abordes = await getPointsAbordesExistants(r.id);
-            if (!annule && !brouillon) {
-              setPointsAbordes(
-                Object.fromEntries(Array.from(abordes).map((id) => [id, true]))
-              );
+            if (!annule && !brouillonAPoints) {
+              const abordes = await getPointsAbordesExistants(r.id);
+              if (!annule) appliquerEtatPoints(abordes);
             }
             return;
+          }
+          // Aucun rapport pour CETTE séance : c'est un nouveau rapport —
+          // pré-remplit avec l'état du cours précédent de la même
+          // UE/tronc commun (chapitres déjà couverts, finis ou pas), pour
+          // que l'enseignant n'ait qu'à ajouter ce qui est nouveau
+          // aujourd'hui, plutôt que de tout recocher à chaque séance.
+          if (!brouillonAPoints && (ueId || troncCommunId)) {
+            const precedent = await getDernierEtatPointsAbordes(
+              ueId,
+              troncCommunId,
+              seanceId
+            );
+            if (!annule && precedent.size > 0) appliquerEtatPoints(precedent);
           }
         } catch {
           // Réseau indisponible au moment de l'appel — pas grave, on
@@ -304,8 +370,19 @@ export default function RapportSeanceForm({
   function togglePresence(id: string) {
     setPresences((prev) => ({ ...prev, [id]: !prev[id] }));
   }
-  function togglePointAborde(id: string) {
-    setPointsAbordes((prev) => ({ ...prev, [id]: !prev[id] }));
+  // Décoche aussi "partiel" en même temps que le point lui-même — un
+  // point non coché n'a pas de sens à rester marqué "pas fini".
+  function togglePointCoche(id: string) {
+    setPointsCoches((prev) => {
+      const nouveauCoche = !prev[id];
+      if (!nouveauCoche) {
+        setPointsPartiels((p) => ({ ...p, [id]: false }));
+      }
+      return { ...prev, [id]: nouveauCoche };
+    });
+  }
+  function togglePointPartiel(id: string) {
+    setPointsPartiels((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
   const MAX_PHOTOS = 5;
@@ -366,9 +443,12 @@ export default function RapportSeanceForm({
         etudiantId: e.id,
         present: presences[e.id] ?? true,
       }));
-      const pointIdsAEnvoyer = Object.entries(pointsAbordes)
+      const pointsAEnvoyer = Object.entries(pointsCoches)
         .filter(([, coche]) => coche)
-        .map(([pointId]) => pointId);
+        .map(([pointId]) => ({
+          pointId,
+          termine: !pointsPartiels[pointId],
+        }));
 
       // Écriture TOUJOURS en file d'attente locale — jamais d'attente
       // réseau, jamais d'échec sec. Résout dès que c'est écrit
@@ -380,7 +460,7 @@ export default function RapportSeanceForm({
         enseignantMatricule,
         niveau: semestresEnregistres,
         presences: presencesAEnvoyer,
-        pointIds: pointIdsAEnvoyer,
+        points: pointsAEnvoyer,
       });
 
       // Brouillon local mis à jour avec ce qui vient d'être "enregistré"
@@ -389,10 +469,15 @@ export default function RapportSeanceForm({
       ecrireBrouillon({
         rapportId,
         presences,
-        pointsAbordes,
+        pointsCoches,
+        pointsPartiels,
       });
 
       setSucces(true);
+      // Les points abordés et/ou les heures effectuées viennent de
+      // changer — les taux affichés doivent refléter ça tout de suite,
+      // pas seulement au prochain rechargement de la page.
+      chargerTauxCouverture();
 
       // L'envoi des photos reste séparé et isolé : un échec ici (le cas
       // le plus fragile — fichiers volumineux, sensible à une connexion
@@ -500,6 +585,39 @@ export default function RapportSeanceForm({
         </div>
       )}
 
+      {tauxCouverture &&
+        (tauxCouverture.quantitatif !== null ||
+          tauxCouverture.qualitatif !== null) && (
+          <div className="grid grid-cols-2 gap-2 mb-4">
+            {tauxCouverture.quantitatif !== null && (
+              <div className="bg-gray-50 rounded-xl px-3.5 py-2.5">
+                <p className="flex items-center gap-1.5 text-[11px] font-bold text-gray-400 mb-0.5">
+                  <TrendingUp size={12} /> Couverture quantitative
+                </p>
+                <p className="text-lg font-extrabold text-gray-900">
+                  {tauxCouverture.quantitatif}%
+                </p>
+                <p className="text-[10px] text-gray-400">
+                  heures effectuées / volume horaire
+                </p>
+              </div>
+            )}
+            {tauxCouverture.qualitatif !== null && (
+              <div className="bg-gray-50 rounded-xl px-3.5 py-2.5">
+                <p className="flex items-center gap-1.5 text-[11px] font-bold text-gray-400 mb-0.5">
+                  <ListChecks size={12} /> Couverture qualitative
+                </p>
+                <p className="text-lg font-extrabold text-gray-900">
+                  {tauxCouverture.qualitatif}%
+                </p>
+                <p className="text-[10px] text-gray-400">
+                  chapitres couverts (fini = 100%, partiel = 50%)
+                </p>
+              </div>
+            )}
+          </div>
+        )}
+
       {pretAFaireAppel && (
         <>
           <div className="mb-4">
@@ -513,20 +631,45 @@ export default function RapportSeanceForm({
               </p>
             ) : (
               <div className="flex flex-col gap-0.5">
-                {pointsCles.map((p) => (
-                  <label
-                    key={p.id}
-                    className="flex items-start gap-2.5 py-1.5 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={pointsAbordes[p.id] ?? false}
-                      onChange={() => togglePointAborde(p.id)}
-                      className="mt-0.5 shrink-0"
-                    />
-                    <span className="text-sm text-gray-700">{p.libelle}</span>
-                  </label>
-                ))}
+                {pointsCles.map((p) => {
+                  const coche = pointsCoches[p.id] ?? false;
+                  const partiel = pointsPartiels[p.id] ?? false;
+                  return (
+                    <div
+                      key={p.id}
+                      className="flex items-start gap-2.5 py-1.5"
+                    >
+                      <label className="flex items-start gap-2.5 cursor-pointer flex-1 min-w-0">
+                        <input
+                          type="checkbox"
+                          checked={coche}
+                          onChange={() => togglePointCoche(p.id)}
+                          className="mt-0.5 shrink-0"
+                        />
+                        <span className="text-sm text-gray-700">
+                          {p.libelle}
+                        </span>
+                      </label>
+                      {coche && (
+                        <label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+                          <input
+                            type="checkbox"
+                            checked={partiel}
+                            onChange={() => togglePointPartiel(p.id)}
+                            className="shrink-0"
+                          />
+                          <span
+                            className={`text-[11px] font-bold whitespace-nowrap ${
+                              partiel ? 'text-amber-600' : 'text-gray-300'
+                            }`}
+                          >
+                            Chapitre pas fini
+                          </span>
+                        </label>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>

@@ -173,9 +173,14 @@ export default function MesHeuresPage() {
                           <p className="font-bold text-sm text-gray-900 truncate">
                             {s.ueNom}
                           </p>
-                          <p className="text-xs text-gray-400">
+                          <p className="text-xs text-gray-400 flex items-center gap-1.5">
                             {s.creneau} · {formatHeure(s.heureOuverture)} →{' '}
                             {formatHeure(s.heureFermeture)}
+                            {s.enRetard && (
+                              <span className="text-[10px] font-bold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                                Retard
+                              </span>
+                            )}
                           </p>
                         </div>
                         <p className="text-sm font-mono font-bold text-gray-500 shrink-0">

@@ -6,6 +6,7 @@ import {
   getDerniereCampagne,
 } from '@/features/disponibilites/api';
 import { genererCodesPourEmploi } from '@/features/codes-journaliers/api';
+import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
 import type { TypeCursus } from '@/types';
 
 // ── Chargement de l'emploi du temps (vierge si nouveau) ────────────
@@ -271,12 +272,10 @@ const JOUR_ORDRE: Record<string, number> = {
 };
 const CRENEAU_ORDRE: Record<string, number> = { '08h-12h': 0, '14h-17h': 1 };
 
-// Durée programmée d'un créneau, utilisée tant que la séance n'a pas
-// encore été fermée (duree_calculee null) — 08h-12h fait 4h, 14h-17h
-// fait 3h (pas 4h comme les deux, erreur corrigée).
-function dureeCreneauParDefaut(creneau: string): number {
-  return creneau === '14h-17h' ? 3 : 4;
-}
+// Durée PROGRAMMÉE d'un créneau — désormais gérée par
+// heuresEffectueesPourSeance (lib/calculHeures.ts), qui applique aussi
+// la règle de retard de l'école (marge de 15 min, puis 1h perdue par
+// palier dépassé) plutôt qu'un simple forfait plat.
 
 // Heures effectuées, PAR SÉANCE (pas un total plat pour toute l'UE) — la
 // première séance programmée dans la semaine affiche sa propre durée,
@@ -291,7 +290,7 @@ export async function getHeuresEffectuees(
   const { data } = await supabase
     .from('seances_edt')
     .select(
-      'id, offre_id, jour, creneau, duree_calculee, emploi_du_temps:emplois_du_temps(statut, semaine)'
+      'id, offre_id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps:emplois_du_temps(statut, semaine)'
     )
     .in('offre_id', offreIds);
 
@@ -304,7 +303,9 @@ export async function getHeuresEffectuees(
     const estSemaineActuelle = emploi.semaine === semaineActuelle;
     if (!estPasseeEtValidee && !estSemaineActuelle) continue;
     if (!parOffre.has(s.offre_id)) parOffre.set(s.offre_id, []);
-    parOffre.get(s.offre_id)!.push({ ...s, estSemaineActuelle });
+    parOffre
+      .get(s.offre_id)!
+      .push({ ...s, estSemaineActuelle, semaine: emploi.semaine });
   }
 
   const resultat = new Map<string, number>();
@@ -313,7 +314,18 @@ export async function getHeuresEffectuees(
     const seancesActuelles: any[] = [];
     for (const s of liste) {
       if (s.estSemaineActuelle) seancesActuelles.push(s);
-      else cumulPasse += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      // Séance déjà passée : applique la règle de retard ET de
+      // fermeture anticipée (voir lib/calculHeures.ts) à partir des
+      // heures réelles d'ouverture et de fermeture — plus juste que la
+      // durée nominale plate.
+      else
+        cumulPasse += heuresEffectueesPourSeance(
+          s.semaine,
+          s.jour,
+          s.creneau,
+          s.heure_ouverture,
+          s.heure_fermeture
+        );
     }
     seancesActuelles.sort((a, b) => {
       const diffJour = (JOUR_ORDRE[a.jour] ?? 0) - (JOUR_ORDRE[b.jour] ?? 0);
@@ -322,7 +334,20 @@ export async function getHeuresEffectuees(
     });
     let cumul = cumulPasse;
     for (const s of seancesActuelles) {
-      cumul += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      // Semaine en cours : la séance peut ne pas encore avoir eu lieu
+      // (ou être en cours) — pas d'heure d'ouverture/fermeture réelle
+      // fiable à exploiter tant que ce n'est pas une semaine passée.
+      // Utilise la règle quand même : si déjà ouverte/fermée, elle
+      // s'applique normalement ; sinon elle retombe sur la durée
+      // nominale (comportement de heuresEffectueesPourSeance sans heure
+      // d'ouverture).
+      cumul += heuresEffectueesPourSeance(
+        s.semaine,
+        s.jour,
+        s.creneau,
+        s.heure_ouverture ?? null,
+        s.heure_fermeture ?? null
+      );
       resultat.set(s.id, cumul);
     }
   }
@@ -342,7 +367,9 @@ export async function getHeuresEffectueesTronc(
 
   const { data } = await supabase
     .from('seances_edt')
-    .select('id, tronc_commun_id, jour, creneau, duree_calculee, semaine')
+    .select(
+      'id, tronc_commun_id, jour, creneau, heure_ouverture, heure_fermeture, semaine'
+    )
     .in('tronc_commun_id', troncCommunIds)
     .lte('semaine', semaineActuelle);
 
@@ -358,7 +385,14 @@ export async function getHeuresEffectueesTronc(
     const seancesActuelles: any[] = [];
     for (const s of liste) {
       if (s.semaine === semaineActuelle) seancesActuelles.push(s);
-      else cumulPasse += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      else
+        cumulPasse += heuresEffectueesPourSeance(
+          s.semaine,
+          s.jour,
+          s.creneau,
+          s.heure_ouverture,
+          s.heure_fermeture
+        );
     }
     seancesActuelles.sort((a, b) => {
       const diffJour = (JOUR_ORDRE[a.jour] ?? 0) - (JOUR_ORDRE[b.jour] ?? 0);
@@ -367,7 +401,13 @@ export async function getHeuresEffectueesTronc(
     });
     let cumul = cumulPasse;
     for (const s of seancesActuelles) {
-      cumul += s.duree_calculee ?? dureeCreneauParDefaut(s.creneau);
+      cumul += heuresEffectueesPourSeance(
+        s.semaine,
+        s.jour,
+        s.creneau,
+        s.heure_ouverture ?? null,
+        s.heure_fermeture ?? null
+      );
       resultat.set(s.id, cumul);
     }
   }

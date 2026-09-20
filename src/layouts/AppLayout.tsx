@@ -15,14 +15,17 @@ import {
   BarChart3,
   Clock,
   FileCheck,
+  Gauge,
   LogOut,
   Menu,
   Home,
+  User,
   X,
 } from 'lucide-react';
 import { Outlet } from 'react-router-dom';
 import { useAuthStore } from '@/stores/authStore';
 import NotificationBell from '@/components/shared/NotificationBell';
+import RefreshButton from '@/components/shared/RefreshButton';
 import OfflineBanner from '@/components/shared/OfflineBanner';
 import UpdateBanner from '@/components/shared/UpdateBanner';
 import PushNotificationPrompt from '@/components/shared/PushNotificationPrompt';
@@ -59,6 +62,12 @@ const NAV_ITEMS: {
     to: '/repartition/supports-cours',
     label: 'Supports de cours',
     icon: FileCheck,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
+    to: '/repartition/etat-couverture',
+    label: 'État de couverture',
+    icon: Gauge,
     roles: ['administrateur', 'responsable'],
   },
   {
@@ -123,6 +132,18 @@ const NAV_ITEMS: {
     icon: Clock,
     roles: ['enseignant'],
   },
+  {
+    to: '/mes-statistiques',
+    label: 'Mes statistiques',
+    icon: BarChart3,
+    roles: ['enseignant'],
+  },
+  {
+    to: '/mon-profil',
+    label: 'Mon profil',
+    icon: User,
+    roles: ['enseignant'],
+  },
 ];
 
 export default function AppLayout() {
@@ -157,6 +178,11 @@ export default function AppLayout() {
           <Home size={20} className="text-red-600" />
         </NavLink>
       </div>
+
+      <RefreshButton
+        className="fixed right-[4.25rem] z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden"
+        style={{ top: 'calc(env(safe-area-inset-top, 0px) + 0.5rem)' }}
+      />
 
       <NotificationBell
         className="fixed right-4 z-30 w-11 h-11 rounded-2xl bg-white shadow-md flex items-center justify-center print:hidden"

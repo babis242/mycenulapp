@@ -3,6 +3,9 @@ import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { processSyncQueue } from '@/lib/sync';
 import { toutesLesBornesCreneaux, synchroniserCreneaux } from '@/lib/creneaux';
+import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
+import { listPointsCles } from '@/features/referentiel/ues/api';
+import { listPointsClesTronc } from '@/features/referentiel/troncs-communs/api';
 import type { TypeCursus, Creneau } from '@/types';
 
 // Le Cameroun est en UTC+1 (WAT) toute l'année, pas de changement
@@ -677,31 +680,275 @@ export async function enregistrerAppel(
   if (error) throw error;
 }
 
+// État d'un point clé abordé : coché + fini (true) ou coché + partiel
+// (false) — un point absent de la Map n'a jamais été abordé.
 export async function getPointsAbordesExistants(
   rapportId: string
-): Promise<Set<string>> {
+): Promise<Map<string, boolean>> {
   const { data } = await supabase
     .from('rapports_points_abordes')
-    .select('point_cle_id')
+    .select('point_cle_id, termine')
     .eq('rapport_id', rapportId);
-  return new Set((data ?? []).map((l) => l.point_cle_id));
+  const carte = new Map<string, boolean>();
+  for (const l of (data ?? []) as any[]) carte.set(l.point_cle_id, l.termine);
+  return carte;
 }
 
 // Remplace intégralement les points abordés — même principe que l'appel :
-// chaque enregistrement fournit la liste complète, jamais un ajout partiel.
+// chaque enregistrement fournit la liste complète, jamais un ajout
+// partiel. `termine` distingue un chapitre fini (compte pour 100% dans le
+// taux de couverture qualitatif) d'un chapitre couvert mais pas terminé
+// (compte pour 50%).
 export async function enregistrerPointsAbordes(
   rapportId: string,
-  pointIds: string[]
+  points: { pointId: string; termine: boolean }[]
 ): Promise<void> {
   await supabase
     .from('rapports_points_abordes')
     .delete()
     .eq('rapport_id', rapportId);
-  if (pointIds.length === 0) return;
+  if (points.length === 0) return;
   const { error } = await supabase.from('rapports_points_abordes').insert(
-    pointIds.map((point_cle_id) => ({ rapport_id: rapportId, point_cle_id }))
+    points.map((p) => ({
+      rapport_id: rapportId,
+      point_cle_id: p.pointId,
+      termine: p.termine,
+    }))
   );
   if (error) throw error;
+}
+
+// Retrouve les identifiants des séances d'une même UE (ou d'un même
+// tronc commun) — utilisé à la fois pour pré-remplir un nouveau rapport
+// depuis le précédent, et pour calculer le taux de couverture cumulé
+// (qui doit inclure la séance actuelle, contrairement au pré-remplissage).
+export async function seancesDeLUE(
+  ueId: string | null,
+  troncCommunId: string | null,
+  excludeSeanceId?: string
+): Promise<string[]> {
+  if (troncCommunId) {
+    let requete = supabase
+      .from('seances_edt')
+      .select('id')
+      .eq('tronc_commun_id', troncCommunId);
+    if (excludeSeanceId) requete = requete.neq('id', excludeSeanceId);
+    const { data } = await requete;
+    return (data ?? []).map((s: any) => s.id);
+  }
+  if (ueId) {
+    const { data: offres } = await supabase
+      .from('offres')
+      .select('id')
+      .eq('ue_id', ueId);
+    const offreIds = (offres ?? []).map((o: any) => o.id);
+    if (offreIds.length === 0) return [];
+    let requete = supabase
+      .from('seances_edt')
+      .select('id')
+      .in('offre_id', offreIds);
+    if (excludeSeanceId) requete = requete.neq('id', excludeSeanceId);
+    const { data } = await requete;
+    return (data ?? []).map((s: any) => s.id);
+  }
+  return [];
+}
+
+// État cumulé des points abordés pour une UE/tronc commun — celui du
+// rapport le PLUS RÉCENT parmi toutes ses séances (chaque rapport
+// contient déjà la liste complète à jour, cf. enregistrerPointsAbordes).
+// `excludeSeanceId` : pour pré-remplir un NOUVEAU rapport, on exclut la
+// séance en cours (son rapport, s'il existe déjà, n'est pas encore "le
+// précédent") ; pour calculer le taux de couverture, on ne l'exclut pas
+// (on veut l'état le plus à jour possible, séance actuelle incluse).
+export async function getDernierEtatPointsAbordes(
+  ueId: string | null,
+  troncCommunId: string | null,
+  excludeSeanceId?: string
+): Promise<Map<string, boolean>> {
+  const idsCandidats = await seancesDeLUE(ueId, troncCommunId, excludeSeanceId);
+  if (idsCandidats.length === 0) return new Map();
+
+  const { data: rapports } = await supabase
+    .from('rapports_seances')
+    .select('id, created_at')
+    .in('seance_edt_id', idsCandidats)
+    .order('created_at', { ascending: false })
+    .limit(1);
+  const dernier = rapports?.[0];
+  if (!dernier) return new Map();
+
+  return getPointsAbordesExistants(dernier.id);
+}
+
+// Heures cumulées déjà effectuées pour une UE/tronc commun, toutes
+// séances fermées confondues (peu importe la semaine) — même règle de
+// retard que partout ailleurs (lib/calculHeures.ts).
+async function heuresCumuleesUE(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<number> {
+  let requete = supabase
+    .from('seances_edt')
+    .select('jour, creneau, semaine, heure_ouverture, heure_fermeture')
+    .not('heure_fermeture', 'is', null);
+  if (troncCommunId) {
+    requete = requete.eq('tronc_commun_id', troncCommunId);
+  } else if (ueId) {
+    const { data: offres } = await supabase
+      .from('offres')
+      .select('id')
+      .eq('ue_id', ueId);
+    const offreIds = (offres ?? []).map((o: any) => o.id);
+    if (offreIds.length === 0) return 0;
+    requete = requete.in('offre_id', offreIds);
+  } else {
+    return 0;
+  }
+  const { data } = await requete;
+  return ((data ?? []) as any[]).reduce(
+    (somme, s) =>
+      somme +
+      heuresEffectueesPourSeance(
+        s.semaine,
+        s.jour,
+        s.creneau,
+        s.heure_ouverture,
+        s.heure_fermeture
+      ),
+    0
+  );
+}
+
+async function volumeHoraireCible(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<number | null> {
+  if (troncCommunId) {
+    // troncs_communs n'a pas de colonne volume_horaire propre — toutes
+    // les UE membres du groupe partagent le même volume horaire (créées
+    // ensemble avec les mêmes caractéristiques), donc on le récupère via
+    // n'importe laquelle d'entre elles.
+    const { data: lien } = await supabase
+      .from('troncs_communs_ues')
+      .select('ue_id')
+      .eq('tronc_commun_id', troncCommunId)
+      .limit(1)
+      .maybeSingle();
+    if (!lien?.ue_id) return null;
+    const { data } = await supabase
+      .from('ues')
+      .select('volume_horaire')
+      .eq('id', lien.ue_id)
+      .maybeSingle();
+    return data?.volume_horaire ?? null;
+  }
+  if (ueId) {
+    const { data } = await supabase
+      .from('ues')
+      .select('volume_horaire')
+      .eq('id', ueId)
+      .maybeSingle();
+    return data?.volume_horaire ?? null;
+  }
+  return null;
+}
+
+export interface TauxCouverture {
+  // % du volume horaire prévu déjà effectué (null si le volume horaire
+  // de l'UE/tronc commun n'est pas renseigné).
+  quantitatif: number | null;
+  // % des points clés couverts (fini = 100%, partiel = 50%), null si
+  // aucun point clé n'est défini pour cette UE/tronc commun.
+  qualitatif: number | null;
+}
+
+// Valeurs brutes derrière les deux taux — exposées à part pour permettre
+// un calcul PONDÉRÉ au niveau d'une spécialité entière (somme des heures
+// faites / somme des volumes horaires, plutôt qu'une simple moyenne des
+// pourcentages, qui donnerait le même poids à une UE de 10h et une UE de
+// 60h).
+export interface DetailCouverture extends TauxCouverture {
+  heuresFaites: number;
+  volumeHoraire: number | null;
+  pointsPondere: number; // somme des poids (1 = fini, 0.5 = partiel)
+  totalPoints: number;
+}
+
+async function detailCouvertureInterne(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<{
+  heuresFaites: number;
+  volumeHoraire: number | null;
+  pointsPondere: number;
+  totalPoints: number;
+}> {
+  const [pointsDefinis, etatPoints, heuresFaites, volumeHoraire] =
+    await Promise.all([
+      troncCommunId ? listPointsClesTronc(troncCommunId) : listPointsCles(ueId!),
+      getDernierEtatPointsAbordes(ueId, troncCommunId),
+      heuresCumuleesUE(ueId, troncCommunId),
+      volumeHoraireCible(ueId, troncCommunId),
+    ]);
+
+  const pointsPondere = pointsDefinis.reduce((somme, p) => {
+    if (!etatPoints.has(p.id)) return somme;
+    return somme + (etatPoints.get(p.id) ? 1 : 0.5);
+  }, 0);
+
+  return {
+    heuresFaites,
+    volumeHoraire,
+    pointsPondere,
+    totalPoints: pointsDefinis.length,
+  };
+}
+
+function tauxDepuisDetail(d: {
+  heuresFaites: number;
+  volumeHoraire: number | null;
+  pointsPondere: number;
+  totalPoints: number;
+}): TauxCouverture {
+  const qualitatif =
+    d.totalPoints === 0 ? null : Math.round((d.pointsPondere / d.totalPoints) * 100);
+  const quantitatif =
+    d.volumeHoraire && d.volumeHoraire > 0
+      ? Math.min(100, Math.round((d.heuresFaites / d.volumeHoraire) * 100))
+      : null;
+  return { quantitatif, qualitatif };
+}
+
+// Taux de couverture d'une UE ou d'un tronc commun — affiché sur le
+// rapport de séance et "Mes cours".
+export async function getTauxCouverture(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<TauxCouverture> {
+  if (!ueId && !troncCommunId) return { quantitatif: null, qualitatif: null };
+  const detail = await detailCouvertureInterne(ueId, troncCommunId);
+  return tauxDepuisDetail(detail);
+}
+
+// Même chose, mais avec les valeurs brutes en plus — pour l'état par
+// spécialité/semestre (admin), qui a besoin d'agréger plusieurs UEs.
+export async function getDetailCouverture(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<DetailCouverture> {
+  if (!ueId && !troncCommunId) {
+    return {
+      quantitatif: null,
+      qualitatif: null,
+      heuresFaites: 0,
+      volumeHoraire: null,
+      pointsPondere: 0,
+      totalPoints: 0,
+    };
+  }
+  const detail = await detailCouvertureInterne(ueId, troncCommunId);
+  return { ...detail, ...tauxDepuisDetail(detail) };
 }
 
 export async function enregistrerContenuRapport(
@@ -739,7 +986,7 @@ export async function enregistrerRapportEnFile(params: {
   enseignantMatricule: string;
   niveau: string;
   presences: { etudiantId: string; present: boolean }[];
-  pointIds: string[];
+  points: { pointId: string; termine: boolean }[];
 }): Promise<void> {
   // Résolution matricule -> id enseignant depuis Dexie (déjà synchronisé
   // localement) — pas d'appel réseau, fonctionne hors ligne.
@@ -775,7 +1022,7 @@ export async function enregistrerRapportEnFile(params: {
     payload: {
       kind: 'points',
       rapportId: params.rapportId,
-      pointIds: params.pointIds,
+      points: params.points,
     },
   });
   // Tentative immédiate si le réseau est là — sans bloquer le retour de
@@ -882,4 +1129,114 @@ export async function saisirHeureManuelle(
     p_heure_fermeture: heures.heureFermeture || null,
   });
   if (error) throw new Error(error.message);
+}
+
+// ── Détail d'un cours (enseignant) ──────────────────────────────────
+// Vue "Mon cours" — clic depuis "Mes cours" : les deux taux de
+// couverture, l'état de chaque point clé, et la présence séance par
+// séance pour ce cours précis.
+
+export interface LigneSeanceCours {
+  rapportId: string;
+  seanceId: string;
+  semaine: string;
+  jour: string;
+  creneau: string;
+  nbPresents: number;
+  nbTotal: number;
+}
+
+export interface DetailCoursEnseignant {
+  ueNom: string;
+  tauxCouverture: TauxCouverture;
+  points: {
+    id: string;
+    ordre: number;
+    libelle: string;
+    etat: 'non_aborde' | 'partiel' | 'fini';
+  }[];
+  seances: LigneSeanceCours[];
+}
+
+export async function getDetailCoursEnseignant(
+  ueId: string | null,
+  troncCommunId: string | null
+): Promise<DetailCoursEnseignant> {
+  const idsCandidats = await seancesDeLUE(ueId, troncCommunId);
+
+  const [ueNomResult, taux, pointsDefinis, etatPoints, rapportsResult] =
+    await Promise.all([
+      troncCommunId
+        ? supabase
+            .from('troncs_communs')
+            .select('nom')
+            .eq('id', troncCommunId)
+            .maybeSingle()
+        : ueId
+          ? supabase.from('ues').select('nom').eq('id', ueId).maybeSingle()
+          : Promise.resolve({ data: null }),
+      getTauxCouverture(ueId, troncCommunId),
+      troncCommunId
+        ? listPointsClesTronc(troncCommunId)
+        : ueId
+          ? listPointsCles(ueId)
+          : Promise.resolve([]),
+      getDernierEtatPointsAbordes(ueId, troncCommunId),
+      idsCandidats.length > 0
+        ? supabase
+            .from('rapports_seances')
+            .select(
+              'id, seance_edt_id, created_at, seance:seances_edt(jour, creneau, semaine)'
+            )
+            .in('seance_edt_id', idsCandidats)
+            .order('created_at', { ascending: false })
+        : Promise.resolve({ data: [] }),
+    ]);
+
+  const rapports = (rapportsResult.data ?? []) as any[];
+  const rapportIds = rapports.map((r) => r.id);
+  const { data: appels } =
+    rapportIds.length > 0
+      ? await supabase
+          .from('appels_etudiants')
+          .select('rapport_id, present')
+          .in('rapport_id', rapportIds)
+      : { data: [] };
+
+  const compteurs = new Map<string, { presents: number; total: number }>();
+  for (const a of (appels ?? []) as any[]) {
+    const c = compteurs.get(a.rapport_id) ?? { presents: 0, total: 0 };
+    c.total += 1;
+    if (a.present) c.presents += 1;
+    compteurs.set(a.rapport_id, c);
+  }
+
+  const seances: LigneSeanceCours[] = rapports.map((r) => {
+    const c = compteurs.get(r.id) ?? { presents: 0, total: 0 };
+    return {
+      rapportId: r.id,
+      seanceId: r.seance_edt_id,
+      semaine: r.seance?.semaine ?? '',
+      jour: r.seance?.jour ?? '',
+      creneau: r.seance?.creneau ?? '',
+      nbPresents: c.presents,
+      nbTotal: c.total,
+    };
+  });
+
+  const points = pointsDefinis
+    .map((p) => {
+      const t = etatPoints.get(p.id);
+      const etat: 'non_aborde' | 'partiel' | 'fini' =
+        t === undefined ? 'non_aborde' : t ? 'fini' : 'partiel';
+      return { id: p.id, ordre: p.ordre, libelle: p.libelle, etat };
+    })
+    .sort((a, b) => a.ordre - b.ordre);
+
+  return {
+    ueNom: (ueNomResult as any).data?.nom ?? '',
+    tauxCouverture: taux,
+    points,
+    seances,
+  };
 }

@@ -20,7 +20,10 @@ import DetailUEPage from '@/features/referentiel/ues/pages/DetailUEPage';
 import ImporterUEsPage from '@/features/referentiel/ues/pages/ImporterUEsPage';
 import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
 import SuiviSupportsCoursPage from '@/features/repartition/pages/SuiviSupportsCoursPage';
+import EtatCouverturePage from '@/features/repartition/pages/EtatCouverturePage';
 import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
+import DetailRapportPage from '@/features/rapports/pages/DetailRapportPage';
+import DetailMonCoursPage from '@/features/seances/pages/DetailMonCoursPage';
 import ImporterAttributionsPage from '@/features/repartition/pages/ImporterAttributionsPage';
 import AttributionTroncsCommunsPage from '@/features/repartition/pages/AttributionTroncsCommunsPage';
 import LancerDemandePage from '@/features/disponibilites/pages/LancerDemandePage';
@@ -33,6 +36,7 @@ import MesCoursPage from '@/features/emploi-du-temps/pages/MesCoursPage';
 import MesUEsPage from '@/features/mes-ues/pages/MesUEsPage';
 import ListeEnseignantsPage from '@/features/referentiel/enseignants/pages/ListeEnseignantsPage';
 import AjouterEnseignantPage from '@/features/referentiel/enseignants/pages/AjouterEnseignantPage';
+import DetailEnseignantPage from '@/features/referentiel/enseignants/pages/DetailEnseignantPage';
 import ImporterEnseignantsPage from '@/features/referentiel/enseignants/pages/ImporterEnseignantsPage';
 import ListeResponsablesPage from '@/features/referentiel/responsables/pages/ListeResponsablesPage';
 import AjouterResponsablePage from '@/features/referentiel/responsables/pages/AjouterResponsablePage';
@@ -49,7 +53,10 @@ import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
 import MaSeancePage from '@/features/seances/pages/MaSeancePage';
 import SaisieManuellePage from '@/features/seances/pages/SaisieManuellePage';
 import EtatHeuresPage from '@/features/heures/pages/EtatHeuresPage';
+import DetailHeuresEnseignantPage from '@/features/heures/pages/DetailHeuresEnseignantPage';
 import MesHeuresPage from '@/features/heures/pages/MesHeuresPage';
+import MesStatistiquesPage from '@/features/heures/pages/MesStatistiquesPage';
+import MonProfilPage from '@/features/profil/pages/MonProfilPage';
 
 export default function AppRoutes() {
   return (
@@ -82,6 +89,10 @@ export default function AppRoutes() {
               <Route path="ues/:id" element={<DetailUEPage />} />
 
               <Route path="enseignants" element={<ListeEnseignantsPage />} />
+              <Route
+                path="enseignants/:id"
+                element={<DetailEnseignantPage />}
+              />
               <Route
                 path="enseignants/nouveau"
                 element={<AjouterEnseignantPage />}
@@ -137,7 +148,12 @@ export default function AppRoutes() {
               path="/repartition/supports-cours"
               element={<SuiviSupportsCoursPage />}
             />
+            <Route
+              path="/repartition/etat-couverture"
+              element={<EtatCouverturePage />}
+            />
             <Route path="/rapports" element={<ListeRapportsPage />} />
+            <Route path="/rapports/:rapportId" element={<DetailRapportPage />} />
             <Route
               path="/repartition/importer"
               element={<ImporterAttributionsPage />}
@@ -184,6 +200,7 @@ export default function AppRoutes() {
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>
             <Route path="/mes-cours" element={<MesCoursPage />} />
+            <Route path="/mon-cours/:ueId" element={<DetailMonCoursPage />} />
             <Route path="/mes-ues" element={<MesUEsPage />} />
             <Route path="/ma-seance" element={<MaSeancePage />} />
           </Route>
@@ -201,10 +218,16 @@ export default function AppRoutes() {
               element={<SaisieManuellePage />}
             />
             <Route path="/heures" element={<EtatHeuresPage />} />
+            <Route
+              path="/heures/:enseignantId"
+              element={<DetailHeuresEnseignantPage />}
+            />
           </Route>
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>
             <Route path="/mes-heures" element={<MesHeuresPage />} />
+            <Route path="/mes-statistiques" element={<MesStatistiquesPage />} />
+            <Route path="/mon-profil" element={<MonProfilPage />} />
           </Route>
         </Route>
       </Route>

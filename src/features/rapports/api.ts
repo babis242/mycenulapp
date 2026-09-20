@@ -1,13 +1,24 @@
 // src/features/rapports/api.ts
 import { supabase } from '@/lib/supabase';
-import { getGroupesSpecialitesTronc } from '@/features/referentiel/troncs-communs/api';
+import {
+  getGroupesSpecialitesTronc,
+} from '@/features/referentiel/troncs-communs/api';
+import { listPointsCles } from '@/features/referentiel/ues/api';
+import { listPointsClesTronc } from '@/features/referentiel/troncs-communs/api';
+import {
+  getPointsAbordesExistants,
+  getTauxCouverture,
+  type TauxCouverture,
+} from '@/features/seances/api';
 
 export interface RapportLigne {
   id: string;
+  ueId: string | null;
+  troncCommunId: string | null;
   ueNom: string;
   specialiteNoms: string[];
   enseignantNom: string;
-  niveau: string;
+  niveau: string; // en réalité le semestre (S1, S2...) — nom de champ historique
   semaine: string;
   jour: string;
   creneau: string;
@@ -26,8 +37,8 @@ export async function listRapports(): Promise<RapportLigne[]> {
       id, niveau, cahier_texte_keys,
       seance:seances_edt(
         jour, creneau, tronc_commun_id, semaine,
-        offre:offres(ue:ues(nom), specialite:specialites(nom)),
-        tronc_commun:troncs_communs(nom),
+        offre:offres(ue:ues(id, nom), specialite:specialites(nom)),
+        tronc_commun:troncs_communs(id, nom),
         emploi_du_temps:emplois_du_temps(semaine, specialite:specialites(nom))
       ),
       enseignant:enseignants(nom)
@@ -75,12 +86,14 @@ export async function listRapports(): Promise<RapportLigne[]> {
 
   return (data ?? []).map((r: any) => {
     const c = compteurs.get(r.id) ?? { presents: 0, total: 0 };
-    const troncId = r.seance?.tronc_commun_id;
+    const troncId = r.seance?.tronc_commun_id ?? null;
     const specialiteNoms = troncId
       ? (specialitesParTronc.get(troncId) ?? [])
       : [r.seance?.offre?.specialite?.nom ?? r.seance?.emploi_du_temps?.specialite?.nom].filter(Boolean);
     return {
       id: r.id,
+      ueId: r.seance?.offre?.ue?.id ?? null,
+      troncCommunId: troncId,
       ueNom: r.seance?.tronc_commun?.nom ?? r.seance?.offre?.ue?.nom ?? '',
       specialiteNoms,
       enseignantNom: r.enseignant?.nom ?? '',
@@ -93,4 +106,124 @@ export async function listRapports(): Promise<RapportLigne[]> {
       nbTotal: c.total,
     };
   });
+}
+
+// ── Détail complet d'un rapport (admin) ─────────────────────────────
+
+export interface PresenceLigne {
+  etudiantNom: string;
+  present: boolean;
+}
+
+export interface PointAbordeLigne {
+  id: string;
+  ordre: number;
+  libelle: string;
+  etat: 'non_aborde' | 'partiel' | 'fini';
+}
+
+export interface DetailRapportAdmin {
+  id: string;
+  ueId: string | null;
+  troncCommunId: string | null;
+  ueNom: string;
+  specialiteNoms: string[];
+  enseignantNom: string;
+  semestre: string;
+  jour: string;
+  creneau: string;
+  semaine: string;
+  presences: PresenceLigne[];
+  points: PointAbordeLigne[];
+  cahierTexteKeys: string[];
+  cahierTexteNoms: string[];
+  contenu: string | null;
+  tauxCouverture: TauxCouverture;
+}
+
+export async function getDetailRapportAdmin(
+  rapportId: string
+): Promise<DetailRapportAdmin | null> {
+  const { data: r, error } = await supabase
+    .from('rapports_seances')
+    .select(
+      `
+      id, niveau, contenu, cahier_texte_keys, cahier_texte_noms,
+      seance:seances_edt(
+        jour, creneau, tronc_commun_id, semaine,
+        offre:offres(ue:ues(id, nom), specialite:specialites(nom)),
+        tronc_commun:troncs_communs(id, nom),
+        emploi_du_temps:emplois_du_temps(semaine, specialite:specialites(nom))
+      ),
+      enseignant:enseignants(nom)
+    `
+    )
+    .eq('id', rapportId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!r) return null;
+
+  const seance = (r as any).seance;
+  const troncId: string | null = seance?.tronc_commun_id ?? null;
+  const ueId: string | null = seance?.offre?.ue?.id ?? null;
+
+  const [specialiteNoms, presencesResult, pointsDefinis, etatPoints, taux] =
+    await Promise.all([
+      troncId
+        ? getGroupesSpecialitesTronc(troncId).then((g) =>
+            g.map((x) => x.specialiteNom)
+          )
+        : Promise.resolve(
+            [
+              seance?.offre?.specialite?.nom ??
+                seance?.emploi_du_temps?.specialite?.nom,
+            ].filter(Boolean) as string[]
+          ),
+      supabase
+        .from('appels_etudiants')
+        .select('present, etudiant:etudiants(nom)')
+        .eq('rapport_id', rapportId),
+      troncId
+        ? listPointsClesTronc(troncId)
+        : ueId
+          ? listPointsCles(ueId)
+          : Promise.resolve([]),
+      getPointsAbordesExistants(rapportId),
+      getTauxCouverture(ueId, troncId),
+    ]);
+
+  const presences: PresenceLigne[] = ((presencesResult.data ?? []) as any[])
+    .map((p) => ({
+      etudiantNom: p.etudiant?.nom ?? '',
+      present: !!p.present,
+    }))
+    .sort((a, b) => a.etudiantNom.localeCompare(b.etudiantNom));
+
+  const points: PointAbordeLigne[] = pointsDefinis
+    .map((p) => {
+      const t = etatPoints.get(p.id);
+      const etat: PointAbordeLigne['etat'] =
+        t === undefined ? 'non_aborde' : t ? 'fini' : 'partiel';
+      return { id: p.id, ordre: p.ordre, libelle: p.libelle, etat };
+    })
+    .sort((a, b) => a.ordre - b.ordre);
+
+  return {
+    id: r.id,
+    ueId,
+    troncCommunId: troncId,
+    ueNom: seance?.tronc_commun?.nom ?? seance?.offre?.ue?.nom ?? '',
+    specialiteNoms,
+    enseignantNom: (r as any).enseignant?.nom ?? '',
+    semestre: r.niveau,
+    jour: seance?.jour ?? '',
+    creneau: seance?.creneau ?? '',
+    semaine: seance?.emploi_du_temps?.semaine ?? seance?.semaine ?? '',
+    presences,
+    points,
+    cahierTexteKeys: r.cahier_texte_keys ?? [],
+    cahierTexteNoms: r.cahier_texte_noms ?? [],
+    contenu: r.contenu ?? null,
+    tauxCouverture: taux,
+  };
 }

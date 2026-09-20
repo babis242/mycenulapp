@@ -1,5 +1,6 @@
 // src/features/heures/pages/EtatHeuresPage.tsx
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import { Loader2, FileSpreadsheet, WifiOff, Search } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
@@ -36,6 +37,7 @@ function formatDate(iso: string): string {
 // "détail" liste chaque séance individuellement (jour, créneau, heure
 // d'ouverture/fermeture) — pas un agrégat par UE.
 export default function EtatHeuresPage() {
+  const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const [mois, setMois] = useState(moisEnCours());
   const [detail, setDetail] = useState<LigneHeureSeance[]>([]);
@@ -107,7 +109,7 @@ export default function EtatHeuresPage() {
 
   function exporterDetail() {
     const feuille = XLSX.utils.aoa_to_sheet([
-      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'ouverture", 'Heure de fermeture', 'Heures'],
+      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'ouverture", 'Heure de fermeture', 'Heures', 'Retard'],
       ...detail.map((d) => [
         d.enseignantNom,
         formatDate(d.heureOuverture),
@@ -117,6 +119,7 @@ export default function EtatHeuresPage() {
         formatHeure(d.heureOuverture),
         formatHeure(d.heureFermeture),
         d.heures,
+        d.enRetard ? 'Oui' : 'Non',
       ]),
     ]);
     const classeur = XLSX.utils.book_new();
@@ -224,7 +227,11 @@ export default function EtatHeuresPage() {
             </thead>
             <tbody className="divide-y divide-gray-50">
               {totauxFiltres.map((t) => (
-                <tr key={t.enseignantId}>
+                <tr
+                  key={t.enseignantId}
+                  onClick={() => navigate(`/heures/${t.enseignantId}`)}
+                  className="cursor-pointer hover:bg-gray-50/60"
+                >
                   <td className="px-5 py-3 font-bold">{t.enseignantNom}</td>
                   <td className="px-5 py-3 font-mono font-bold text-red-600">
                     {t.totalHeures}h

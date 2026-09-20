@@ -1,10 +1,10 @@
 // src/features/referentiel/enseignants/pages/ListeEnseignantsPage.tsx
-import { useState } from 'react';
+import { useState, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, UploadCloud, Loader2, Search, WifiOff } from 'lucide-react';
+import { Plus, UploadCloud, Loader2, Search, WifiOff, Trash2 } from 'lucide-react';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
 import { db } from '@/lib/db';
-import { listEnseignants } from '../api';
+import { listEnseignants, enseignantEstUtilise, deleteEnseignant } from '../api';
 import type { Enseignant } from '@/types';
 
 // Écran 1.2 — Liste des enseignants (ecrans_ui.md)
@@ -14,6 +14,10 @@ import type { Enseignant } from '@/types';
 export default function ListeEnseignantsPage() {
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
+  const [suppressionEnCours, setSuppressionEnCours] = useState<string | null>(
+    null
+  );
+  const [supprimes, setSupprimes] = useState<Set<string>>(new Set());
 
   const {
     data: enseignants,
@@ -25,11 +29,36 @@ export default function ListeEnseignantsPage() {
     listEnseignants
   );
 
-  const filtered = enseignants.filter(
-    (e) =>
-      e.nom.toLowerCase().includes(search.toLowerCase()) ||
-      e.matricule.toLowerCase().includes(search.toLowerCase())
-  );
+  async function handleSupprimer(e: MouseEvent, enseignant: Enseignant) {
+    e.stopPropagation(); // ne pas déclencher la navigation vers le détail
+    const utilise = await enseignantEstUtilise(enseignant.id);
+    const message = utilise
+      ? `${enseignant.nom} a des cours qui lui sont attribués. Le supprimer quand même ?`
+      : `Supprimer définitivement ${enseignant.nom} ?`;
+    if (!window.confirm(message)) return;
+
+    setSuppressionEnCours(enseignant.id);
+    try {
+      await deleteEnseignant(enseignant.id);
+      setSupprimes((prev) => new Set(prev).add(enseignant.id));
+    } catch (err) {
+      window.alert(
+        err instanceof Error
+          ? err.message
+          : 'Erreur lors de la suppression — cet enseignant est probablement encore lié à des séances ou des attributions.'
+      );
+    } finally {
+      setSuppressionEnCours(null);
+    }
+  }
+
+  const filtered = enseignants
+    .filter((e) => !supprimes.has(e.id))
+    .filter(
+      (e) =>
+        e.nom.toLowerCase().includes(search.toLowerCase()) ||
+        e.matricule.toLowerCase().includes(search.toLowerCase())
+    );
 
   return (
     <div>
@@ -100,13 +129,15 @@ export default function ListeEnseignantsPage() {
                 <th className="px-5 py-3">Nom</th>
                 <th className="px-5 py-3">Email</th>
                 <th className="px-5 py-3">Statut</th>
+                <th className="px-5 py-3"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((e) => (
                 <tr
                   key={e.id}
-                  className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60"
+                  onClick={() => navigate(`/referentiel/enseignants/${e.id}`)}
+                  className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60 cursor-pointer"
                 >
                   <td className="px-5 py-3.5 font-mono text-xs font-bold text-gray-500">
                     {e.matricule}
@@ -125,6 +156,20 @@ export default function ListeEnseignantsPage() {
                     >
                       {e.statut === 'actif' ? 'Actif' : 'Inactif'}
                     </span>
+                  </td>
+                  <td className="px-5 py-3.5 text-right">
+                    <button
+                      onClick={(ev) => handleSupprimer(ev, e)}
+                      disabled={suppressionEnCours === e.id}
+                      className="text-gray-300 hover:text-red-600 disabled:opacity-50"
+                      aria-label={`Supprimer ${e.nom}`}
+                    >
+                      {suppressionEnCours === e.id ? (
+                        <Loader2 size={15} className="animate-spin" />
+                      ) : (
+                        <Trash2 size={15} />
+                      )}
+                    </button>
                   </td>
                 </tr>
               ))}
