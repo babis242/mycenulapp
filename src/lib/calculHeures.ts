@@ -7,23 +7,14 @@
 //   - au-delà de 15 min de retard : l'heure concernée est perdue, et la
 //     règle se répète pour CHAQUE heure du créneau (pas seulement la
 //     première) ;
-//   - SYMÉTRIQUEMENT, une heure ne compte comme effectuée que si la
-//     séance était ENCORE OUVERTE à la fin de cette heure-là — une
-//     fermeture (même largement avant la fin programmée) ne peut pas
-//     faire "revivre" des heures après coup. Sans ça, ouvrir en retard
-//     puis refermer quelques secondes après créditerait quand même les
-//     heures "restantes" du créneau, comme si le cours s'était déroulé
-//     normalement jusqu'à la fin.
+//   - SYMÉTRIQUEMENT, jusqu'à 15 min de fermeture AVANT la fin d'une
+//     heure : aucun impact non plus. Au-delà, cette heure est perdue.
 //
-// Exemples pour un créneau 08h-12h (4h nominal), fermeture normale à 12h :
+// Exemples pour un créneau 08h-12h (4h nominal) :
 //   - arrivée 08h14 → 4h (retard de 14 min, dans la marge)
-//   - arrivée 08h15 → 4h (pile à la limite, toujours dans la marge)
 //   - arrivée 08h16 → 3h (1h perdue pour retard)
-//   - arrivée 09h15 → 3h (encore pile à la marge de la 2e heure)
-//   - arrivée 09h16 → 2h (2h perdues pour retard)
-//   - arrivée 09h58, fermeture 09h59 → 0h (même si l'arrivée à 09h58 ne
-//     perd "que" 2h pour retard, la séance était déjà refermée avant même
-//     la fin de la 3e heure — donc aucune des heures restantes ne compte)
+//   - arrivée 08h07, fermeture 11h48 → 4h (12 min avant la fin, dans la marge)
+//   - arrivée 08h07, fermeture 11h40 → 3h (20 min avant la fin, hors marge)
 
 import { bornesCreneau } from './creneaux';
 
@@ -119,7 +110,7 @@ export function heuresEffectueesPourSeance(
     const finHeure = (i + 1) * 60;
     const arriveeATemps = delaiOuverture <= debutHeure + MARGE_MIN;
     const encoreOuverteAFin =
-      delaiFermeture === null || delaiFermeture >= finHeure;
+      delaiFermeture === null || delaiFermeture >= finHeure - MARGE_MIN;
     if (arriveeATemps && encoreOuverteAFin) heuresComptees++;
   }
   return heuresComptees;
