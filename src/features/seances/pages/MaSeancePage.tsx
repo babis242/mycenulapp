@@ -1,8 +1,18 @@
 // src/features/seances/pages/MaSeancePage.tsx
 import { useEffect, useState } from 'react';
-import { Loader2, RefreshCw, CheckCircle2, KeyRound, Ban, X, AlertTriangle } from 'lucide-react';
+import {
+  Loader2,
+  RefreshCw,
+  CheckCircle2,
+  KeyRound,
+  QrCode,
+  Ban,
+  X,
+  AlertTriangle,
+} from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import RapportSeanceForm from '../components/RapportSeanceForm';
+import ScannerQrModal from '@/features/qr-ouverture/components/ScannerQrModal';
 import {
   getSeanceDuMoment,
   lireSeanceDuMomentDepuisCache,
@@ -38,6 +48,11 @@ export default function MaSeancePage() {
   // l'heure définitive du serveur.
   const [ouvertureEnAttente, setOuvertureEnAttente] = useState(false);
   const [fermetureEnAttente, setFermetureEnAttente] = useState(false);
+  // Scan QR (features/qr-ouverture) — un second chemin vers EXACTEMENT
+  // les mêmes fonctions ouvrirSeance/fermerSeance que le code tapé à la
+  // main ci-dessous ; rien n'est dupliqué côté validation, seul le moyen
+  // d'obtenir le code change.
+  const [scannerOuvert, setScannerOuvert] = useState(false);
 
   useEffect(() => {
     ecartHorlogeMinutes().then(setEcartHorloge);
@@ -90,13 +105,14 @@ export default function MaSeancePage() {
 
   useEffect(charger, [user?.matricule]);
 
-  async function handleOuvrir() {
-    if (!seance || !code.trim()) return;
+  async function handleOuvrir(codeAUtiliser?: string) {
+    const valeur = codeAUtiliser ?? code;
+    if (!seance || !valeur.trim()) return;
     setEnvoi(true);
     setErreur(null);
     setMessageSucces(null);
     try {
-      const { heure, horsLigne } = await ouvrirSeance(seance.id, code.trim());
+      const { heure, horsLigne } = await ouvrirSeance(seance.id, valeur.trim());
       setSeance((prev) => (prev ? { ...prev, heureOuverture: heure } : prev));
       setOuvertureEnAttente(horsLigne);
       setMessageSucces(
@@ -112,13 +128,14 @@ export default function MaSeancePage() {
     }
   }
 
-  async function handleFermer() {
-    if (!seance || !code.trim()) return;
+  async function handleFermer(codeAUtiliser?: string) {
+    const valeur = codeAUtiliser ?? code;
+    if (!seance || !valeur.trim()) return;
     setEnvoi(true);
     setErreur(null);
     setMessageSucces(null);
     try {
-      const { heure, horsLigne } = await fermerSeance(seance.id, code.trim());
+      const { heure, horsLigne } = await fermerSeance(seance.id, valeur.trim());
       setSeance((prev) => (prev ? { ...prev, heureFermeture: heure } : prev));
       setFermetureEnAttente(horsLigne);
       setMessageSucces(
@@ -132,6 +149,15 @@ export default function MaSeancePage() {
     } finally {
       setEnvoi(false);
     }
+  }
+
+  // Dès qu'un QR valide est détecté, on soumet DIRECTEMENT — pas de
+  // confirmation supplémentaire, exactement comme demandé : l'enseignant
+  // clique "Scanner", vise le QR, et la séance s'ouvre/se ferme aussitôt.
+  function handleCodeScanne(codeScanne: string) {
+    setScannerOuvert(false);
+    if (seance?.heureOuverture) handleFermer(codeScanne);
+    else handleOuvrir(codeScanne);
   }
 
   async function handleAnnuler() {
@@ -263,7 +289,9 @@ export default function MaSeancePage() {
                   />
                 </div>
                 <button
-                  onClick={seance.heureOuverture ? handleFermer : handleOuvrir}
+                  onClick={() =>
+                    seance.heureOuverture ? handleFermer() : handleOuvrir()
+                  }
                   disabled={envoi || !code.trim()}
                   className="w-full flex items-center justify-center gap-2 bg-red-600 rounded-full px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
                 >
@@ -271,6 +299,16 @@ export default function MaSeancePage() {
                   {seance.heureOuverture
                     ? 'Fermer la séance'
                     : 'Ouvrir la séance'}
+                </button>
+
+                <button
+                  onClick={() => setScannerOuvert(true)}
+                  disabled={envoi}
+                  className="w-full flex items-center justify-center gap-2 mt-2 border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:border-red-300 hover:text-red-600 disabled:opacity-40"
+                >
+                  <QrCode size={15} />
+                  Scanner le QR pour{' '}
+                  {seance.heureOuverture ? 'fermer' : 'ouvrir'}
                 </button>
 
                 {!seance.heureOuverture && (
@@ -367,6 +405,14 @@ export default function MaSeancePage() {
             </div>
           </div>
         </div>
+      )}
+
+      {scannerOuvert && seance && (
+        <ScannerQrModal
+          mode={seance.heureOuverture ? 'fermer' : 'ouvrir'}
+          onCodeDetecte={handleCodeScanne}
+          onFermer={() => setScannerOuvert(false)}
+        />
       )}
     </div>
   );

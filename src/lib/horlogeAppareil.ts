@@ -36,3 +36,24 @@ export async function ecartHorlogeMinutes(): Promise<number | null> {
     return null;
   }
 }
+
+// Même principe que ecartHorlogeMinutes, mais en millisecondes et sans
+// arrondi — nécessaire pour le QR d'ouverture/fermeture (lib/totp.ts) :
+// un TOTP change toutes les 15s, un arrondi à la minute serait bien trop
+// grossier. Utilisé par EcranQrPage pour reconstituer "l'heure serveur
+// estimée" (Date.now() + ce décalage) même hors ligne, une fois cette
+// fonction appelée au moins une fois pendant que le réseau était là.
+export async function ecartHorlogeMs(): Promise<number | null> {
+  try {
+    const avant = Date.now();
+    const { data, error } = await supabase.rpc('heure_serveur');
+    if (error || !data) return null;
+    const heureServeurMs = new Date(data as string).getTime();
+    if (Number.isNaN(heureServeurMs)) return null;
+    const rttMs = Date.now() - avant;
+    const heureAppareilAjustee = Date.now() - rttMs / 2;
+    return Math.round(heureAppareilAjustee - heureServeurMs);
+  } catch {
+    return null;
+  }
+}

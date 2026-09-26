@@ -10,6 +10,7 @@ import {
   CalendarClock,
   Table2,
   KeyRound,
+  QrCode,
   PlayCircle,
   ClipboardEdit,
   BarChart3,
@@ -98,6 +99,12 @@ const NAV_ITEMS: {
     to: '/codes-journaliers',
     label: 'Codes journaliers',
     icon: KeyRound,
+    roles: ['administrateur', 'responsable', 'secretaire'],
+  },
+  {
+    to: '/qr-ouverture',
+    label: 'Écran QR (ouverture/fermeture)',
+    icon: QrCode,
     roles: ['administrateur', 'responsable', 'secretaire'],
   },
   {

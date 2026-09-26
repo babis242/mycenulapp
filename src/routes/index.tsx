@@ -50,6 +50,7 @@ import CreneauxPage from '@/features/referentiel/creneaux/pages/CreneauxPage';
 import AjouterSallePage from '@/features/referentiel/salles/pages/AjouterSallePage';
 import ImporterSallesPage from '@/features/referentiel/salles/pages/ImporterSallesPage';
 import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
+import EcranQrPage from '@/features/qr-ouverture/pages/EcranQrPage';
 import MaSeancePage from '@/features/seances/pages/MaSeancePage';
 import SaisieManuellePage from '@/features/seances/pages/SaisieManuellePage';
 import EtatHeuresPage from '@/features/heures/pages/EtatHeuresPage';
@@ -213,6 +214,7 @@ export default function AppRoutes() {
             }
           >
             <Route path="/codes-journaliers" element={<ListeCodesPage />} />
+            <Route path="/qr-ouverture" element={<EcranQrPage />} />
             <Route
               path="/seances/saisie-manuelle"
               element={<SaisieManuellePage />}
