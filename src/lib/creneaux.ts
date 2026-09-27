@@ -36,10 +36,42 @@ const CRENEAUX_PAR_DEFAUT: CreneauDB[] = [
 
 let cache: CreneauDB[] = CRENEAUX_PAR_DEFAUT;
 
+// Distingue "Dexie est vide parce que rien n'a encore jamais été
+// synchronisé" (on garde alors les 2 créneaux par défaut, le temps de la
+// toute première synchro) de "Dexie est vide parce que le dernier
+// créneau vient d'être supprimé" (là, il FAUT vider le cache). Persisté
+// en localStorage (pas juste en mémoire) pour survivre à une navigation
+// dans l'app sans rechargement complet.
+//
+// AVANT : la condition ci-dessous était juste `if (data.length > 0)`,
+// sans ce drapeau — donc une fois qu'un admin avait ajouté puis supprimé
+// son seul créneau personnalisé, `db.creneaux.toArray()` redevenait vide
+// et le cache gardait pour toujours l'ancienne valeur (le créneau
+// supprimé continuait d'apparaître dans les grilles ET le PDF, sur
+// toutes les pages, jusqu'à un rechargement complet de l'app).
+const CLE_DEJA_HYDRATE = 'creneaux-cache-deja-hydrate';
+
+function estDejaHydrate(): boolean {
+  try {
+    return localStorage.getItem(CLE_DEJA_HYDRATE) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function marquerHydrate(): void {
+  try {
+    localStorage.setItem(CLE_DEJA_HYDRATE, '1');
+  } catch {
+    // Pas grave — au pire, le prochain chargement retombera sur les
+    // créneaux par défaut si Dexie est vide à ce moment-là.
+  }
+}
+
 export async function rafraichirCacheCreneaux(): Promise<void> {
   try {
     const data = await db.creneaux.toArray();
-    if (data.length > 0) {
+    if (data.length > 0 || estDejaHydrate()) {
       cache = (data as any[])
         .map((c) => ({
           code: c.code,
@@ -48,10 +80,10 @@ export async function rafraichirCacheCreneaux(): Promise<void> {
           ordre: c.ordre ?? 0,
         }))
         .sort((a, b) => a.ordre - b.ordre);
+      marquerHydrate();
     }
-    // Si Dexie est vide (rien synchronisé pour l'instant), on garde le
-    // cache déjà en mémoire (par défaut, ou celui du dernier
-    // rafraîchissement réussi) plutôt que de le vider.
+    // Sinon (Dexie vide ET jamais synchronisé avant) : on garde le cache
+    // par défaut, le temps de la toute première synchronisation.
   } catch {
     // Pas grave — le cache garde sa dernière valeur connue.
   }
@@ -76,6 +108,15 @@ export async function synchroniserCreneaux(): Promise<void> {
       .from('creneaux')
       .select('code, heure_debut, heure_fin, ordre');
     if (error || !data) return;
+    // Remplacement COMPLET de la table locale, pas un simple upsert :
+    // `bulkPut` ajoute/met à jour les lignes reçues mais n'a jamais
+    // supprimé une ligne locale absente du résultat serveur. Un créneau
+    // supprimé directement en base (SQL, autre appareil, ancienne
+    // version de l'app...) restait donc INDÉFINIMENT dans Dexie et
+    // continuait d'apparaître dans les grilles/le PDF, même après une
+    // resynchronisation — exactement le bug observé avec "12h-13h",
+    // absent de la table Supabase mais toujours présent localement.
+    await db.creneaux.clear();
     if (data.length > 0) {
       await db.creneaux.bulkPut(data);
     }

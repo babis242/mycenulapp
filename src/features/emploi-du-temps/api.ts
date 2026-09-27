@@ -6,7 +6,8 @@ import {
   getDerniereCampagne,
 } from '@/features/disponibilites/api';
 import { genererCodesPourEmploi } from '@/features/codes-journaliers/api';
-import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
+import { heuresEffectueesPourSeance, seanceEstTerminee } from '@/lib/calculHeures';
+import { bornesCreneau } from '@/lib/creneaux';
 import type { TypeCursus } from '@/types';
 
 // ── Chargement de l'emploi du temps (vierge si nouveau) ────────────
@@ -153,6 +154,45 @@ export async function listToutesLesSalles() {
   return data ?? [];
 }
 
+// Salles réellement libres pour un créneau donné (semaine + jour +
+// créneau), toutes spécialités/cycles confondus — même source de vérité
+// que le contrôle de conflit fait côté serveur à l'enregistrement
+// (assignerSeance/propagerVersGroupe ci-dessous interrogent aussi
+// "seances_edt" filtré par semaine/jour/creneau, sans restriction de
+// spécialité). Ça évite de proposer, dans la modale de programmation,
+// une salle déjà prise par une autre spécialité au même moment — un
+// conflit qui n'était détecté qu'APRÈS l'enregistrement jusqu'ici.
+//
+// "seanceIdAExclure" : l'id de la séance en cours de modification (le
+// cas échéant) — sa propre salle actuelle ne doit pas se compter comme
+// "occupée" par elle-même.
+export async function getSallesLibresPourCreneau(
+  semaine: string,
+  jour: string,
+  creneau: string,
+  seanceIdAExclure?: string | null
+) {
+  const [{ data: toutesLesSalles }, { data: occupees }] = await Promise.all([
+    supabase.from('salles').select('id, code_salle, capacite').order('code_salle'),
+    supabase
+      .from('seances_edt')
+      .select('id, salle_id')
+      .eq('semaine', semaine)
+      .eq('jour', jour)
+      .eq('creneau', creneau),
+  ]);
+
+  const sallesOccupeesIds = new Set(
+    ((occupees ?? []) as any[])
+      .filter((o) => o.id !== seanceIdAExclure && o.salle_id)
+      .map((o) => o.salle_id as string)
+  );
+
+  return ((toutesLesSalles ?? []) as any[]).filter(
+    (s) => !sallesOccupeesIds.has(s.id)
+  );
+}
+
 // ── Détail des séances ──────────────────────────────────────────────
 
 export interface SeanceDetail {
@@ -162,6 +202,7 @@ export interface SeanceDetail {
   ueNom: string;
   volumeHoraire: number | null;
   semestre: string | null;
+  enseignantId: string | null;
   enseignantNom: string;
   salleCode: string | null;
   salleId: string | null;
@@ -182,7 +223,7 @@ export async function getSeances(
       id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
       offre:offres(semestre, ue:ues(nom, volume_horaire)),
       tronc_commun:troncs_communs(nom),
-      enseignant:enseignants(nom),
+      enseignant:enseignants(id, nom),
       salle:salles(code_salle)
     `
     )
@@ -214,7 +255,7 @@ export async function getSeances(
           `
           id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
           tronc_commun:troncs_communs(nom),
-          enseignant:enseignants(nom),
+          enseignant:enseignants(id, nom),
           salle:salles(code_salle)
         `
         )
@@ -234,6 +275,7 @@ export async function getSeances(
         ueNom: s.tronc_commun.nom,
         volumeHoraire: null,
         semestre: null,
+        enseignantId: s.enseignant?.id ?? null,
         enseignantNom: s.enseignant?.nom ?? '',
         salleCode: s.salle?.code_salle ?? null,
         salleId: s.salle_id,
@@ -249,6 +291,7 @@ export async function getSeances(
       ueNom: s.offre?.ue?.nom ?? '',
       volumeHoraire: s.offre?.ue?.volume_horaire ?? null,
       semestre: s.offre?.semestre ?? null,
+      enseignantId: s.enseignant?.id ?? null,
       enseignantNom: s.enseignant?.nom ?? '',
       salleCode: s.salle?.code_salle ?? null,
       salleId: s.salle_id,
@@ -414,6 +457,128 @@ export async function getHeuresEffectueesTronc(
   return resultat;
 }
 
+// Durée nominale d'un créneau (heures), depuis la table "creneaux" —
+// même source que le reste de l'app, avec le même repli si un créneau a
+// disparu du référentiel entre-temps.
+function dureeNominaleCreneau(creneau: string): number {
+  const bornes = bornesCreneau(creneau);
+  if (bornes) return (bornes.fin - bornes.debut) / 60;
+  return creneau === '14h-17h' ? 3 : 4;
+}
+
+// ── Heures "validées" (= réellement effectuées) par séance ─────────
+// Utilisé partout où on affiche "X/Yh" au fil de la programmation ou
+// sur le PDF (GenererEDTPage ET ValidationEDTPage) : PAS lié au statut
+// de validation de l'emploi du temps (genere / en_attente_validation /
+// valide) — uniquement à la réalité de chaque créneau, quelle que soit
+// sa semaine :
+//   - Séance déjà ouverte par l'enseignant (heure_ouverture connue) :
+//     heures RÉELLEMENT effectuées (règle de retard/fermeture
+//     anticipée, cf. heuresEffectueesPourSeance).
+//   - Séance jamais ouverte, et dont le créneau est déjà terminé
+//     (seanceEstTerminee) : ABSENCE confirmée — 0h. AVANT : une séance
+//     sans heure d'ouverture comptait toujours en durée nominale
+//     complète, qu'elle soit une vraie absence ou simplement pas encore
+//     arrivée — les deux cas étaient indiscernables et une absence
+//     gonflait le total à tort.
+//   - Séance jamais ouverte, mais dont le créneau n'est pas encore
+//     terminé (à venir, ou en cours) : pas encore due — compte pour sa
+//     durée nominale ("la séance programmée").
+// Le résultat, par id de séance, est le CUMUL chronologique (toutes
+// semaines confondues, triées semaine puis jour puis créneau) jusqu'à
+// et y compris cette séance — donc chaque case de la grille affiche le
+// total à ce point précis du parcours de l'UE.
+function contributionSeance(
+  s: { semaine: string; jour: string; creneau: string; heure_ouverture: string | null; heure_fermeture?: string | null },
+  maintenant: Date
+): number {
+  if (s.heure_ouverture) {
+    return heuresEffectueesPourSeance(
+      s.semaine,
+      s.jour,
+      s.creneau,
+      s.heure_ouverture,
+      s.heure_fermeture ?? null
+    );
+  }
+  if (seanceEstTerminee(s.semaine, s.jour, s.creneau, maintenant)) {
+    return 0; // absence confirmée
+  }
+  return dureeNominaleCreneau(s.creneau); // pas encore due
+}
+
+function trierChronologiquement<T extends { semaine: string; jour: string; creneau: string }>(
+  liste: T[]
+): T[] {
+  return [...liste].sort((a, b) => {
+    if (a.semaine !== b.semaine) return a.semaine.localeCompare(b.semaine);
+    const diffJour = (JOUR_ORDRE[a.jour] ?? 0) - (JOUR_ORDRE[b.jour] ?? 0);
+    if (diffJour !== 0) return diffJour;
+    return (CRENEAU_ORDRE[a.creneau] ?? 0) - (CRENEAU_ORDRE[b.creneau] ?? 0);
+  });
+}
+
+export async function getHeuresValideesPourPdf(
+  offreIds: string[]
+): Promise<Map<string, number>> {
+  if (offreIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('seances_edt')
+    .select('id, offre_id, jour, creneau, heure_ouverture, heure_fermeture, semaine')
+    .in('offre_id', offreIds);
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000); // Cameroun UTC+1
+
+  const parOffre = new Map<string, any[]>();
+  for (const s of (data ?? []) as any[]) {
+    if (!parOffre.has(s.offre_id)) parOffre.set(s.offre_id, []);
+    parOffre.get(s.offre_id)!.push(s);
+  }
+
+  const resultat = new Map<string, number>();
+  for (const liste of parOffre.values()) {
+    let cumul = 0;
+    for (const s of trierChronologiquement(liste)) {
+      cumul += contributionSeance(s, maintenant);
+      resultat.set(s.id, cumul);
+    }
+  }
+  return resultat;
+}
+
+// Même principe pour une UE de tronc commun.
+export async function getHeuresValideesTroncPourPdf(
+  troncCommunIds: string[]
+): Promise<Map<string, number>> {
+  if (troncCommunIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('seances_edt')
+    .select(
+      'id, tronc_commun_id, jour, creneau, heure_ouverture, heure_fermeture, semaine'
+    )
+    .in('tronc_commun_id', troncCommunIds);
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000);
+
+  const parTronc = new Map<string, any[]>();
+  for (const s of (data ?? []) as any[]) {
+    if (!parTronc.has(s.tronc_commun_id)) parTronc.set(s.tronc_commun_id, []);
+    parTronc.get(s.tronc_commun_id)!.push(s);
+  }
+
+  const resultat = new Map<string, number>();
+  for (const liste of parTronc.values()) {
+    let cumul = 0;
+    for (const s of trierChronologiquement(liste)) {
+      cumul += contributionSeance(s, maintenant);
+      resultat.set(s.id, cumul);
+    }
+  }
+  return resultat;
+}
+
 export async function listSallesLibres(
   jour: string,
   creneau: string,
@@ -517,6 +682,7 @@ export async function lireSeancesDepuisCache(
         ueNom: tronc?.nom ?? '',
         volumeHoraire: null,
         semestre: null,
+        enseignantId: s.enseignant_id ?? null,
         enseignantNom: enseignant?.nom ?? '',
         salleCode: salle?.code_salle ?? null,
         salleId: s.salle_id,
@@ -535,6 +701,7 @@ export async function lireSeancesDepuisCache(
       ueNom: ue?.nom ?? '',
       volumeHoraire: ue?.volume_horaire ?? null,
       semestre: offre?.semestre ?? null,
+      enseignantId: s.enseignant_id ?? null,
       enseignantNom: enseignant?.nom ?? '',
       salleCode: salle?.code_salle ?? null,
       salleId: s.salle_id,
@@ -1463,6 +1630,81 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
     .sort((a, b) => a.semaine.localeCompare(b.semaine));
 }
 
+// ── "Mes cours de la semaine" (enseignant) ─────────────────────────
+// Détermine la semaine (lundi, format "AAAA-MM-JJ") à afficher sur cet
+// écran : la semaine en cours, SAUF à partir du samedi 18h (heure
+// Cameroun) et pendant tout le dimanche, où l'on bascule déjà sur la
+// semaine prochaine — l'enseignant peut ainsi préparer son planning du
+// lundi suivant dès le week-end plutôt que de voir un écran vide (la
+// semaine en cours étant, à ce moment-là, déjà terminée ou sur le point
+// de l'être).
+
+// Repli si le serveur ne répond pas (hors ligne) — Cameroun = UTC+1
+// fixe, pas de changement d'heure.
+function maintenantCamerounSimple(): Date {
+  return new Date(Date.now() + 60 * 60 * 1000);
+}
+
+// Heure fiable : demandée au serveur (RPC "heure_serveur", déjà utilisée
+// ailleurs dans l'app pour la même raison) plutôt que celle, parfois
+// fausse, de l'appareil — sinon la bascule de samedi/dimanche pourrait se
+// déclencher au mauvais moment sur un téléphone mal réglé.
+async function maintenantCamerounFiable(): Promise<Date> {
+  try {
+    const { data, error } = await supabase.rpc('heure_serveur');
+    if (error || !data) return maintenantCamerounSimple();
+    const heureServeur = new Date(data as string);
+    if (Number.isNaN(heureServeur.getTime())) return maintenantCamerounSimple();
+    return new Date(heureServeur.getTime() + 60 * 60 * 1000);
+  } catch {
+    return maintenantCamerounSimple();
+  }
+}
+
+function lundiDeLaSemaineDe(reference: Date): string {
+  const jour = reference.getUTCDay();
+  const decalage = jour === 0 ? -6 : 1 - jour;
+  const y = reference.getUTCFullYear();
+  const m = reference.getUTCMonth();
+  const d = reference.getUTCDate() + decalage;
+  const date = new Date(Date.UTC(y, m, d));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+function decalerSemaineDe(semaineISO: string, nbSemaines: number): string {
+  const [y, m, d] = semaineISO.split('-').map(Number);
+  const date = new Date(Date.UTC(y, m - 1, d + nbSemaines * 7));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(
+    2,
+    '0'
+  )}-${String(date.getUTCDate()).padStart(2, '0')}`;
+}
+
+const HEURE_BASCULE_SAMEDI = 18;
+
+export async function semaineCibleCoursDeLaSemaine(): Promise<{
+  semaine: string;
+  estSemaineProchaine: boolean;
+}> {
+  const maintenant = await maintenantCamerounFiable();
+  const jour = maintenant.getUTCDay(); // 0 = dimanche, 6 = samedi
+  const heure = maintenant.getUTCHours();
+  const semaineActuelle = lundiDeLaSemaineDe(maintenant);
+
+  const basculeSurSemaineProchaine =
+    jour === 0 || (jour === 6 && heure >= HEURE_BASCULE_SAMEDI);
+
+  return basculeSurSemaineProchaine
+    ? {
+        semaine: decalerSemaineDe(semaineActuelle, 1),
+        estSemaineProchaine: true,
+      }
+    : { semaine: semaineActuelle, estSemaineProchaine: false };
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // PHASE 2 — Génération groupée par cycle + semestre + semaine.
 // L'admin (ou le responsable, selon son périmètre) choisit un cycle +
@@ -1588,6 +1830,43 @@ export async function listSpecialitesDuCycleSemestre(
   return resultat.sort((a, b) => a.nom.localeCompare(b.nom));
 }
 
+// Spécialités d'un cycle/semestre/semaine réellement ENVOYÉES en
+// validation (emplois_du_temps.statut ∈ {en_attente_validation, valide})
+// — même logique que ValidationEDTPage (base = seule source de vérité,
+// aucune transmission fragile via URL/state/localStorage). Extraite ici
+// pour être réutilisée telle quelle par toute page qui doit retrouver
+// le même périmètre (ex : la page d'information WhatsApp des
+// enseignants), sans dupliquer/faire dériver la logique.
+export async function listSpecialitesEnvoyeesEnValidation(
+  cycleKey: string,
+  semestre: string,
+  semaine: string,
+  perimetreSpecialiteIds: string[] | null
+): Promise<SpecialiteGroupe[]> {
+  const [cycle, sousCycle] = cycleKey.split('::');
+  const toutes = await listSpecialitesDuCycleSemestre(
+    cycle,
+    sousCycle || null,
+    semestre,
+    perimetreSpecialiteIds
+  );
+  if (toutes.length === 0) return [];
+  const { data: emploisStatuts, error } = await supabase
+    .from('emplois_du_temps')
+    .select('specialite_id, statut')
+    .in(
+      'specialite_id',
+      toutes.map((s) => s.id)
+    )
+    .eq('semaine', semaine)
+    .in('statut', ['en_attente_validation', 'valide']);
+  if (error) throw error;
+  const idsEnvoyes = new Set(
+    (emploisStatuts ?? []).map((e: any) => e.specialite_id)
+  );
+  return toutes.filter((s) => idsEnvoyes.has(s.id));
+}
+
 export interface SeanceGroupee extends SeanceDetail {
   // null si séance de tronc commun (partagée, pas rattachée à une
   // seule spécialité) — utiliser specialitesParTronc pour savoir sous
@@ -1692,7 +1971,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
         `
         id, jour, creneau, statut, offre_id, tronc_commun_id, salle_id,
         offre:offres(specialite_id, semestre, ue:ues(nom, volume_horaire)),
-        enseignant:enseignants(nom),
+        enseignant:enseignants(id, nom),
         salle:salles(code_salle)
       `
       )
@@ -1785,7 +2064,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
           `
           id, jour, creneau, statut, tronc_commun_id, salle_id,
           tronc_commun:troncs_communs(nom),
-          enseignant:enseignants(nom),
+          enseignant:enseignants(id, nom),
           salle:salles(code_salle)
         `
         )
@@ -1803,6 +2082,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
     ueNom: s.offre?.ue?.nom ?? '',
     volumeHoraire: s.offre?.ue?.volume_horaire ?? null,
     semestre: s.offre?.semestre ?? null,
+    enseignantId: s.enseignant?.id ?? null,
     enseignantNom: s.enseignant?.nom ?? '',
     salleCode: s.salle?.code_salle ?? null,
     salleId: s.salle_id,
@@ -1819,6 +2099,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
     ueNom: s.tronc_commun?.nom ?? '',
     volumeHoraire: volumeHoraireParTronc.get(s.tronc_commun_id) ?? null,
     semestre: null,
+    enseignantId: s.enseignant?.id ?? null,
     enseignantNom: s.enseignant?.nom ?? '',
     salleCode: s.salle?.code_salle ?? null,
     salleId: s.salle_id,
@@ -1834,6 +2115,125 @@ async function chargerSeancesGroupeesDepuisSupabase(
     specialitesParTronc,
     ueVersTronc,
   };
+}
+
+// ── Information des enseignants par WhatsApp (page Validation) ─────
+
+export interface CoursWhatsApp {
+  ueNom: string;
+  jour: string;
+  creneau: string;
+  salleCode: string | null;
+  // Une ou plusieurs spécialités concernées par ce cours (plusieurs pour
+  // un cours de tronc commun, partagé entre spécialités).
+  specialites: string[];
+}
+
+export interface EnseignantWhatsApp {
+  enseignantId: string;
+  nom: string;
+  numeroWhatsapp: string | null;
+  numeroCellulaire: string | null;
+  cours: CoursWhatsApp[];
+}
+
+// Regroupe, pour le cycle/semestre/semaine actuellement affiché sur la
+// page Validation, tous les cours programmés par enseignant — pour
+// permettre à l'administration de générer un message WhatsApp
+// personnalisé par enseignant (jour, créneau, salle, spécialité(s)
+// concernée(s)). Réutilise getSeancesGroupees (déjà mis en cache 30s)
+// plutôt que de refaire les requêtes de zéro.
+export async function getInfosNotificationWhatsApp(
+  specialiteIds: string[],
+  semaine: string
+): Promise<EnseignantWhatsApp[]> {
+  if (specialiteIds.length === 0) return [];
+  const donnees = await getSeancesGroupees(specialiteIds, semaine);
+  if (donnees.seances.length === 0) return [];
+
+  // Noms de toutes les spécialités concernées, directement ou via un
+  // tronc commun (specialitesParTronc peut inclure des spécialités hors
+  // du cycle/semestre actuellement affiché — cas normal d'un tronc
+  // commun partagé entre filières).
+  const idsSpecialites = new Set<string>();
+  for (const s of donnees.seances) {
+    if (s.specialiteId) idsSpecialites.add(s.specialiteId);
+  }
+  for (const ids of donnees.specialitesParTronc.values()) {
+    for (const id of ids) idsSpecialites.add(id);
+  }
+  const { data: specialitesData } = await supabase
+    .from('specialites')
+    .select('id, nom')
+    .in('id', Array.from(idsSpecialites));
+  const nomParSpecialite = new Map(
+    (specialitesData ?? []).map((s: any) => [s.id, s.nom as string])
+  );
+
+  // Coordonnées (WhatsApp/cellulaire) des enseignants concernés — pas
+  // renvoyées par getSeancesGroupees (pensé pour l'affichage de la
+  // grille, pas pour la prise de contact).
+  const enseignantIds = Array.from(
+    new Set(
+      donnees.seances.map((s) => s.enseignantId).filter((v): v is string => !!v)
+    )
+  );
+  const { data: enseignantsData } = await supabase
+    .from('enseignants')
+    .select('id, nom, numero_whatsapp, numero_cellulaire')
+    .in('id', enseignantIds);
+  const enseignantParId = new Map(
+    (enseignantsData ?? []).map((e: any) => [e.id, e])
+  );
+
+  const parEnseignant = new Map<string, EnseignantWhatsApp>();
+  for (const s of donnees.seances) {
+    if (!s.enseignantId) continue; // séance pas encore attribuée — rien à notifier
+
+    const specialitesConcernees = s.specialiteId
+      ? [nomParSpecialite.get(s.specialiteId) ?? '']
+      : Array.from(donnees.specialitesParTronc.get(s.troncCommunId ?? '') ?? [])
+          .map((id) => nomParSpecialite.get(id) ?? '')
+          .filter(Boolean);
+
+    if (!parEnseignant.has(s.enseignantId)) {
+      const e = enseignantParId.get(s.enseignantId);
+      parEnseignant.set(s.enseignantId, {
+        enseignantId: s.enseignantId,
+        nom: e?.nom ?? s.enseignantNom,
+        numeroWhatsapp: e?.numero_whatsapp ?? null,
+        numeroCellulaire: e?.numero_cellulaire ?? null,
+        cours: [],
+      });
+    }
+    parEnseignant.get(s.enseignantId)!.cours.push({
+      ueNom: s.ueNom,
+      jour: s.jour,
+      creneau: s.creneau,
+      salleCode: s.salleCode,
+      specialites: Array.from(new Set(specialitesConcernees)),
+    });
+  }
+
+  // Tri chronologique des cours de chaque enseignant (jour, puis heure
+  // de début réelle du créneau — supporte les créneaux personnalisés,
+  // pas seulement 08h-12h/14h-17h).
+  const JOUR_ORDRE_MSG: Record<string, number> = {
+    Lundi: 0, Mardi: 1, Mercredi: 2, Jeudi: 3, Vendredi: 4, Samedi: 5,
+  };
+  for (const e of parEnseignant.values()) {
+    e.cours.sort((a, b) => {
+      const diffJour = (JOUR_ORDRE_MSG[a.jour] ?? 0) - (JOUR_ORDRE_MSG[b.jour] ?? 0);
+      if (diffJour !== 0) return diffJour;
+      const debutA = bornesCreneau(a.creneau)?.debut ?? 0;
+      const debutB = bornesCreneau(b.creneau)?.debut ?? 0;
+      return debutA - debutB;
+    });
+  }
+
+  return Array.from(parEnseignant.values()).sort((a, b) =>
+    a.nom.localeCompare(b.nom)
+  );
 }
 
 // Trouve ou crée l'emploi du temps (vierge) d'une spécialité pour une

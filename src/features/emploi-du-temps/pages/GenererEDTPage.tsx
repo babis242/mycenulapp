@@ -14,6 +14,7 @@ import {
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { JOURS, tousLesCreneaux, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
+import { synchroniserCreneaux } from '@/lib/creneaux';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
@@ -25,8 +26,9 @@ import {
   getEnseignantsDisponibles,
   getSalleParDefautSpecialite,
   listToutesLesSalles,
-  getHeuresEffectuees,
-  getHeuresEffectueesTronc,
+  getSallesLibresPourCreneau,
+  getHeuresValideesPourPdf,
+  getHeuresValideesTroncPourPdf,
   definirSpecialitesEnAttenteValidation,
   type CycleOption,
   type SpecialiteGroupe,
@@ -133,6 +135,7 @@ function appliquerChangement(
       ueNom: c.troncNom ?? offre?.ueNom ?? '',
       volumeHoraire: null,
       semestre: null,
+      enseignantId: offre?.enseignantAttribueId ?? null,
       enseignantNom: offre?.enseignantAttribueNom ?? '',
       salleCode: salle?.code_salle ?? null,
       salleId: c.salleId,
@@ -153,6 +156,7 @@ function appliquerChangement(
     ueNom: offre?.ueNom ?? '',
     volumeHoraire: offre?.volumeHoraire ?? null,
     semestre: null,
+    enseignantId: offre?.enseignantAttribueId ?? null,
     enseignantNom: offre?.enseignantAttribueNom ?? '',
     salleCode: salle?.code_salle ?? null,
     salleId: c.salleId,
@@ -193,6 +197,12 @@ export default function GenererEDTPage() {
   const [cycleKey, setCycleKey] = useState('');
   const [semestre, setSemestre] = useState('');
   const [semaine, setSemaine] = useState(lundiDeLaSemaine());
+  // synchroniserCreneaux() met à jour un cache mémoire en dehors de
+  // React (lib/creneaux.ts) — ce compteur force un re-render une fois
+  // la resynchro terminée, pour que la grille (qui lit tousLesCreneaux()
+  // à chaque rendu) reflète tout de suite un créneau supprimé/ajouté
+  // ailleurs, sans attendre qu'un autre état change par coïncidence.
+  const [, forcerRerenduCreneaux] = useState(0);
 
   const [specialites, setSpecialites] = useState<SpecialiteGroupe[]>([]);
   const [specialiteAffichee, setSpecialiteAffichee] = useState('');
@@ -243,12 +253,24 @@ export default function GenererEDTPage() {
   const [enseignantsDispoModal, setEnseignantsDispoModal] = useState<
     EnseignantDisponible[]
   >([]);
+  // Salles réellement libres pour le jour/créneau actuellement ouvert
+  // dans la modale — recalculées à chaque ouverture (voir ouvrirModal).
+  // null = chargement en cours (distingué de [] = "aucune salle libre").
+  const [sallesLibresModal, setSallesLibresModal] = useState<Salle[] | null>(
+    null
+  );
 
   // ── Chargement initial des cycles disponibles (selon périmètre) ──
   useEffect(() => {
     if (!enLigne) return;
     listCyclesDisponibles(perimetreIds).then(setCycles);
     listToutesLesSalles().then(setToutesSalles);
+    // Resynchronise directement depuis le serveur (pas seulement le
+    // cache mémoire déjà en place) — sinon un créneau supprimé depuis
+    // Référentiel → Créneaux dans un autre onglet/une autre session
+    // continue d'apparaître ici tant que cette page n'a pas rechargé la
+    // vraie liste depuis la base.
+    synchroniserCreneaux().then(() => forcerRerenduCreneaux((n) => n + 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enLigne]);
 
@@ -362,10 +384,10 @@ export default function GenererEDTPage() {
       );
       const [heuresOffres, heuresTroncs] = await Promise.all([
         offreIds.length > 0
-          ? getHeuresEffectuees(offreIds, semaine)
+          ? getHeuresValideesPourPdf(offreIds)
           : Promise.resolve(new Map<string, number>()),
         troncIds.length > 0
-          ? getHeuresEffectueesTronc(troncIds, semaine)
+          ? getHeuresValideesTroncPourPdf(troncIds)
           : Promise.resolve(new Map<string, number>()),
       ]);
       setHeuresEffectuees(new Map([...heuresOffres, ...heuresTroncs]));
@@ -419,8 +441,30 @@ export default function GenererEDTPage() {
         new Map(prev).set(specialiteAffichee, defaut)
       );
     }
-    const dispo = await getEnseignantsDisponibles(jour, creneau);
+
+    setSallesLibresModal(null); // "chargement" — évite d'afficher un instant les salles du créneau précédemment ouvert
+    const [dispo, sallesLibres] = await Promise.all([
+      getEnseignantsDisponibles(jour, creneau),
+      getSallesLibresPourCreneau(
+        semaine,
+        jour,
+        creneau,
+        seanceExistante?.id ?? null
+      ),
+    ]);
     setEnseignantsDispoModal(dispo);
+    setSallesLibresModal(sallesLibres);
+
+    // Si la salle pré-sélectionnée (celle déjà assignée, ou la salle par
+    // défaut de la spécialité) n'est en fait plus libre sur ce créneau
+    // (prise par une autre spécialité), on ne la garde pas sélectionnée
+    // en douce — retour sur "Aucune".
+    setModal((prev) => {
+      if (!prev) return prev;
+      const toujoursLibre =
+        !prev.salleId || sallesLibres.some((s) => s.id === prev.salleId);
+      return toujoursLibre ? prev : { ...prev, salleId: '' };
+    });
   }
 
   function offreChoisie(): OffreDeSpecialite | null {
@@ -802,18 +846,20 @@ export default function GenererEDTPage() {
               ))}
             </select>
 
-            <button
-              onClick={handleOuvrirEnregistrement}
-              disabled={envoiEnCours}
-              className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
-            >
-              {envoiEnCours ? (
-                <Loader2 size={15} className="animate-spin" />
-              ) : (
-                <Save size={15} />
-              )}
-              Enregistrer{changements.length > 0 ? ` (${changements.length})` : ''}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleOuvrirEnregistrement}
+                disabled={envoiEnCours}
+                className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                {envoiEnCours ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Save size={15} />
+                )}
+                Enregistrer{changements.length > 0 ? ` (${changements.length})` : ''}
+              </button>
+            </div>
           </div>
           {changements.length > 0 && (
             <p className="text-xs font-semibold text-amber-600 mb-4">
@@ -1043,10 +1089,11 @@ export default function GenererEDTPage() {
                       prev ? { ...prev, salleId: e.target.value } : prev
                     )
                   }
-                  className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
+                  disabled={sallesLibresModal === null}
+                  className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:opacity-50 disabled:cursor-wait"
                 >
                   <option value="">Aucune</option>
-                  {toutesSalles.map((s) => (
+                  {(sallesLibresModal ?? []).map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.code_salle}{' '}
                       {s.id ===
@@ -1056,6 +1103,21 @@ export default function GenererEDTPage() {
                     </option>
                   ))}
                 </select>
+                {sallesLibresModal === null ? (
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    Vérification des salles libres sur ce créneau...
+                  </p>
+                ) : sallesLibresModal.length === 0 ? (
+                  <p className="text-[11px] font-bold text-amber-600 mt-1.5">
+                    Aucune salle libre sur ce créneau (toutes déjà prises par
+                    une autre séance).
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-gray-400 mt-1.5">
+                    Seules les salles libres sur {modal.jour} · {modal.creneau}{' '}
+                    sont proposées.
+                  </p>
+                )}
               </div>
             </div>
 

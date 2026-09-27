@@ -8,17 +8,19 @@ import {
   FileText,
   Printer,
   Pencil,
+  MessageCircle,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
-import { JOURS, tousLesCreneaux } from '@/constants/enums';
+import { JOURS, tousLesCreneaux, niveauDeSemestre } from '@/constants/enums';
+import { synchroniserCreneaux } from '@/lib/creneaux';
 import { supabase } from '@/lib/supabase';
 import {
   listCyclesDisponibles,
-  listSpecialitesDuCycleSemestre,
+  listSpecialitesEnvoyeesEnValidation,
   getSeancesGroupees,
-  getHeuresEffectuees,
-  getHeuresEffectueesTronc,
+  getHeuresValideesPourPdf,
+  getHeuresValideesTroncPourPdf,
   uploaderDocumentSigneGroupe,
   validerEDT,
   type CycleOption,
@@ -135,6 +137,12 @@ export default function ValidationEDTPage() {
   const [cycleKey, setCycleKey] = useState(searchParams.get('cycle') || '');
   const [semestre, setSemestre] = useState(searchParams.get('semestre') || '');
   const [semaine, setSemaine] = useState(searchParams.get('semaine') || '');
+  // synchroniserCreneaux() met à jour un cache mémoire en dehors de
+  // React (lib/creneaux.ts) — ce compteur force un re-render une fois
+  // la resynchro terminée, pour que la grille ET le PDF (qui lisent
+  // tousLesCreneaux() à chaque rendu) reflètent tout de suite un
+  // créneau supprimé/ajouté ailleurs.
+  const [, forcerRerenduCreneaux] = useState(0);
 
   // Uniquement les spécialités effectivement envoyées en validation
   // (statut 'en_attente_validation' ou 'valide' en base) — pas toutes
@@ -158,6 +166,11 @@ export default function ValidationEDTPage() {
   useEffect(() => {
     if (!enLigne) return;
     listCyclesDisponibles(perimetreIds).then(setCycles);
+    // Resynchronise directement depuis le serveur — sinon un créneau
+    // supprimé depuis Référentiel → Créneaux dans un autre onglet/une
+    // autre session continue d'apparaître ici (et donc sur le PDF) tant
+    // que cette page n'a pas rechargé la vraie liste depuis la base.
+    synchroniserCreneaux().then(() => forcerRerenduCreneaux((n) => n + 1));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enLigne]);
 
@@ -179,31 +192,12 @@ export default function ValidationEDTPage() {
       return;
     }
     (async () => {
-      const [cycle, sousCycle] = cycleKey.split('::');
-      const toutes = await listSpecialitesDuCycleSemestre(
-        cycle,
-        sousCycle || null,
+      const liste = await listSpecialitesEnvoyeesEnValidation(
+        cycleKey,
         semestre,
+        semaine,
         perimetreIds
       );
-      if (toutes.length === 0) {
-        setSpecialites([]);
-        return;
-      }
-      const { data: emploisStatuts, error } = await supabase
-        .from('emplois_du_temps')
-        .select('specialite_id, statut')
-        .in(
-          'specialite_id',
-          toutes.map((s) => s.id)
-        )
-        .eq('semaine', semaine)
-        .in('statut', ['en_attente_validation', 'valide']);
-      if (error) throw error;
-      const idsEnvoyes = new Set(
-        (emploisStatuts ?? []).map((e: any) => e.specialite_id)
-      );
-      const liste = toutes.filter((s) => idsEnvoyes.has(s.id));
       setSpecialites(liste);
       setSpecialiteAffichee((prev) =>
         liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
@@ -259,7 +253,7 @@ export default function ValidationEDTPage() {
       );
       const heuresTroncsGlobal =
         troncIdsGlobal.length > 0
-          ? await getHeuresEffectueesTronc(troncIdsGlobal, semaine)
+          ? await getHeuresValideesTroncPourPdf(troncIdsGlobal)
           : new Map<string, number>();
 
       const heuresParSpe = new Map<string, Map<string, number>>();
@@ -273,7 +267,7 @@ export default function ValidationEDTPage() {
         );
         const heuresOffres =
           offreIds.length > 0
-            ? await getHeuresEffectuees(offreIds, semaine)
+            ? await getHeuresValideesPourPdf(offreIds)
             : new Map<string, number>();
         heuresParSpe.set(specId, new Map([...heuresOffres, ...heuresTroncsGlobal]));
       }
@@ -288,6 +282,18 @@ export default function ValidationEDTPage() {
   const [cycleNom] = cycleKey.split('::');
   const estHND = cycleNom.toUpperCase() === 'HND';
   const texte = estHND ? TEXTES.en : TEXTES.fr;
+
+  // Niveau (année) affiché dans le titre du PDF, dérivé du semestre :
+  // S1/S2 → niveau 1, S3/S4 → niveau 2, S5/S6 → niveau 3, etc. — même
+  // règle universelle que niveauDeSemestre() dans constants/enums.ts.
+  // Donne par ex. "BTS 1" ou "HND 2" à côté du nom de la spécialité.
+  const niveauLabelPourTitre = (() => {
+    const niveau = niveauDeSemestre('standard', semestre); // ex: "Niveau 2"
+    if (!niveau) return null;
+    const numero = niveau.replace(/[^0-9]/g, '');
+    if (!numero) return null;
+    return `${cycleNom.toUpperCase()} ${numero}`;
+  })();
 
   const emploisAvecDonnees = emplois.filter((e) => e.emploiId);
   const auMoinsUnSigne = emploisAvecDonnees.some((e) => e.pdfSigneUrl);
@@ -501,6 +507,16 @@ export default function ValidationEDTPage() {
                   {emploisAvecDonnees.length} spécialité
                   {emploisAvecDonnees.length > 1 ? 's' : ''})
                 </button>
+                <Link
+                  to={`/emploi-du-temps/informer-whatsapp?cycle=${encodeURIComponent(
+                    cycleKey
+                  )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`}
+                  target="_blank"
+                  className="flex items-center gap-2 bg-green-600 border border-green-600 rounded-full px-4 py-2 text-sm font-bold text-white hover:bg-green-700"
+                >
+                  <MessageCircle size={16} /> Informer les enseignants via
+                  WhatsApp
+                </Link>
               </div>
             </div>
 
@@ -706,6 +722,7 @@ export default function ValidationEDTPage() {
 
                     <p className="text-center text-red-600 font-extrabold text-lg">
                       {texte.emploiDuTemps} {sp.nom.toUpperCase()}
+                      {niveauLabelPourTitre ? ` (${niveauLabelPourTitre})` : ''}
                     </p>
                     <p className="text-center text-red-600 font-extrabold text-lg mb-3">
                       {texte.semaine} {formatSemaineTitre(semaine, estHND)}
@@ -743,7 +760,6 @@ export default function ValidationEDTPage() {
                                   return <td key={jour} className="border border-black px-2 py-2" />;
                                 const total = s.volumeHoraire ?? 0;
                                 const faites = heuresEffectuees.get(s.id) ?? 0;
-                                const restant = total - faites;
                                 return (
                                   <td
                                     key={jour}
@@ -756,7 +772,7 @@ export default function ValidationEDTPage() {
                                     </p>
                                     {s.volumeHoraire != null && (
                                       <p className="text-red-600 font-bold">
-                                        {faites}/{total}h (-{restant}h)
+                                        {faites}/{total}h
                                       </p>
                                     )}
                                   </td>

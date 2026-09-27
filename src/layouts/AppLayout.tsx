@@ -11,6 +11,7 @@ import {
   Table2,
   KeyRound,
   QrCode,
+  CalendarDays,
   PlayCircle,
   ClipboardEdit,
   BarChart3,
@@ -114,6 +115,12 @@ const NAV_ITEMS: {
     roles: ['enseignant'],
   },
   { to: '/mes-cours', label: 'Mes cours', icon: Table2, roles: ['enseignant'] },
+  {
+    to: '/mes-cours-semaine',
+    label: 'Mes cours de la semaine',
+    icon: CalendarDays,
+    roles: ['enseignant'],
+  },
   { to: '/mes-ues', label: 'Mes UEs', icon: FileCheck, roles: ['enseignant'] },
   {
     to: '/ma-seance',

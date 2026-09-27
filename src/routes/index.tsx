@@ -32,7 +32,9 @@ import EtatDisponibilitesPage from '@/features/disponibilites/pages/EtatDisponib
 import GenererEDTPage from '@/features/emploi-du-temps/pages/GenererEDTPage';
 import ProgrammationVoleePage from '@/features/seances-ponctuelles/pages/ProgrammationVoleePage';
 import ValidationEDTPage from '@/features/emploi-du-temps/pages/ValidationEDTPage';
+import InformerEnseignantsWhatsAppPage from '@/features/emploi-du-temps/pages/InformerEnseignantsWhatsAppPage';
 import MesCoursPage from '@/features/emploi-du-temps/pages/MesCoursPage';
+import MesCoursSemainePage from '@/features/emploi-du-temps/pages/MesCoursSemainePage';
 import MesUEsPage from '@/features/mes-ues/pages/MesUEsPage';
 import ListeEnseignantsPage from '@/features/referentiel/enseignants/pages/ListeEnseignantsPage';
 import AjouterEnseignantPage from '@/features/referentiel/enseignants/pages/AjouterEnseignantPage';
@@ -194,6 +196,10 @@ export default function AppRoutes() {
               element={<ValidationEDTPage />}
             />
             <Route
+              path="/emploi-du-temps/informer-whatsapp"
+              element={<InformerEnseignantsWhatsAppPage />}
+            />
+            <Route
               path="/emploi-du-temps/programmation-volee"
               element={<ProgrammationVoleePage />}
             />
@@ -201,6 +207,10 @@ export default function AppRoutes() {
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>
             <Route path="/mes-cours" element={<MesCoursPage />} />
+            <Route
+              path="/mes-cours-semaine"
+              element={<MesCoursSemainePage />}
+            />
             <Route path="/mon-cours/:ueId" element={<DetailMonCoursPage />} />
             <Route path="/mes-ues" element={<MesUEsPage />} />
             <Route path="/ma-seance" element={<MaSeancePage />} />
