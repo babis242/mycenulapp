@@ -9,6 +9,7 @@ import {
   Ban,
   X,
   AlertTriangle,
+  Undo2,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import RapportSeanceForm from '../components/RapportSeanceForm';
@@ -18,6 +19,7 @@ import {
   lireSeanceDuMomentDepuisCache,
   ouvrirSeance,
   fermerSeance,
+  annulerOuvertureFermetureSeance,
   type SeanceDuMoment,
 } from '../api';
 import { annulerMaSeance } from '@/features/seances-ponctuelles/api';
@@ -48,6 +50,11 @@ export default function MaSeancePage() {
   // l'heure définitive du serveur.
   const [ouvertureEnAttente, setOuvertureEnAttente] = useState(false);
   const [fermetureEnAttente, setFermetureEnAttente] = useState(false);
+  // Annulation d'une ouverture/fermeture déjà validée par erreur (mauvais
+  // code, mauvais bouton...) — corrige sans devoir passer par l'admin.
+  const [annulationOuvFermEnCours, setAnnulationOuvFermEnCours] = useState<
+    'ouverture' | 'fermeture' | null
+  >(null);
   // Scan QR (features/qr-ouverture) — un second chemin vers EXACTEMENT
   // les mêmes fonctions ouvrirSeance/fermerSeance que le code tapé à la
   // main ci-dessous ; rien n'est dupliqué côté validation, seul le moyen
@@ -177,6 +184,53 @@ export default function MaSeancePage() {
     }
   }
 
+  // Corrige une erreur d'ouverture/fermeture (mauvais code entré par
+  // erreur, séance validée par erreur, etc.) — remet la séance dans
+  // l'état précédent pour ressaisir le bon code. Annuler l'ouverture
+  // annule aussi la fermeture (qui ne peut pas exister sans elle) ; le
+  // serveur applique la même règle, on ne fait ici que refléter son
+  // résultat.
+  async function handleAnnulerOuvertureFermeture(
+    type: 'ouverture' | 'fermeture'
+  ) {
+    if (!seance) return;
+    const confirmation = window.confirm(
+      type === 'ouverture'
+        ? "Annuler l'ouverture de cette séance ? Si elle a déjà été fermée, la fermeture sera annulée aussi — tu devras ressaisir les deux codes."
+        : 'Annuler la fermeture de cette séance ? Tu pourras ressaisir le bon code de fermeture.'
+    );
+    if (!confirmation) return;
+
+    setAnnulationOuvFermEnCours(type);
+    setErreur(null);
+    setMessageSucces(null);
+    try {
+      const resultat = await annulerOuvertureFermetureSeance(seance.id, type);
+      setSeance((prev) =>
+        prev
+          ? {
+              ...prev,
+              heureOuverture: resultat.heureOuverture,
+              heureFermeture: resultat.heureFermeture,
+            }
+          : prev
+      );
+      setOuvertureEnAttente(false);
+      setFermetureEnAttente(false);
+      setMessageSucces(
+        type === 'ouverture'
+          ? "Ouverture annulée — ressaisis le bon code d'ouverture."
+          : 'Fermeture annulée — ressaisis le bon code de fermeture.'
+      );
+    } catch (err) {
+      setErreur(
+        err instanceof Error ? err.message : "Erreur lors de l'annulation."
+      );
+    } finally {
+      setAnnulationOuvFermEnCours(null);
+    }
+  }
+
   const rapportVerrouille = seance
     ? finCreneauAvecMargeDepassee(seance.creneau, 60)
     : false;
@@ -237,15 +291,31 @@ export default function MaSeancePage() {
             </p>
 
             {seance.heureOuverture && (
-              <p className="text-xs font-bold text-green-600 mb-1 flex items-center gap-1.5">
-                <CheckCircle2 size={14} /> Ouverte à{' '}
-                {formatHeure(seance.heureOuverture)}
-                {ouvertureEnAttente && (
-                  <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
-                    en attente de confirmation réseau
-                  </span>
+              <div className="flex items-center justify-between gap-2 mb-1">
+                <p className="text-xs font-bold text-green-600 flex items-center gap-1.5">
+                  <CheckCircle2 size={14} /> Ouverte à{' '}
+                  {formatHeure(seance.heureOuverture)}
+                  {ouvertureEnAttente && (
+                    <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                      en attente de confirmation réseau
+                    </span>
+                  )}
+                </p>
+                {!ouvertureEnAttente && (
+                  <button
+                    onClick={() => handleAnnulerOuvertureFermeture('ouverture')}
+                    disabled={annulationOuvFermEnCours !== null}
+                    className="shrink-0 flex items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-red-600 disabled:opacity-40"
+                  >
+                    {annulationOuvFermEnCours === 'ouverture' ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <Undo2 size={11} />
+                    )}
+                    Annuler
+                  </button>
                 )}
-              </p>
+              </div>
             )}
             {seance.heureOuverture && (
               <p className="text-[11px] text-gray-400 mb-3">
@@ -255,15 +325,31 @@ export default function MaSeancePage() {
               </p>
             )}
             {seance.heureFermeture && (
-              <p className="text-xs font-bold text-green-600 mb-3 flex items-center gap-1.5">
-                <CheckCircle2 size={14} /> Fermée à{' '}
-                {formatHeure(seance.heureFermeture)}
-                {fermetureEnAttente && (
-                  <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
-                    en attente de confirmation réseau
-                  </span>
+              <div className="flex items-center justify-between gap-2 mb-3">
+                <p className="text-xs font-bold text-green-600 flex items-center gap-1.5">
+                  <CheckCircle2 size={14} /> Fermée à{' '}
+                  {formatHeure(seance.heureFermeture)}
+                  {fermetureEnAttente && (
+                    <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 rounded-full px-2 py-0.5">
+                      en attente de confirmation réseau
+                    </span>
+                  )}
+                </p>
+                {!fermetureEnAttente && (
+                  <button
+                    onClick={() => handleAnnulerOuvertureFermeture('fermeture')}
+                    disabled={annulationOuvFermEnCours !== null}
+                    className="shrink-0 flex items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-red-600 disabled:opacity-40"
+                  >
+                    {annulationOuvFermEnCours === 'fermeture' ? (
+                      <Loader2 size={11} className="animate-spin" />
+                    ) : (
+                      <Undo2 size={11} />
+                    )}
+                    Annuler
+                  </button>
                 )}
-              </p>
+              </div>
             )}
 
             {seance.heureOuverture && seance.heureFermeture ? (

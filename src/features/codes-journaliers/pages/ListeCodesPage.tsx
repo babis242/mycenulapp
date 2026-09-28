@@ -1,9 +1,11 @@
 // src/features/codes-journaliers/pages/ListeCodesPage.tsx
 import { Fragment, useEffect, useState } from 'react';
-import { Loader2, Search, Printer, ChevronLeft, ChevronRight, WifiOff } from 'lucide-react';
+import { Loader2, Search, Printer, ChevronLeft, ChevronRight, WifiOff, Undo2 } from 'lucide-react';
 import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
+import { annulerOuvertureFermetureSeance } from '@/features/seances/api';
+import { formatHeureCameroun as formatHeure } from '@/lib/formatHeureCameroun';
 import {
   listCodesPourSemaine,
   lireCodesDepuisCache,
@@ -75,6 +77,12 @@ const STATUT_LABEL: Record<string, string> = {
 export default function ListeCodesPage() {
   const user = useAuthStore((s) => s.user);
   const estSecretaire = user?.role === 'secretaire';
+  // Correction d'erreur : seuls admin/responsable peuvent annuler une
+  // ouverture/fermeture déjà validée depuis cet écran (l'enseignant le
+  // fait lui-même depuis "Ma séance").
+  const peutAnnuler =
+    user?.role === 'administrateur' || user?.role === 'responsable';
+  const [enAnnulation, setEnAnnulation] = useState<Set<string>>(new Set());
 
   const [semaine, setSemaine] = useState(lundiDeLaSemaine());
   const [codes, setCodes] = useState<CodeSeanceDetail[]>([]);
@@ -175,6 +183,52 @@ export default function ListeCodesPage() {
       lignes: filtres.filter((c) => c.jour === jour && c.creneau === creneau),
     })).filter((c) => c.lignes.length > 0),
   })).filter((g) => g.creneaux.length > 0);
+
+  async function handleAnnuler(
+    c: CodeSeanceDetail,
+    type: 'ouverture' | 'fermeture'
+  ) {
+    const confirmation = window.confirm(
+      type === 'ouverture'
+        ? `Annuler l'ouverture de la séance "${c.ueNom}" (${c.enseignantNom}, ${c.jour} ${c.creneau}) ? Si elle a déjà été fermée, la fermeture sera annulée aussi.`
+        : `Annuler la fermeture de la séance "${c.ueNom}" (${c.enseignantNom}, ${c.jour} ${c.creneau}) ?`
+    );
+    if (!confirmation) return;
+
+    const cle = `${c.seanceId}-${type}`;
+    setEnAnnulation((prev) => new Set(prev).add(cle));
+    try {
+      const resultat = await annulerOuvertureFermetureSeance(
+        c.seanceId,
+        type
+      );
+      setCodes((prev) =>
+        prev.map((x) =>
+          x.seanceId === c.seanceId
+            ? {
+                ...x,
+                heureOuverture: resultat.heureOuverture,
+                heureFermeture: resultat.heureFermeture,
+                statut:
+                  resultat.heureOuverture || resultat.heureFermeture
+                    ? x.statut
+                    : 'non_utilise',
+              }
+            : x
+        )
+      );
+    } catch (err) {
+      alert(
+        err instanceof Error ? err.message : "Erreur lors de l'annulation."
+      );
+    } finally {
+      setEnAnnulation((prev) => {
+        const next = new Set(prev);
+        next.delete(cle);
+        return next;
+      });
+    }
+  }
 
   function handleImprimer() {
     const titreOriginal = document.title;
@@ -299,6 +353,7 @@ export default function ListeCodesPage() {
                   <th className="px-5 py-3">Code ouverture</th>
                   <th className="px-5 py-3">Code fermeture</th>
                   <th className="px-5 py-3">Statut</th>
+                  {peutAnnuler && <th className="px-5 py-3">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
@@ -330,7 +385,59 @@ export default function ListeCodesPage() {
                       >
                         {STATUT_LABEL[c.statut] ?? c.statut}
                       </span>
+                      {(c.heureOuverture || c.heureFermeture) && (
+                        <p className="text-[11px] text-gray-400 mt-1">
+                          {c.heureOuverture &&
+                            `Ouverte ${formatHeure(c.heureOuverture)}`}
+                          {c.heureOuverture && c.heureFermeture && ' · '}
+                          {c.heureFermeture &&
+                            `Fermée ${formatHeure(c.heureFermeture)}`}
+                        </p>
+                      )}
                     </td>
+                    {peutAnnuler && (
+                      <td className="px-5 py-3">
+                        <div className="flex flex-col items-start gap-1">
+                          {c.heureFermeture && (
+                            <button
+                              onClick={() => handleAnnuler(c, 'fermeture')}
+                              disabled={enAnnulation.has(
+                                `${c.seanceId}-fermeture`
+                              )}
+                              className="flex items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-red-600 disabled:opacity-40"
+                            >
+                              {enAnnulation.has(`${c.seanceId}-fermeture`) ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <Undo2 size={11} />
+                              )}
+                              Annuler la fermeture
+                            </button>
+                          )}
+                          {c.heureOuverture && (
+                            <button
+                              onClick={() => handleAnnuler(c, 'ouverture')}
+                              disabled={enAnnulation.has(
+                                `${c.seanceId}-ouverture`
+                              )}
+                              className="flex items-center gap-1 text-[11px] font-bold text-gray-400 hover:text-red-600 disabled:opacity-40"
+                            >
+                              {enAnnulation.has(`${c.seanceId}-ouverture`) ? (
+                                <Loader2 size={11} className="animate-spin" />
+                              ) : (
+                                <Undo2 size={11} />
+                              )}
+                              Annuler l'ouverture
+                            </button>
+                          )}
+                          {!c.heureOuverture && !c.heureFermeture && (
+                            <span className="text-[11px] text-gray-300">
+                              —
+                            </span>
+                          )}
+                        </div>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>

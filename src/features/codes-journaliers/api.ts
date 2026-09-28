@@ -102,6 +102,11 @@ export interface CodeSeanceDetail {
   codeOuverture: string;
   codeFermeture: string;
   statut: 'utilise' | 'non_utilise';
+  // Permet à l'admin/responsable de voir si la séance a déjà été
+  // ouverte/fermée (et de l'annuler en cas d'erreur — voir
+  // annulerOuvertureFermetureSeance dans features/seances/api.ts).
+  heureOuverture: string | null;
+  heureFermeture: string | null;
 }
 
 const OFFSET_JOUR: Record<string, number> = {
@@ -232,6 +237,8 @@ export async function lireCodesDepuisCache(
         codeOuverture: code.code_ouverture,
         codeFermeture: code.code_fermeture,
         statut: code.statut,
+        heureOuverture: s.heure_ouverture ?? null,
+        heureFermeture: s.heure_fermeture ?? null,
       } as CodeSeanceDetail;
     })
     .filter((c): c is CodeSeanceDetail => c !== null)
@@ -268,7 +275,7 @@ export async function listCodesPourSemaine(
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau, emploi_du_temps_id,
+      id, jour, creneau, emploi_du_temps_id, heure_ouverture, heure_fermeture,
       offre:offres(ue:ues(nom)),
       tronc_commun:troncs_communs(nom),
       enseignant:enseignants(nom),
@@ -284,7 +291,7 @@ export async function listCodesPourSemaine(
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau,
+      id, jour, creneau, heure_ouverture, heure_fermeture,
       tronc_commun:troncs_communs(nom),
       enseignant:enseignants(nom),
       salle:salles(code_salle)
@@ -327,6 +334,8 @@ export async function listCodesPourSemaine(
         codeOuverture: code.code_ouverture,
         codeFermeture: code.code_fermeture,
         statut: code.statut,
+        heureOuverture: s.heure_ouverture ?? null,
+        heureFermeture: s.heure_fermeture ?? null,
       } as CodeSeanceDetail;
     })
     .filter((x): x is CodeSeanceDetail => x !== null)

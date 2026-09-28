@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Loader2, X, CheckCircle2, Search } from 'lucide-react';
+import { Plus, Loader2, X, CheckCircle2, Search, Trash2, Eye, EyeOff } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetre } from '@/lib/perimetre';
@@ -65,7 +65,11 @@ export default function LancerDemandePage() {
     Record<string, Specialite[]>
   >({});
   const [cycleKey, setCycleKey] = useState('');
-  const [specialiteId, setSpecialiteId] = useState('');
+  // Sélection multi-spécialités (case à cocher) au sein du cycle choisi —
+  // remplace l'ancien sélecteur "une spécialité à la fois".
+  const [specialitesCochees, setSpecialitesCochees] = useState<Set<string>>(
+    new Set()
+  );
   const [semestre, setSemestre] = useState('');
 
   const [paires, setPaires] = useState<PaireSpecialiteSemestre[]>([]);
@@ -74,6 +78,10 @@ export default function LancerDemandePage() {
   const [loadingUEs, setLoadingUEs] = useState(false);
   const [ueIdsCochees, setUeIdsCochees] = useState<Set<string>>(new Set());
   const [rechercheUE, setRechercheUE] = useState('');
+  // Les UEs déjà achevées (heures validées >= volume horaire) sont
+  // masquées par défaut — on ne redemande pas les disponibilités pour un
+  // cours déjà terminé. Bascule pour les révéler quand même au besoin.
+  const [afficherTerminees, setAfficherTerminees] = useState(false);
 
   const [lancement, setLancement] = useState(false);
   const [succes, setSucces] = useState<{ nbEnseignants: number } | null>(null);
@@ -90,7 +98,7 @@ export default function LancerDemandePage() {
     setEcoleId(id);
     setFiliereId('');
     setCycleKey('');
-    setSpecialiteId('');
+    setSpecialitesCochees(new Set());
     setSemestre('');
     if (id && !filieresByEcole[id]) {
       const { data } = await supabase
@@ -105,7 +113,7 @@ export default function LancerDemandePage() {
   async function handleFiliereChange(id: string) {
     setFiliereId(id);
     setCycleKey('');
-    setSpecialiteId('');
+    setSpecialitesCochees(new Set());
     setSemestre('');
     if (id && !specialitesByFiliere[id]) {
       const { data } = await supabase
@@ -121,12 +129,13 @@ export default function LancerDemandePage() {
   }
 
   // Raccourci : sélectionne directement une spécialité trouvée par
-  // recherche, en pré-remplissant la cascade École → Filière → Cycle.
+  // recherche, en pré-remplissant la cascade École → Filière → Cycle et
+  // en la cochant d'office dans la liste qui apparaît juste en dessous.
   async function handleSelectionRecherche(s: SpecialiteRecherche) {
     await handleEcoleChange(s.ecoleId);
     await handleFiliereChange(s.filiereId);
     setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
-    setSpecialiteId(s.id);
+    setSpecialitesCochees(new Set([s.id]));
   }
 
   const filieres = filieresByEcole[ecoleId] ?? [];
@@ -145,25 +154,43 @@ export default function LancerDemandePage() {
   const specialitesDuCycle = specialitesDeFiliere.filter(
     (s) => cycleKeyDe(s.cycle, s.sous_cycle) === cycleKey
   );
-  const specialiteChoisie = specialitesDeFiliere.find(
-    (s) => s.id === specialiteId
-  );
-  const semestresDisponibles = specialiteChoisie
-    ? SEMESTRES_PAR_TYPE_CURSUS[specialiteChoisie.type_cursus]
-    : [];
+  // Semestres possibles pour AU MOINS UNE des spécialités du cycle
+  // affiché (union — un même cycle mélange rarement plusieurs types de
+  // cursus, mais on reste large plutôt que de bloquer un cas valide).
+  const semestresDisponibles = Array.from(
+    new Set(
+      specialitesDuCycle.flatMap(
+        (s) => SEMESTRES_PAR_TYPE_CURSUS[s.type_cursus] ?? []
+      )
+    )
+  ).sort();
 
-  async function ajouterPaire() {
-    if (!specialiteId || !semestre || !specialiteChoisie) return;
-    const key = `${specialiteId}-${semestre}`;
-    if (paires.some((p) => p.key === key)) return;
+  function toggleSpecialiteCochee(id: string) {
+    setSpecialitesCochees((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
-    const nouvellesPaires = [
-      ...paires,
-      { key, specialiteId, specialiteNom: specialiteChoisie.nom, semestre },
-    ];
+  // Ajoute d'un coup TOUTES les spécialités cochées, pour le semestre
+  // choisi — remplace l'ancien "une paire à la fois".
+  async function ajouterSelection() {
+    if (specialitesCochees.size === 0 || !semestre) return;
+    const nouvelles: PaireSpecialiteSemestre[] = [];
+    for (const s of specialitesDuCycle) {
+      if (!specialitesCochees.has(s.id)) continue;
+      const key = `${s.id}-${semestre}`;
+      if (paires.some((p) => p.key === key)) continue;
+      nouvelles.push({ key, specialiteId: s.id, specialiteNom: s.nom, semestre });
+    }
+    if (nouvelles.length === 0) return;
+
+    const nouvellesPaires = [...paires, ...nouvelles];
     setPaires(nouvellesPaires);
 
-    setSpecialiteId('');
+    setSpecialitesCochees(new Set());
     setSemestre('');
 
     await rechargerUEs(nouvellesPaires);
@@ -185,13 +212,24 @@ export default function LancerDemandePage() {
         }))
       );
       setUes(data);
-      // Pré-coche toutes les UEs récupérées par défaut (la pré-sélection
-      // ciblée sur les UEs non achevées de la semaine, Scénario 4, sera
-      // ajoutée une fois les séances disponibles).
-      setUeIdsCochees(new Set(data.map((u) => u.ueId)));
+      // Pré-coche uniquement les UEs PAS ENCORE ACHEVÉES (heures validées
+      // < volume horaire) — inutile de redemander les disponibilités des
+      // enseignants sur un cours déjà terminé. Les UEs achevées restent
+      // décochées et masquées par défaut (afficherTerminees).
+      setUeIdsCochees(new Set(data.filter((u) => !u.estTerminee).map((u) => u.ueId)));
     } finally {
       setLoadingUEs(false);
     }
+  }
+
+  // Retire une UE précise (une seule spécialité) de la liste affichée —
+  // ex : cette spécialité n'a en réalité pas besoin de redemander les
+  // disponibilités sur ce cours, même s'il n'est pas encore "achevé" au
+  // sens du calcul d'heures. N'affecte pas les autres spécialités qui
+  // partagent la même UE (tronc commun) — chacune a sa propre ligne
+  // (une par offre), seule celle-ci disparaît.
+  function retirerUE(offreId: string) {
+    setUes((prev) => prev.filter((u) => u.offreId !== offreId));
   }
 
   function toggleUE(id: string) {
@@ -298,7 +336,7 @@ export default function LancerDemandePage() {
             value={cycleKey}
             onChange={(e) => {
               setCycleKey(e.target.value);
-              setSpecialiteId('');
+              setSpecialitesCochees(new Set());
               setSemestre('');
             }}
             disabled={!filiereId}
@@ -313,26 +351,9 @@ export default function LancerDemandePage() {
           </select>
 
           <select
-            value={specialiteId}
-            onChange={(e) => {
-              setSpecialiteId(e.target.value);
-              setSemestre('');
-            }}
-            disabled={!cycleKey}
-            className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
-          >
-            <option value="">Spécialité...</option>
-            {specialitesDuCycle.map((s) => (
-              <option key={s.id} value={s.id}>
-                {s.nom}
-              </option>
-            ))}
-          </select>
-
-          <select
             value={semestre}
             onChange={(e) => setSemestre(e.target.value)}
-            disabled={!specialiteId}
+            disabled={specialitesCochees.size === 0}
             className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
           >
             <option value="">Semestre...</option>
@@ -342,16 +363,69 @@ export default function LancerDemandePage() {
               </option>
             ))}
           </select>
-
-          <button
-            type="button"
-            onClick={ajouterPaire}
-            disabled={!specialiteId || !semestre}
-            className="flex items-center justify-center gap-1.5 bg-red-600 rounded-xl px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
-          >
-            <Plus size={15} /> Ajouter
-          </button>
         </div>
+
+        {cycleKey && (
+          <div className="mb-3">
+            <div className="flex items-center justify-between mb-1.5">
+              <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">
+                Spécialités du cycle — coche celles concernées
+              </p>
+              {specialitesDuCycle.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    setSpecialitesCochees((prev) =>
+                      prev.size === specialitesDuCycle.length
+                        ? new Set()
+                        : new Set(specialitesDuCycle.map((s) => s.id))
+                    )
+                  }
+                  className="text-xs font-bold text-red-600 hover:underline"
+                >
+                  {specialitesCochees.size === specialitesDuCycle.length
+                    ? 'Tout décocher'
+                    : 'Tout cocher'}
+                </button>
+              )}
+            </div>
+            {specialitesDuCycle.length === 0 ? (
+              <p className="text-sm text-gray-400 px-1">
+                Aucune spécialité pour ce cycle.
+              </p>
+            ) : (
+              <div className="border border-gray-100 rounded-xl max-h-48 overflow-y-auto divide-y divide-gray-50">
+                {specialitesDuCycle.map((s) => (
+                  <label
+                    key={s.id}
+                    className="flex items-center gap-2.5 px-3.5 py-2.5 text-sm font-semibold text-gray-800 cursor-pointer hover:bg-gray-50"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={specialitesCochees.has(s.id)}
+                      onChange={() => toggleSpecialiteCochee(s.id)}
+                      className="shrink-0"
+                    />
+                    {s.nom}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        <button
+          type="button"
+          onClick={ajouterSelection}
+          disabled={specialitesCochees.size === 0 || !semestre}
+          className="flex items-center justify-center gap-1.5 bg-red-600 rounded-xl px-4 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50 mb-3"
+        >
+          <Plus size={15} /> Ajouter{' '}
+          {specialitesCochees.size > 0 &&
+            `(${specialitesCochees.size} spécialité${
+              specialitesCochees.size > 1 ? 's' : ''
+            })`}
+        </button>
 
         {paires.length > 0 && (
           <div className="flex flex-wrap gap-2">
@@ -392,66 +466,126 @@ export default function LancerDemandePage() {
         </div>
       ) : (
         <>
-          <p className="font-extrabold text-sm text-gray-900 mb-2.5">
-            UEs à programmer{' '}
-            <span className="text-gray-400 font-semibold">
-              ({ueIdsCochees.size}/{ues.length} coché(e)s)
-            </span>
-          </p>
+          {(() => {
+            const uesTerminees = ues.filter((u) => u.estTerminee);
+            const uesAffichees = (
+              afficherTerminees ? ues : ues.filter((u) => !u.estTerminee)
+            ).filter((u) => {
+              const q = rechercheUE.trim().toLowerCase();
+              if (!q) return true;
+              return (
+                u.ueNom.toLowerCase().includes(q) ||
+                u.specialiteNom.toLowerCase().includes(q) ||
+                (u.enseignantNom?.toLowerCase().includes(q) ?? false)
+              );
+            });
+            const cocheesAffichees = uesAffichees.filter((u) =>
+              ueIdsCochees.has(u.ueId)
+            ).length;
 
-          <div className="mb-3">
-            <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
-              <Search size={15} className="text-gray-300 shrink-0" />
-              <input
-                value={rechercheUE}
-                onChange={(e) => setRechercheUE(e.target.value)}
-                placeholder="Rechercher une UE..."
-                className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
-              />
-            </div>
-          </div>
-
-          <div className="bg-white rounded-[20px] overflow-hidden mb-5">
-            {ues
-              .filter((u) => {
-                const q = rechercheUE.trim().toLowerCase();
-                if (!q) return true;
-                return (
-                  u.ueNom.toLowerCase().includes(q) ||
-                  u.specialiteNom.toLowerCase().includes(q) ||
-                  (u.enseignantNom?.toLowerCase().includes(q) ?? false)
-                );
-              })
-              .map((u) => (
-              <label
-                key={u.offreId}
-                className="flex items-center gap-3 px-5 py-3.5 border-b border-gray-50 last:border-0 cursor-pointer"
-              >
-                <input
-                  type="checkbox"
-                  checked={ueIdsCochees.has(u.ueId)}
-                  onChange={() => toggleUE(u.ueId)}
-                  className="shrink-0"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p className="font-bold text-sm text-gray-900 truncate">
-                      {u.ueNom}
-                    </p>
-                    {u.troncCommunNom && (
-                      <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full shrink-0">
-                        Tronc commun
-                      </span>
-                    )}
-                  </div>
-                  <p className="text-xs text-gray-400">
-                    {u.specialiteNom} · {u.semestre} ·{' '}
-                    {u.enseignantNom ?? 'Non attribué'}
+            return (
+              <>
+                <div className="flex items-center justify-between gap-3 flex-wrap mb-2.5">
+                  <p className="font-extrabold text-sm text-gray-900">
+                    UEs à programmer{' '}
+                    <span className="text-gray-400 font-semibold">
+                      ({cocheesAffichees}/{uesAffichees.length} coché(e)s)
+                    </span>
                   </p>
+                  {uesTerminees.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setAfficherTerminees((v) => !v)}
+                      className="flex items-center gap-1.5 text-xs font-bold text-gray-500 hover:text-gray-800"
+                    >
+                      {afficherTerminees ? (
+                        <EyeOff size={13} />
+                      ) : (
+                        <Eye size={13} />
+                      )}
+                      {afficherTerminees
+                        ? 'Masquer les UE déjà achevées'
+                        : `Afficher aussi les UE déjà achevées (${uesTerminees.length})`}
+                    </button>
+                  )}
                 </div>
-              </label>
-            ))}
-          </div>
+                <p className="text-xs text-gray-400 mb-3 -mt-1.5">
+                  Seules les UEs pas encore achevées (heures validées &lt;
+                  volume horaire) sont cochées par défaut.
+                </p>
+
+                <div className="mb-3">
+                  <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
+                    <Search size={15} className="text-gray-300 shrink-0" />
+                    <input
+                      value={rechercheUE}
+                      onChange={(e) => setRechercheUE(e.target.value)}
+                      placeholder="Rechercher une UE..."
+                      className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
+                    />
+                  </div>
+                </div>
+
+                {uesAffichees.length === 0 ? (
+                  <div className="bg-white rounded-[20px] p-8 text-center mb-5">
+                    <p className="text-sm text-gray-400">
+                      Aucune UE à afficher — toutes celles de cette
+                      sélection sont déjà achevées.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-[20px] overflow-hidden mb-5">
+                    {uesAffichees.map((u) => (
+                      <div
+                        key={u.offreId}
+                        className="flex items-center gap-3 px-5 py-3.5 border-b border-gray-50 last:border-0"
+                      >
+                        <label className="flex items-center gap-3 min-w-0 flex-1 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={ueIdsCochees.has(u.ueId)}
+                            onChange={() => toggleUE(u.ueId)}
+                            className="shrink-0"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="font-bold text-sm text-gray-900 truncate">
+                                {u.ueNom}
+                              </p>
+                              {u.troncCommunNom && (
+                                <span className="text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded-full shrink-0">
+                                  Tronc commun
+                                </span>
+                              )}
+                              {u.estTerminee && (
+                                <span className="text-[10px] font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded-full shrink-0">
+                                  Achevée
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-gray-400">
+                              {u.specialiteNom} · {u.semestre} ·{' '}
+                              {u.enseignantNom ?? 'Non attribué'}
+                              {u.volumeHoraire != null &&
+                                ` · ${u.heuresEffectuees}/${u.volumeHoraire}h`}
+                            </p>
+                          </div>
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => retirerUE(u.offreId)}
+                          title="Retirer cette UE de cette spécialité de la liste"
+                          className="shrink-0 text-gray-300 hover:text-red-600 p-1"
+                        >
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            );
+          })()}
 
           <button
             onClick={handleLancer}

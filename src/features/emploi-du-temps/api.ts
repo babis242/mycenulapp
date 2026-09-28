@@ -547,6 +547,42 @@ export async function getHeuresValideesPourPdf(
   return resultat;
 }
 
+// Total d'heures validées par offre (dernier cumul chronologique, tous
+// semaines confondues) — contrairement à getHeuresValideesPourPdf (qui
+// renvoie le cumul par SÉANCE, pour l'affichage progressif dans le
+// PDF), ici on ne veut que le total final par UE/offre, pour savoir si
+// elle est "achevée" (total >= volume horaire) — utilisé par la
+// campagne de disponibilités (features/disponibilites) pour ne
+// proposer que les UEs pas encore achevées.
+export async function getHeuresTotalesValideesParOffre(
+  offreIds: string[]
+): Promise<Map<string, number>> {
+  if (offreIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('seances_edt')
+    .select('id, offre_id, jour, creneau, heure_ouverture, heure_fermeture, semaine')
+    .in('offre_id', offreIds);
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000); // Cameroun UTC+1
+
+  const parOffre = new Map<string, any[]>();
+  for (const s of (data ?? []) as any[]) {
+    if (!parOffre.has(s.offre_id)) parOffre.set(s.offre_id, []);
+    parOffre.get(s.offre_id)!.push(s);
+  }
+
+  const resultat = new Map<string, number>();
+  for (const [offreId, liste] of parOffre) {
+    let cumul = 0;
+    for (const s of trierChronologiquement(liste)) {
+      cumul += contributionSeance(s, maintenant);
+    }
+    resultat.set(offreId, cumul);
+  }
+  return resultat;
+}
+
 // Même principe pour une UE de tronc commun.
 export async function getHeuresValideesTroncPourPdf(
   troncCommunIds: string[]

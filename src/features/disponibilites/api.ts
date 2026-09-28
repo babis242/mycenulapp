@@ -1,5 +1,6 @@
 // src/features/disponibilites/api.ts
 import { supabase } from '@/lib/supabase';
+import { getHeuresTotalesValideesParOffre } from '@/features/emploi-du-temps/api';
 
 export interface UEPourCampagne {
   ueId: string;
@@ -10,6 +11,15 @@ export interface UEPourCampagne {
   enseignantId: string | null;
   enseignantNom: string | null;
   troncCommunNom: string | null;
+  volumeHoraire: number | null;
+  // Heures déjà validées (réellement effectuées, cf. calculHeures.ts) sur
+  // l'ensemble des semaines déjà programmées pour cette UE — null tant
+  // que le volume horaire de l'UE n'est pas renseigné (impossible de
+  // savoir si elle est achevée).
+  heuresEffectuees: number;
+  // true si heuresEffectuees >= volumeHoraire (UE achevée, plus besoin
+  // de redemander les disponibilités des enseignants dessus).
+  estTerminee: boolean;
 }
 
 // Liste les UEs offertes pour un ensemble de (spécialité, semestre), avec
@@ -43,7 +53,7 @@ export async function listUEsPourCampagne(
   const { data: offresBrutes, error: offresError } = await supabase
     .from('offres')
     .select(
-      'id, semestre, specialite_id, ue:ues(id, nom), specialite:specialites(nom)'
+      'id, semestre, specialite_id, ue:ues(id, nom, volume_horaire), specialite:specialites(nom)'
     )
     .in('specialite_id', specialiteIds);
   if (offresError) throw offresError;
@@ -92,6 +102,9 @@ export async function listUEsPourCampagne(
       enseignantId: attribution?.enseignant_id ?? null,
       enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
       troncCommunNom: lienTronc?.tronc_commun?.nom ?? null,
+      volumeHoraire: o.ue.volume_horaire ?? null,
+      heuresEffectuees: 0, // calculé plus bas, une fois tous les offreIds connus
+      estTerminee: false,
     });
   }
 
@@ -118,7 +131,7 @@ export async function listUEsPourCampagne(
         tronc_commun_id,
         tronc_commun:troncs_communs(nom),
         ue:ues(
-          id, nom,
+          id, nom, volume_horaire,
           offres(id, semestre, specialite_id, specialite:specialites(nom))
         )
       `
@@ -133,6 +146,7 @@ export async function listUEsPourCampagne(
       specialiteNom: string;
       semestre: string;
       troncCommunNom: string | null;
+      volumeHoraire: number | null;
     }[] = [];
     for (const l of (liaisonsGroupe ?? []) as any[]) {
       const ue = l.ue;
@@ -146,6 +160,7 @@ export async function listUEsPourCampagne(
         specialiteNom: offre.specialite?.nom ?? '',
         semestre: offre.semestre,
         troncCommunNom: l.tronc_commun?.nom ?? null,
+        volumeHoraire: ue.volume_horaire ?? null,
       });
     }
 
@@ -177,9 +192,28 @@ export async function listUEsPourCampagne(
           enseignantId: attribution?.enseignant_id ?? null,
           enseignantNom: (attribution as any)?.enseignant?.nom ?? null,
           troncCommunNom: l.troncCommunNom,
+          volumeHoraire: l.volumeHoraire,
+          heuresEffectuees: 0,
+          estTerminee: false,
         });
       }
     }
+  }
+
+  // Heures déjà validées (réellement effectuées, toutes semaines déjà
+  // programmées confondues) par offre — une seule requête groupée pour
+  // toutes les UEs de la sélection, réutilisant exactement la même
+  // logique que le PDF de la page Validation (calculHeures.ts), pour
+  // qu'une UE soit considérée "achevée" ici de la même façon que sur
+  // le PDF (pas de double définition qui pourrait diverger).
+  const tousLesOffreIds = Array.from(vues.values()).map((v) => v.offreId);
+  const heuresParOffre = await getHeuresTotalesValideesParOffre(
+    tousLesOffreIds
+  );
+  for (const v of vues.values()) {
+    const heures = heuresParOffre.get(v.offreId) ?? 0;
+    v.heuresEffectuees = heures;
+    v.estTerminee = v.volumeHoraire != null && heures >= v.volumeHoraire;
   }
 
   return Array.from(vues.values());

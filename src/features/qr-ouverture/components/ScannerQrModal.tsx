@@ -36,8 +36,19 @@ export default function ScannerQrModal({
 
     async function demarrer() {
       try {
+        // Résolution/fréquence plafonnées ("ideal", pas "exact" — la
+        // caméra reste libre de faire moins si elle ne peut pas) : sans
+        // ça, certains téléphones ouvrent la caméra à sa résolution
+        // native (parfois très élevée), ce qui alourdit inutilement
+        // chaque décodage jsQR ci-dessous et peut donner l'impression
+        // d'un scan lent, en plus de la lenteur réseau après détection.
         const flot = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' },
+          video: {
+            facingMode: 'environment',
+            width: { ideal: 720 },
+            height: { ideal: 720 },
+            frameRate: { ideal: 15 },
+          },
         });
         if (annule) {
           flot.getTracks().forEach((t) => t.stop());

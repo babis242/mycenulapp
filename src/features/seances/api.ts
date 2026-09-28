@@ -342,11 +342,31 @@ export interface ResultatOuvertureFermeture {
   horsLigne: boolean;
 }
 
-// Appelle le RPC en direct si le réseau répond ; ne tombe en file
-// d'attente locale QUE si l'appel réseau lui-même échoue (pas de
-// connexion, requête qui ne part pas) — jamais si le serveur a bien
-// répondu mais rejeté le code (ça, c'est une vraie erreur à montrer tout
-// de suite, pas à mettre en attente pour échouer pareil plus tard).
+// Délai maximum accordé à l'appel réseau avant de basculer en file
+// d'attente locale — sur certains téléphones/réseaux (2G/3G faible,
+// bureau mal couvert...), la requête ne rate pas franchement, elle
+// traîne juste indéfiniment : sans cette limite, l'enseignant restait
+// bloqué sur le spinner "envoi..." aussi longtemps que le réseau ne
+// répondait pas, alors que la même situation SANS réseau du tout
+// basculait instantanément en local. Le code est déjà vérifié
+// localement avant la mise en file (voir codeValideLocalement), donc ce
+// délai ne fait qu'accélérer un cas qui, de toute façon, aurait fini par
+// y tomber — jamais un contournement de la vérification.
+const DELAI_MAX_RPC_MS = 6000;
+
+function delaiDepasse<T>(promesse: Promise<T>, ms: number): Promise<T | 'timeout'> {
+  return Promise.race([
+    promesse,
+    new Promise<'timeout'>((resolve) => setTimeout(() => resolve('timeout'), ms)),
+  ]);
+}
+
+// Appelle le RPC en direct si le réseau répond ; tombe en file d'attente
+// locale si l'appel réseau échoue franchement (pas de connexion, requête
+// qui ne part pas) OU s'il traîne au-delà de DELAI_MAX_RPC_MS (réseau
+// présent mais trop lent) — jamais si le serveur a bien répondu mais
+// rejeté le code (ça, c'est une vraie erreur à montrer tout de suite,
+// pas à mettre en attente pour échouer pareil plus tard).
 async function appellerRpcOuFileAttente(
   rpc: 'ouvrir_seance' | 'fermer_seance',
   seanceId: string,
@@ -354,7 +374,19 @@ async function appellerRpcOuFileAttente(
 ): Promise<{ data: any; error: any } | null> {
   if (!navigator.onLine) return null;
   try {
-    return await supabase.rpc(rpc, { p_seance_id: seanceId, p_code: code });
+    const resultat = await delaiDepasse(
+      supabase.rpc(rpc, { p_seance_id: seanceId, p_code: code }),
+      DELAI_MAX_RPC_MS
+    );
+    if (resultat === 'timeout') {
+      // Le serveur n'a peut-être PAS encore reçu/traité la requête (ou
+      // sa réponse n'est pas encore revenue) — on ne sait pas. On bascule
+      // en file d'attente locale comme pour un échec réseau franc ;
+      // codeValideLocalement() ci-dessous refait sa propre vérification
+      // avant d'accepter quoi que ce soit.
+      return null;
+    }
+    return resultat;
   } catch {
     // Échec au niveau réseau (fetch n'a pas abouti) — pas une réponse du
     // serveur, donc pas un rejet de code. On tombe en file d'attente.
@@ -462,6 +494,35 @@ export async function fermerSeance(
   });
   processSyncQueue().catch(() => {});
   return { heure: new Date().toISOString(), horsLigne: true };
+}
+
+// ── Correction d'erreur — annuler une ouverture/fermeture déjà validée
+// (par code ou QR) ─────────────────────────────────────────────────
+//
+// Contrairement à ouvrirSeance/fermerSeance, pas de filet de secours hors
+// ligne ici : annuler exige une vraie vérification serveur des droits
+// (l'enseignant assigné à CETTE séance, ou un admin/responsable — voir le
+// RPC), donc ça n'a de sens qu'en ligne. Le RPC lui-même vérifie
+// auth.uid() côté base, impossible à contourner depuis le client.
+export interface ResultatAnnulationOuvertureFermeture {
+  heureOuverture: string | null;
+  heureFermeture: string | null;
+}
+
+export async function annulerOuvertureFermetureSeance(
+  seanceId: string,
+  type: 'ouverture' | 'fermeture'
+): Promise<ResultatAnnulationOuvertureFermeture> {
+  const { data, error } = await supabase.rpc(
+    'annuler_ouverture_fermeture_seance',
+    { p_seance_id: seanceId, p_type: type }
+  );
+  if (error) throw new Error(error.message);
+  const ligne = Array.isArray(data) ? data[0] : data;
+  return {
+    heureOuverture: ligne?.heure_ouverture ?? null,
+    heureFermeture: ligne?.heure_fermeture ?? null,
+  };
 }
 
 // ── Flux de secours — saisie manuelle (écran 6.3) ──────────────────
