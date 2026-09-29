@@ -4,34 +4,18 @@ import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { useNavigate } from 'react-router-dom';
 import { Plus, Loader2, X, CheckCircle2, Search, Trash2, Eye, EyeOff } from 'lucide-react';
-import { supabase } from '@/lib/supabase';
 import { useAuthStore } from '@/stores/authStore';
-import { filtrerParPerimetre } from '@/lib/perimetre';
-import { SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
+import {
+  listCyclesDisponibles,
+  listSpecialitesDuCycleSemestre,
+  type CycleOption,
+  type SpecialiteGroupe,
+} from '@/features/emploi-du-temps/api';
 import {
   listUEsPourCampagne,
   lancerCampagne,
   type UEPourCampagne,
 } from '../api';
-import type { TypeCursus } from '@/types';
-
-interface Ecole {
-  id: string;
-  nom: string;
-}
-interface Filiere {
-  id: string;
-  nom: string;
-  ecole_id: string;
-}
-interface Specialite {
-  id: string;
-  nom: string;
-  filiere_id: string;
-  cycle: string;
-  sous_cycle: string | null;
-  type_cursus: TypeCursus;
-}
 
 interface PaireSpecialiteSemestre {
   key: string;
@@ -40,37 +24,43 @@ interface PaireSpecialiteSemestre {
   semestre: string;
 }
 
-function cycleKeyDe(cycle: string, sousCycle: string | null) {
-  return `${cycle}::${sousCycle ?? ''}`;
-}
-function labelCycle(cycle: string, sousCycle: string | null) {
-  return sousCycle ? `${cycle} (${sousCycle})` : cycle;
-}
+const SEMESTRES = ['S1', 'S2', 'S3', 'S4', 'S5', 'S6'];
 
 // Écran Étape 1 — Lancement de la demande de disponibilités (journal.md
-// Scénario 3). Sélection multi-spécialités/niveaux (une paire à la fois,
-// ajoutée à une liste de travail), puis coche des UEs à programmer.
+// Scénario 3). On choisit d'abord un Cycle + un Semestre (indépendamment
+// de toute École/Filière) : la liste de cases à cocher affiche ALORS
+// TOUTES les spécialités de ce cycle/semestre, tous établissements et
+// filières confondus (le nom de l'école/filière est affiché à côté de
+// chaque spécialité pour lever toute ambiguïté). Sélection multi-
+// spécialités ajoutée à une liste de travail, puis coche des UEs à
+// programmer.
 export default function LancerDemandePage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
+  const perimetreIds =
+    user?.role === 'responsable' ? user.perimetre_specialite_ids ?? [] : null;
 
-  // Cascade pour ajouter une paire spécialité/semestre
-  const [ecoles, setEcoles] = useState<Ecole[]>([]);
-  const [ecoleId, setEcoleId] = useState('');
-  const [filieresByEcole, setFilieresByEcole] = useState<
-    Record<string, Filiere[]>
-  >({});
-  const [filiereId, setFiliereId] = useState('');
-  const [specialitesByFiliere, setSpecialitesByFiliere] = useState<
-    Record<string, Specialite[]>
-  >({});
+  const [cycles, setCycles] = useState<CycleOption[]>([]);
   const [cycleKey, setCycleKey] = useState('');
-  // Sélection multi-spécialités (case à cocher) au sein du cycle choisi —
-  // remplace l'ancien sélecteur "une spécialité à la fois".
+  const [semestre, setSemestre] = useState('');
+
+  // Toutes les spécialités du cycle + semestre choisis (tous
+  // écoles/filières confondus, filtrées par périmètre côté serveur).
+  const [specialitesDuCycle, setSpecialitesDuCycle] = useState<
+    SpecialiteGroupe[]
+  >([]);
+  const [chargementSpecialites, setChargementSpecialites] = useState(false);
+  // Sélection multi-spécialités (case à cocher) au sein du cycle+semestre
+  // choisi.
   const [specialitesCochees, setSpecialitesCochees] = useState<Set<string>>(
     new Set()
   );
-  const [semestre, setSemestre] = useState('');
+  // Spécialité trouvée via la recherche directe, à cocher automatiquement
+  // dès que la liste du cycle+semestre correspondant est chargée (le
+  // semestre n'étant pas connu au moment de la recherche).
+  const [specialiteAPreCocher, setSpecialiteAPreCocher] = useState<
+    string | null
+  >(null);
 
   const [paires, setPaires] = useState<PaireSpecialiteSemestre[]>([]);
 
@@ -87,83 +77,47 @@ export default function LancerDemandePage() {
   const [succes, setSucces] = useState<{ nbEnseignants: number } | null>(null);
 
   useEffect(() => {
-    supabase
-      .from('ecoles')
-      .select('id, nom')
-      .order('nom')
-      .then(({ data }) => setEcoles(data ?? []));
+    listCyclesDisponibles(perimetreIds).then(setCycles);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function handleEcoleChange(id: string) {
-    setEcoleId(id);
-    setFiliereId('');
-    setCycleKey('');
-    setSpecialitesCochees(new Set());
-    setSemestre('');
-    if (id && !filieresByEcole[id]) {
-      const { data } = await supabase
-        .from('filieres')
-        .select('id, nom, ecole_id')
-        .eq('ecole_id', id)
-        .order('nom');
-      setFilieresByEcole((prev) => ({ ...prev, [id]: data ?? [] }));
+  // Recharge la liste des spécialités dès que le cycle ET le semestre
+  // sont choisis tous les deux — c'est cette paire qui pilote désormais
+  // l'affichage (plus besoin d'École/Filière).
+  useEffect(() => {
+    if (!cycleKey || !semestre) {
+      setSpecialitesDuCycle([]);
+      setSpecialitesCochees(new Set());
+      return;
     }
-  }
-
-  async function handleFiliereChange(id: string) {
-    setFiliereId(id);
-    setCycleKey('');
-    setSpecialitesCochees(new Set());
-    setSemestre('');
-    if (id && !specialitesByFiliere[id]) {
-      const { data } = await supabase
-        .from('specialites')
-        .select('id, nom, filiere_id, cycle, sous_cycle, type_cursus')
-        .eq('filiere_id', id)
-        .order('nom');
-      setSpecialitesByFiliere((prev) => ({
-        ...prev,
-        [id]: (data ?? []) as Specialite[],
-      }));
-    }
-  }
+    const [cycle, sousCycle] = cycleKey.split('::');
+    setChargementSpecialites(true);
+    listSpecialitesDuCycleSemestre(cycle, sousCycle || null, semestre, perimetreIds)
+      .then((liste) => {
+        setSpecialitesDuCycle(liste);
+        if (
+          specialiteAPreCocher &&
+          liste.some((s) => s.id === specialiteAPreCocher)
+        ) {
+          setSpecialitesCochees(new Set([specialiteAPreCocher]));
+        } else {
+          setSpecialitesCochees(new Set());
+        }
+        setSpecialiteAPreCocher(null);
+      })
+      .finally(() => setChargementSpecialites(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cycleKey, semestre]);
 
   // Raccourci : sélectionne directement une spécialité trouvée par
-  // recherche, en pré-remplissant la cascade École → Filière → Cycle et
-  // en la cochant d'office dans la liste qui apparaît juste en dessous.
-  async function handleSelectionRecherche(s: SpecialiteRecherche) {
-    await handleEcoleChange(s.ecoleId);
-    await handleFiliereChange(s.filiereId);
-    setCycleKey(cycleKeyDe(s.cycle, s.sousCycle));
-    setSpecialitesCochees(new Set([s.id]));
+  // recherche, en pré-remplissant le Cycle — le semestre reste à choisir
+  // (la recherche ne le connaît pas), la spécialité sera cochée d'office
+  // dès que la liste correspondante sera chargée.
+  function handleSelectionRecherche(s: SpecialiteRecherche) {
+    setCycleKey(`${s.cycle}::${s.sousCycle ?? ''}`);
+    setSemestre('');
+    setSpecialiteAPreCocher(s.id);
   }
-
-  const filieres = filieresByEcole[ecoleId] ?? [];
-  const specialitesDeFiliere = filtrerParPerimetre(
-    specialitesByFiliere[filiereId] ?? [],
-    user
-  );
-  const cycles = (() => {
-    const vues = new Map<string, string>();
-    for (const s of specialitesDeFiliere) {
-      const k = cycleKeyDe(s.cycle, s.sous_cycle);
-      if (!vues.has(k)) vues.set(k, labelCycle(s.cycle, s.sous_cycle));
-    }
-    return Array.from(vues.entries()).map(([key, label]) => ({ key, label }));
-  })();
-  const specialitesDuCycle = specialitesDeFiliere.filter(
-    (s) => cycleKeyDe(s.cycle, s.sous_cycle) === cycleKey
-  );
-  // Semestres possibles pour AU MOINS UNE des spécialités du cycle
-  // affiché (union — un même cycle mélange rarement plusieurs types de
-  // cursus, mais on reste large plutôt que de bloquer un cas valide).
-  const semestresDisponibles = Array.from(
-    new Set(
-      specialitesDuCycle.flatMap(
-        (s) => SEMESTRES_PAR_TYPE_CURSUS[s.type_cursus] ?? []
-      )
-    )
-  ).sort();
 
   function toggleSpecialiteCochee(id: string) {
     setSpecialitesCochees((prev) => {
@@ -175,7 +129,7 @@ export default function LancerDemandePage() {
   }
 
   // Ajoute d'un coup TOUTES les spécialités cochées, pour le semestre
-  // choisi — remplace l'ancien "une paire à la fois".
+  // choisi.
   async function ajouterSelection() {
     if (specialitesCochees.size === 0 || !semestre) return;
     const nouvelles: PaireSpecialiteSemestre[] = [];
@@ -289,7 +243,8 @@ export default function LancerDemandePage() {
         </button>
       </div>
       <p className="text-sm text-gray-400 mb-6">
-        Choisis les spécialités/niveaux concernés, puis les UEs à programmer.
+        Choisis un cycle et un semestre pour voir toutes les spécialités
+        concernées, puis les UEs à programmer.
       </p>
 
       <div className="bg-white rounded-[20px] p-5 mb-4">
@@ -306,41 +261,12 @@ export default function LancerDemandePage() {
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
           <select
-            value={ecoleId}
-            onChange={(e) => handleEcoleChange(e.target.value)}
-            className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
-          >
-            <option value="">École...</option>
-            {ecoles.map((e) => (
-              <option key={e.id} value={e.id}>
-                {e.nom}
-              </option>
-            ))}
-          </select>
-
-          <select
-            value={filiereId}
-            onChange={(e) => handleFiliereChange(e.target.value)}
-            disabled={!ecoleId}
-            className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
-          >
-            <option value="">Filière...</option>
-            {filieres.map((f) => (
-              <option key={f.id} value={f.id}>
-                {f.nom}
-              </option>
-            ))}
-          </select>
-
-          <select
             value={cycleKey}
             onChange={(e) => {
               setCycleKey(e.target.value);
-              setSpecialitesCochees(new Set());
               setSemestre('');
             }}
-            disabled={!filiereId}
-            className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
+            className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
           >
             <option value="">Cycle...</option>
             {cycles.map((c) => (
@@ -353,11 +279,11 @@ export default function LancerDemandePage() {
           <select
             value={semestre}
             onChange={(e) => setSemestre(e.target.value)}
-            disabled={specialitesCochees.size === 0}
+            disabled={!cycleKey}
             className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300"
           >
             <option value="">Semestre...</option>
-            {semestresDisponibles.map((s) => (
+            {SEMESTRES.map((s) => (
               <option key={s} value={s}>
                 {s}
               </option>
@@ -365,7 +291,7 @@ export default function LancerDemandePage() {
           </select>
         </div>
 
-        {cycleKey && (
+        {cycleKey && semestre && (
           <div className="mb-3">
             <div className="flex items-center justify-between mb-1.5">
               <p className="text-xs font-bold text-gray-400 uppercase tracking-wide">
@@ -389,12 +315,16 @@ export default function LancerDemandePage() {
                 </button>
               )}
             </div>
-            {specialitesDuCycle.length === 0 ? (
+            {chargementSpecialites ? (
+              <div className="flex items-center justify-center py-6 text-gray-300">
+                <Loader2 size={18} className="animate-spin" />
+              </div>
+            ) : specialitesDuCycle.length === 0 ? (
               <p className="text-sm text-gray-400 px-1">
-                Aucune spécialité pour ce cycle.
+                Aucune spécialité offerte pour ce cycle/semestre.
               </p>
             ) : (
-              <div className="border border-gray-100 rounded-xl max-h-48 overflow-y-auto divide-y divide-gray-50">
+              <div className="border border-gray-100 rounded-xl max-h-56 overflow-y-auto divide-y divide-gray-50">
                 {specialitesDuCycle.map((s) => (
                   <label
                     key={s.id}
@@ -406,7 +336,12 @@ export default function LancerDemandePage() {
                       onChange={() => toggleSpecialiteCochee(s.id)}
                       className="shrink-0"
                     />
-                    {s.nom}
+                    <span className="min-w-0">
+                      {s.nom}
+                      <span className="block text-xs font-normal text-gray-400 truncate">
+                        {s.ecoleNom} · {s.filiereNom}
+                      </span>
+                    </span>
                   </label>
                 ))}
               </div>

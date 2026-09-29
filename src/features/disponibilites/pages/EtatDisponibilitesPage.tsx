@@ -32,7 +32,11 @@ function lienWhatsApp(
   const chiffres = numero.replace(/[^\d]/g, '');
   if (!chiffres) return null;
   const message = encodeURIComponent(
-    `Bonjour ${nomEnseignant}, merci de renseigner tes disponibilités pour la semaine à venir sur la plateforme.`
+    `Bonjour Monsieur/Madame ${nomEnseignant},\n\n` +
+      `Bien vouloir renseigner urgemment vos disponibilités pour la semaine à venir sur la plateforme de CENULAP YASSA : https://platformcenulap.pages.dev/\n\n` +
+      `Procédure : connectez-vous avec les identifiants reçus par mail (si ce n'est pas déjà fait), cliquez sur le menu "Mes disponibilités", sélectionnez vos disponibilités puis cliquez sur "Envoyer".\n\n` +
+      `Vous avez la possibilité de modifier vos disponibilités jusqu'à jeudi soir.\n\n` +
+      `Merci.`
   );
   return `https://wa.me/${chiffres}?text=${message}`;
 }
