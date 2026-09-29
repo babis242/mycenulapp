@@ -375,7 +375,7 @@ async function appellerRpcOuFileAttente(
   if (!navigator.onLine) return null;
   try {
     const resultat = await delaiDepasse(
-      supabase.rpc(rpc, { p_seance_id: seanceId, p_code: code }),
+      Promise.resolve(supabase.rpc(rpc, { p_seance_id: seanceId, p_code: code })),
       DELAI_MAX_RPC_MS
     );
     if (resultat === 'timeout') {
