@@ -2587,7 +2587,14 @@ export async function lireMesCoursDepuisCache(
   return (seances as any[])
     .map((s) => {
       const emploi = emploiParId.get(s.emploi_du_temps_id);
-      if (!emploi || emploi.statut !== 'valide') return null;
+      // Une séance de tronc commun n'a pas d'emploi du temps de
+      // spécialité (ligne partagée) : elle est toujours valable. Une
+      // séance de spécialité doit appartenir à un emploi VALIDÉ.
+      if (!s.tronc_commun_id && (!emploi || emploi.statut !== 'valide')) {
+        return null;
+      }
+      const semaineSeance = emploi?.semaine ?? s.semaine;
+      if (!semaineSeance) return null;
       const offre = s.offre_id ? offreParId.get(s.offre_id) : null;
       const ue = offre?.ue_id ? ueParId.get(offre.ue_id) : null;
       const troncCommun = s.tronc_commun_id
@@ -2605,8 +2612,8 @@ export async function lireMesCoursDepuisCache(
         jour: s.jour,
         creneau: s.creneau,
         salleCode: salle?.code_salle ?? null,
-        semaine: emploi.semaine,
-        pdfSigneUrl: emploi.pdf_signe_url ?? null,
+        semaine: semaineSeance,
+        pdfSigneUrl: emploi?.pdf_signe_url ?? null,
       } as MonCours;
     })
     .filter((c): c is MonCours => c !== null)
@@ -2625,8 +2632,9 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
     .from('seances_edt')
     .select(
       `
-      id, jour, creneau, offre_id,
+      id, jour, creneau, offre_id, tronc_commun_id, semaine,
       offre:offres(ue:ues(id, nom, syllabus_key)),
+      tronc_commun:troncs_communs(nom),
       salle:salles(code_salle),
       emploi_du_temps:emplois_du_temps(semaine, statut, pdf_signe_url)
     `
@@ -2646,7 +2654,10 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
   );
 
   return ((data ?? []) as any[])
-    .filter((s) => s.emploi_du_temps?.statut === 'valide')
+    // Séance de tronc commun : toujours valable (pas d'emploi du temps
+    // de spécialité rattaché). Séance de spécialité : emploi VALIDÉ.
+    .filter((s) => s.tronc_commun_id || s.emploi_du_temps?.statut === 'valide')
+    .filter((s) => !!(s.emploi_du_temps?.semaine ?? s.semaine))
     .map((s) => ({
       id: s.id,
       ueId: s.offre?.ue?.id ?? null,
@@ -2654,12 +2665,12 @@ export async function listMesCours(matricule: string): Promise<MonCours[]> {
       attributionId: s.offre_id
         ? (attributionParOffre.get(s.offre_id) ?? null)
         : null,
-      ueNom: s.offre?.ue?.nom ?? '(tronc commun)',
+      ueNom: s.tronc_commun?.nom ?? s.offre?.ue?.nom ?? '(tronc commun)',
       jour: s.jour,
       creneau: s.creneau,
       salleCode: s.salle?.code_salle ?? null,
-      semaine: s.emploi_du_temps.semaine,
-      pdfSigneUrl: s.emploi_du_temps.pdf_signe_url,
+      semaine: s.emploi_du_temps?.semaine ?? s.semaine,
+      pdfSigneUrl: s.emploi_du_temps?.pdf_signe_url ?? null,
     }))
     .sort((a, b) => a.semaine.localeCompare(b.semaine));
 }
