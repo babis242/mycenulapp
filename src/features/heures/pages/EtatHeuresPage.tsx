@@ -127,6 +127,54 @@ export default function EtatHeuresPage() {
     XLSX.writeFile(classeur, `heures_detail_${mois}.xlsx`);
   }
 
+  // Export global (admin) : un seul fichier listant TOUS les enseignants
+  // ayant fait cours ce mois-ci, chacun avec ses lignes de détail (jour,
+  // heure d'arrivée, heure de départ) regroupées, suivies d'une ligne
+  // "Total" avec son total d'heures du mois.
+  function exporterDetailParEnseignant() {
+    const parEnseignant = new Map<string, LigneHeureSeance[]>();
+    for (const d of detail) {
+      const liste = parEnseignant.get(d.enseignantNom) ?? [];
+      liste.push(d);
+      parEnseignant.set(d.enseignantNom, liste);
+    }
+    const enseignantsTries = Array.from(parEnseignant.keys()).sort((a, b) =>
+      a.localeCompare(b)
+    );
+
+    const lignes: (string | number)[][] = [
+      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'arrivée", 'Heure de départ', 'Heures', 'Retard'],
+    ];
+    for (const nom of enseignantsTries) {
+      const seances = parEnseignant
+        .get(nom)!
+        .slice()
+        .sort((a, b) => a.date.localeCompare(b.date));
+      let totalEnseignant = 0;
+      for (const s of seances) {
+        totalEnseignant += s.heures;
+        lignes.push([
+          nom,
+          formatDate(s.heureOuverture),
+          s.jour,
+          s.creneau,
+          s.ueNom,
+          formatHeure(s.heureOuverture),
+          formatHeure(s.heureFermeture),
+          s.heures,
+          s.enRetard ? `Oui (+${s.retardMinutes} min)` : 'Non',
+        ]);
+      }
+      lignes.push(['', '', '', '', '', '', 'Total', totalEnseignant, '']);
+      lignes.push([]);
+    }
+
+    const feuille = XLSX.utils.aoa_to_sheet(lignes);
+    const classeur = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(classeur, feuille, 'Détail par enseignant');
+    XLSX.writeFile(classeur, `heures_par_enseignant_${mois}.xlsx`);
+  }
+
   function exporterTotaux() {
     const feuille = XLSX.utils.aoa_to_sheet([
       ['Enseignant', 'Total heures effectuées'],
@@ -175,6 +223,13 @@ export default function EtatHeuresPage() {
           className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           <FileSpreadsheet size={16} /> Exporter le détail (Excel)
+        </button>
+        <button
+          onClick={exporterDetailParEnseignant}
+          disabled={detail.length === 0}
+          className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          <FileSpreadsheet size={16} /> Exporter par enseignant (Excel)
         </button>
         <button
           onClick={exporterTotaux}

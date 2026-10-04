@@ -330,6 +330,54 @@ export async function getDerniereCampagne(): Promise<CampagneResume | null> {
   return data;
 }
 
+// BUG corrigé : "la dernière campagne" au sens GLOBAL (toutes
+// spécialités/cycles confondus) n'est PAS forcément celle à laquelle un
+// enseignant donné a répondu. Dès qu'une collecte est lancée pour un
+// AUTRE groupe de spécialités après que la campagne précédente a été
+// arrêtée (ce que fait automatiquement creerOuChargerEDT dès qu'on ouvre
+// l'écran "Emploi du temps" pour une spécialité pas encore programmée),
+// une toute nouvelle ligne "campagnes_disponibilite" est créée — plus
+// récente, donc renvoyée par getDerniereCampagne() — mais dans laquelle
+// les enseignants de l'ancien groupe n'ont jamais été invités ni n'ont
+// répondu. Résultat observé : la génération automatique (et l'ancienne
+// version de getEnseignantsDisponibles) les traitait comme des
+// enseignants n'ayant "pas encore renseigné leurs disponibilités",
+// alors qu'ils avaient bien répondu à LEUR campagne.
+//
+// Cette fonction résout, pour un ensemble d'enseignants donné (ou pour
+// tous si non précisé), la campagne la plus récente à laquelle CHACUN
+// a été effectivement rattaché (table campagne_enseignants) — et non la
+// plus récente toutes campagnes confondues.
+export async function getDernieresCampagnesParEnseignant(
+  enseignantIds?: string[]
+): Promise<Map<string, string>> {
+  if (enseignantIds && enseignantIds.length === 0) return new Map();
+
+  let requete = supabase
+    .from('campagne_enseignants')
+    .select(
+      'enseignant_id, campagne_id, campagne:campagnes_disponibilite(date_lancement)'
+    );
+  if (enseignantIds) {
+    requete = requete.in('enseignant_id', enseignantIds);
+  }
+  const { data, error } = await requete;
+  if (error) throw error;
+
+  const meilleure = new Map<string, { campagneId: string; date: string }>();
+  for (const l of (data ?? []) as any[]) {
+    const date = l.campagne?.date_lancement;
+    if (!date) continue;
+    const actuel = meilleure.get(l.enseignant_id);
+    if (!actuel || date > actuel.date) {
+      meilleure.set(l.enseignant_id, { campagneId: l.campagne_id, date });
+    }
+  }
+  return new Map(
+    Array.from(meilleure.entries()).map(([id, v]) => [id, v.campagneId])
+  );
+}
+
 export interface EnseignantSuivi {
   id: string;
   nom: string;

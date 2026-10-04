@@ -46,6 +46,13 @@ class AppDatabase extends Dexie {
     'code'
   >;
   syncQueue!: EntityTable<SyncAction, 'id'>;
+  // Instantanés complets d'un groupe d'emploi du temps (cycle/semestre
+  // + semaine) préchargés au chargement de la page de confection — voir
+  // features/emploi-du-temps/edtLocal.ts.
+  edtSnapshots!: EntityTable<
+    { cle: string; enregistreLe: number; [champ: string]: any },
+    'cle'
+  >;
 
   constructor() {
     super('gestion-pedagogique-db');
@@ -104,6 +111,13 @@ class AppDatabase extends Dexie {
     // et synchronisée comme les autres données de référence.
     this.version(6).stores({
       creneaux: 'code, ordre',
+    });
+
+    // v7 — instantanés locaux de la page de confection de l'EDT : tout
+    // ce qu'il faut pour monter l'emploi du temps sans réseau (séances,
+    // offres, salles, disponibilités, occupation des salles).
+    this.version(7).stores({
+      edtSnapshots: 'cle, enregistreLe',
     });
   }
 }

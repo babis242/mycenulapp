@@ -21,6 +21,7 @@ import ImporterUEsPage from '@/features/referentiel/ues/pages/ImporterUEsPage';
 import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
 import SuiviSupportsCoursPage from '@/features/repartition/pages/SuiviSupportsCoursPage';
 import EtatCouverturePage from '@/features/repartition/pages/EtatCouverturePage';
+import RapportsPdfPage from '@/features/rapports-pdf/pages/RapportsPdfPage';
 import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
 import DetailRapportPage from '@/features/rapports/pages/DetailRapportPage';
 import DetailMonCoursPage from '@/features/seances/pages/DetailMonCoursPage';
@@ -139,6 +140,10 @@ export default function AppRoutes() {
               <Route path="salles/importer" element={<ImporterSallesPage />} />
               <Route path="creneaux" element={<CreneauxPage />} />
             </Route>
+          </Route>
+
+          <Route element={<RoleRoute allowedRoles={['administrateur']} />}>
+            <Route path="/rapports-pdf" element={<RapportsPdfPage />} />
           </Route>
 
           <Route

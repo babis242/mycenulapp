@@ -1,5 +1,5 @@
 // src/features/emploi-du-temps/pages/GenererEDTPage.tsx
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Loader2,
@@ -10,6 +10,9 @@ import {
   WifiOff,
   Check,
   Save,
+  Wand2,
+  RotateCcw,
+  DoorOpen,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
@@ -18,25 +21,36 @@ import { synchroniserCreneaux } from '@/lib/creneaux';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
-  getSeancesGroupees,
   invaliderCacheSeancesGroupees,
   garantirEmploisPourGroupe,
   enregistrerChangementsEnLot,
   listOffresDeSpecialite,
   getEnseignantsDisponibles,
   getSalleParDefautSpecialite,
-  listToutesLesSalles,
   getSallesLibresPourCreneau,
-  getHeuresValideesPourPdf,
-  getHeuresValideesTroncPourPdf,
   definirSpecialitesEnAttenteValidation,
+  genererEmploiDuTempsAutomatique,
+  reinitialiserEmploiDuTempsGroupe,
+  attribuerSallesPourSemaine,
+  type ResultatAttributionSalles,
   type CycleOption,
   type SpecialiteGroupe,
   type SeanceGroupee,
   type OffreDeSpecialite,
   type EnseignantDisponible,
+  type ResultatGenerationAuto,
 } from '../api';
-import { supabase } from '@/lib/supabase';
+import {
+  cleSnapshot,
+  lireSnapshot,
+  sauverSnapshot,
+  supprimerSnapshot,
+  prechargerSnapshotGroupe,
+  sallesLibresLocal,
+  lireCacheJson,
+  ecrireCacheJson,
+  type SnapshotEDT,
+} from '../edtLocal';
 
 interface Salle {
   id: string;
@@ -248,6 +262,31 @@ export default function GenererEDTPage() {
   const [erreurChargement, setErreurChargement] = useState<string | null>(
     null
   );
+  // Préchargement local : les données affichées viennent-elles du
+  // snapshot local (réseau absent/instable) plutôt que d'une lecture
+  // fraîche ? Et une actualisation est-elle en cours en arrière-plan ?
+  const [donneesDepuisLocal, setDonneesDepuisLocal] = useState<number | null>(null);
+  const [actualisationEnCours, setActualisationEnCours] = useState(false);
+  // Dernier snapshot appliqué — la modale y lit disponibilités et salles
+  // libres sans aucun appel réseau.
+  const snapshotRef = useRef<SnapshotEDT | null>(null);
+  // Garde-fou : ignore la réponse d'un chargement devenu obsolète
+  // (changement de spécialité/semaine pendant que le réseau répond).
+  const requeteChargementRef = useRef(0);
+  // Dernière liste de changements en cours — relue par l'actualisation
+  // d'arrière-plan pour rejouer le brouillon par-dessus les données
+  // fraîches sans rien perdre.
+  const changementsRef = useRef<ChangementCellule[]>([]);
+
+  const [generationEnCours, setGenerationEnCours] = useState(false);
+  const [reinitialisationEnCours, setReinitialisationEnCours] = useState(false);
+  const [resultatGeneration, setResultatGeneration] =
+    useState<ResultatGenerationAuto | null>(null);
+
+  // Bilan de la dernière attribution automatique des salles.
+  const [resultatSalles, setResultatSalles] =
+    useState<ResultatAttributionSalles | null>(null);
+  const [attributionSallesEnCours, setAttributionSallesEnCours] = useState(false);
 
   const [modal, setModal] = useState<ModalCellule | null>(null);
   const [enseignantsDispoModal, setEnseignantsDispoModal] = useState<
@@ -262,9 +301,20 @@ export default function GenererEDTPage() {
 
   // ── Chargement initial des cycles disponibles (selon périmètre) ──
   useEffect(() => {
+    // Liste de cycles gardée localement : la page doit pouvoir se rouvrir
+    // même sans réseau.
+    const cleCache = `edt-cache-cycles:${perimetreIds?.join(',') ?? 'tous'}`;
+    const enCache = lireCacheJson<CycleOption[]>(cleCache);
+    if (enCache) setCycles(enCache);
     if (!enLigne) return;
-    listCyclesDisponibles(perimetreIds).then(setCycles);
-    listToutesLesSalles().then(setToutesSalles);
+    listCyclesDisponibles(perimetreIds)
+      .then((liste) => {
+        ecrireCacheJson(cleCache, liste);
+        setCycles(liste);
+      })
+      .catch(() => {
+        // réseau instable : on garde la liste locale
+      });
     // Resynchronise directement depuis le serveur (pas seulement le
     // cache mémoire déjà en place) — sinon un créneau supprimé depuis
     // Référentiel → Créneaux dans un autre onglet/une autre session
@@ -276,29 +326,52 @@ export default function GenererEDTPage() {
 
   // ── Spécialités du cycle + semestre choisis ───────────────────────
   useEffect(() => {
-    if (!cycleKey || !semestre || !enLigne) {
+    if (!cycleKey || !semestre) {
       setSpecialites([]);
       setSpecialiteAffichee('');
       return;
     }
+    let annule = false;
     const [cycle, sousCycle] = cycleKey.split('::');
+    const cleCache = `edt-cache-specialites:${cycleKey}:${semestre}:${
+      perimetreIds?.join(',') ?? 'tous'
+    }`;
+    function appliquer(liste: SpecialiteGroupe[]) {
+      setSpecialites((prev) =>
+        JSON.stringify(prev) === JSON.stringify(liste) ? prev : liste
+      );
+      setSpecialiteAffichee((prev) =>
+        liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
+      );
+    }
+    const enCache = lireCacheJson<SpecialiteGroupe[]>(cleCache);
+    if (enCache) appliquer(enCache);
+    if (!enLigne) return;
     listSpecialitesDuCycleSemestre(
       cycle,
       sousCycle || null,
       semestre,
       perimetreIds
-    ).then((liste) => {
-      setSpecialites(liste);
-      setSpecialiteAffichee((prev) =>
-        liste.some((s) => s.id === prev) ? prev : liste[0]?.id ?? ''
-      );
-    });
+    )
+      .then((liste) => {
+        if (annule) return;
+        ecrireCacheJson(cleCache, liste);
+        appliquer(liste);
+      })
+      .catch(() => {
+        // réseau instable : la liste locale (si elle existe) reste en place
+      });
+    return () => {
+      annule = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cycleKey, semestre, enLigne]);
 
   // ── Chargement du groupe (réactif — pas de bouton "Charger") ──────
+  // Fonctionne aussi hors ligne : le dernier snapshot local du groupe est
+  // alors affiché tel quel.
   useEffect(() => {
-    if (specialites.length === 0 || !semaine || !enLigne) {
+    if (specialites.length === 0 || !semaine) {
       setSeances([]);
       setChangements([]);
       return;
@@ -307,96 +380,238 @@ export default function GenererEDTPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specialites, semaine, enLigne]);
 
-  async function chargerGroupe() {
+  useEffect(() => {
+    changementsRef.current = changements;
+  }, [changements]);
+
+  // Pose un snapshot (frais ou local) dans l'état de la page, puis rejoue
+  // par-dessus les changements du brouillon en cours.
+  function appliquerSnapshot(
+    snap: SnapshotEDT,
+    changementsARejouer: ChangementCellule[]
+  ) {
+    const emploi = new Map(snap.emploiParSpecialite);
+    const groupes = new Map(
+      snap.specialitesParTronc.map(([k, v]) => [k, new Set(v)] as [string, Set<string>])
+    );
+    const offres = new Map(snap.offresParSpecialite);
+
+    setEmploiParSpecialite(emploi);
+    setSpecialitesParTronc(groupes);
+    setUeVersTronc(new Map(snap.ueVersTronc));
+    setStatutParSpecialite(new Map(snap.statutParSpecialite));
+    setOffresParSpecialite(offres);
+    setSalleParDefautParSpecialite(new Map(snap.sallesParDefaut));
+    setToutesSalles(snap.toutesSalles);
+    setHeuresEffectuees(new Map(snap.heures));
+
+    let affichees = snap.seances;
+    for (const c of changementsARejouer) {
+      affichees = appliquerChangement(
+        affichees,
+        c,
+        offres.get(c.specialiteId) ?? [],
+        snap.toutesSalles,
+        groupes
+      );
+    }
+    setSeances(affichees);
+    snapshotRef.current = snap;
+  }
+
+  // Charge le groupe : (1) affiche tout de suite le snapshot local s'il
+  // existe, (2) si le réseau est là, précharge TOUT en une passe, range
+  // le résultat en local et remplace l'affichage (le brouillon est rejoué
+  // par-dessus, rien n'est perdu). Si le réseau échoue, le snapshot local
+  // reste affiché. `ignorerLocal` : après une écriture en base
+  // (enregistrement, génération, réinitialisation), l'ancien snapshot est
+  // périmé — on le jette et on relit le serveur.
+  async function chargerGroupe(options?: { ignorerLocal?: boolean }) {
+    const idRequete = ++requeteChargementRef.current;
+    const estObsolete = () => idRequete !== requeteChargementRef.current;
+    const specialiteIds = specialites.map((s) => s.id);
+    const cle = cleSnapshot(specialiteIds, semaine);
+
     setChargement(true);
     setErreurChargement(null);
+    setResultatSalles(null);
+
+    // Brouillon local non encore envoyé en base.
+    const cleDraft = `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`;
+    let changementsCharges: ChangementCellule[] = [];
+    try {
+      const brut = localStorage.getItem(cleDraft);
+      if (brut) changementsCharges = JSON.parse(brut);
+    } catch {
+      localStorage.removeItem(cleDraft);
+      changementsCharges = [];
+    }
+
+    let affichageLocal = false;
+    if (options?.ignorerLocal) {
+      await supprimerSnapshot(cle);
+      snapshotRef.current = null;
+    } else {
+      const local = await lireSnapshot(cle);
+      if (estObsolete()) return;
+      if (local) {
+        changementsRef.current = changementsCharges;
+        setChangements(changementsCharges);
+        appliquerSnapshot(local, changementsCharges);
+        setDonneesDepuisLocal(local.enregistreLe);
+        setChargement(false);
+        affichageLocal = true;
+      }
+    }
+
+    if (!navigator.onLine) {
+      if (!affichageLocal) {
+        setSeances([]);
+        setErreurChargement(
+          "Hors ligne et aucune donnée locale pour ce groupe : ouvre-le une première fois avec du réseau pour le télécharger."
+        );
+      }
+      setChargement(false);
+      return;
+    }
+
+    if (affichageLocal) setActualisationEnCours(true);
+    try {
+      const snap = await prechargerSnapshotGroupe(specialiteIds, semaine);
+      await sauverSnapshot(snap);
+      if (estObsolete()) return;
+      // Déjà affiché depuis le local : on rejoue les changements ACTUELS
+      // (peut-être modifiés pendant l'attente) ; sinon le brouillon chargé.
+      const aRejouer = affichageLocal ? changementsRef.current : changementsCharges;
+      if (!affichageLocal) {
+        changementsRef.current = changementsCharges;
+        setChangements(changementsCharges);
+      }
+      appliquerSnapshot(snap, aRejouer);
+      setDonneesDepuisLocal(null);
+    } catch (err) {
+      if (estObsolete()) return;
+      if (!affichageLocal) {
+        setSeances([]);
+        setErreurChargement(
+          err instanceof Error ? err.message : 'Erreur de chargement.'
+        );
+      }
+      // Sinon : on garde le snapshot local déjà affiché (le bandeau
+      // « données locales » reste visible).
+    } finally {
+      if (!estObsolete()) {
+        setChargement(false);
+        setActualisationEnCours(false);
+      }
+    }
+  }
+
+  // Génération automatique : programme d'un coup toutes les UE/troncs
+  // communs du groupe (cycle+semestre+semaine affichés) dont le quota
+  // horaire n'est pas encore achevé. Écrit directement en base (comme un
+  // "Enregistrer" immédiat) — un éventuel brouillon local non encore
+  // envoyé est donc abandonné avant de lancer, pour éviter toute
+  // confusion entre les deux.
+  async function lancerGenerationAutomatique() {
+    if (specialites.length === 0) return;
+    if (
+      !window.confirm(
+        "Générer automatiquement l'emploi du temps de ce cycle/semestre pour cette semaine ? Les UE et troncs communs pas encore achevés seront programmés directement (les cases déjà remplies ne sont pas modifiées)."
+      )
+    ) {
+      return;
+    }
+    if (cycleKey && semestre && semaine) {
+      localStorage.removeItem(`edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`);
+    }
+    setChangements([]);
+    setGenerationEnCours(true);
+    setResultatGeneration(null);
     try {
       const specialiteIds = specialites.map((s) => s.id);
-      const donnees = await getSeancesGroupees(specialiteIds, semaine);
-      setEmploiParSpecialite(donnees.emploiParSpecialite);
-      setSpecialitesParTronc(donnees.specialitesParTronc);
-      setUeVersTronc(donnees.ueVersTronc);
-
-      // Statuts actuels (genere / en_attente_validation / valide) — pour
-      // pré-cocher la modale de sélection avec l'état réel de la base.
-      const { data: emploisStatuts } = await supabase
-        .from('emplois_du_temps')
-        .select('specialite_id, statut')
-        .in('specialite_id', specialiteIds)
-        .eq('semaine', semaine);
-      setStatutParSpecialite(
-        new Map(
-          (emploisStatuts ?? []).map((e: any) => [e.specialite_id, e.statut])
-        )
+      const resultat = await genererEmploiDuTempsAutomatique(
+        specialiteIds,
+        semestre,
+        semaine
       );
-
-      // Rejoue un éventuel brouillon local pas encore envoyé en base.
-      const cleDraft = `edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`;
-      const brut = localStorage.getItem(cleDraft);
-      let seancesAffichees = donnees.seances;
-      let changementsCharges: ChangementCellule[] = [];
-      const offresCache = new Map(offresParSpecialite);
-      if (brut) {
-        try {
-          changementsCharges = JSON.parse(brut);
-          // Les offres de chaque spécialité concernée par le brouillon
-          // doivent être chargées pour recalculer l'affichage optimiste.
-          const specialitesAChager = new Set(
-            changementsCharges
-              .filter((c) => c.action === 'set')
-              .map((c: any) => c.specialiteId as string)
-          );
-          for (const spId of specialitesAChager) {
-            if (!offresCache.has(spId)) {
-              offresCache.set(spId, await listOffresDeSpecialite(spId));
-            }
-          }
-          for (const c of changementsCharges) {
-            seancesAffichees = appliquerChangement(
-              seancesAffichees,
-              c,
-              offresCache.get((c as any).specialiteId) ?? [],
-              toutesSalles,
-              donnees.specialitesParTronc
-            );
-          }
-          setOffresParSpecialite(offresCache);
-        } catch {
-          localStorage.removeItem(cleDraft);
-        }
-      }
-      setSeances(seancesAffichees);
-      setChangements(changementsCharges);
-
-      const offreIds = Array.from(
-        new Set(
-          seancesAffichees
-            .filter((s) => s.offreId)
-            .map((s) => s.offreId as string)
-        )
-      );
-      const troncIds = Array.from(
-        new Set(
-          seancesAffichees
-            .filter((s) => s.troncCommunId)
-            .map((s) => s.troncCommunId as string)
-        )
-      );
-      const [heuresOffres, heuresTroncs] = await Promise.all([
-        offreIds.length > 0
-          ? getHeuresValideesPourPdf(offreIds)
-          : Promise.resolve(new Map<string, number>()),
-        troncIds.length > 0
-          ? getHeuresValideesTroncPourPdf(troncIds)
-          : Promise.resolve(new Map<string, number>()),
-      ]);
-      setHeuresEffectuees(new Map([...heuresOffres, ...heuresTroncs]));
+      setResultatGeneration(resultat);
+      await chargerGroupe({ ignorerLocal: true });
     } catch (err) {
       setErreurChargement(
-        err instanceof Error ? err.message : 'Erreur de chargement.'
+        err instanceof Error ? err.message : 'Erreur pendant la génération automatique.'
       );
     } finally {
-      setChargement(false);
+      setGenerationEnCours(false);
+    }
+  }
+
+  // Attribution automatique des salles — pour TOUS les groupes : toutes
+  // les séances de la semaine, tous cycles/écoles confondus, sont
+  // réparties ensemble créneau par créneau (attribuer cycle par cycle
+  // créait des conflits, chaque cycle ignorant les autres). Écrit
+  // directement en base : le brouillon en cours doit donc d'abord être
+  // enregistré. Règles détaillées dans attribuerSallesPourSemaine.
+  async function attribuerSalles() {
+    if (changements.length > 0) {
+      window.alert(
+        'Tu as des modifications pas encore enregistrées : clique d\'abord sur « Enregistrer », puis relance l\'attribution des salles (elle travaille sur ce qui est en base).'
+      );
+      return;
+    }
+    if (
+      !window.confirm(
+        'Attribuer automatiquement les salles à TOUTES les séances de TOUS les cycles pour cette semaine ? Les salles actuellement choisies seront remplacées, directement en base.'
+      )
+    ) {
+      return;
+    }
+    setAttributionSallesEnCours(true);
+    setResultatSalles(null);
+    try {
+      const resultat = await attribuerSallesPourSemaine(semaine);
+      setResultatSalles(resultat);
+      await chargerGroupe({ ignorerLocal: true });
+      // chargerGroupe efface le bilan : on le remet après rechargement.
+      setResultatSalles(resultat);
+    } catch (err) {
+      setErreurChargement(
+        err instanceof Error
+          ? `Erreur pendant l'attribution des salles : ${err.message}`
+          : "Erreur pendant l'attribution des salles."
+      );
+    } finally {
+      setAttributionSallesEnCours(false);
+    }
+  }
+
+  // Vide entièrement la grille de ce groupe (cycle/semestre) pour cette
+  // semaine — utile pour repartir propre avant un nouvel essai.
+  async function reinitialiserSemaine() {
+    if (specialites.length === 0) return;
+    if (
+      !window.confirm(
+        'Vider complètement cet emploi du temps (toutes les spécialités de ce groupe) pour cette semaine, y compris les séances déjà enregistrées ? Cela inclut aussi les séances de tronc commun partagées avec d\'autres spécialités pour cette même semaine — elles pourront être reprogrammées ensuite. Cette action est irréversible.'
+      )
+    ) {
+      return;
+    }
+    if (cycleKey && semestre && semaine) {
+      localStorage.removeItem(`edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`);
+    }
+    setChangements([]);
+    setResultatGeneration(null);
+    setReinitialisationEnCours(true);
+    try {
+      const specialiteIds = specialites.map((s) => s.id);
+      await reinitialiserEmploiDuTempsGroupe(specialiteIds, semaine);
+      await chargerGroupe({ ignorerLocal: true });
+    } catch (err) {
+      setErreurChargement(
+        err instanceof Error ? err.message : 'Erreur pendant la réinitialisation.'
+      );
+    } finally {
+      setReinitialisationEnCours(false);
     }
   }
 
@@ -429,6 +644,30 @@ export default function GenererEDTPage() {
         '',
     });
 
+    // Chemin LOCAL : tout est déjà dans le snapshot préchargé — aucune
+    // requête réseau, la modale s'ouvre instantanément même sur une
+    // connexion instable ou absente.
+    const local = snapshotRef.current;
+    if (local) {
+      const dispo = local.dispoParCreneau[`${jour}|${creneau}`] ?? [];
+      const sallesLibres = sallesLibresLocal(
+        local,
+        jour,
+        creneau,
+        seanceExistante?.id ?? null
+      );
+      setEnseignantsDispoModal(dispo);
+      setSallesLibresModal(sallesLibres);
+      setModal((prev) => {
+        if (!prev) return prev;
+        const toujoursLibre =
+          !prev.salleId || sallesLibres.some((s) => s.id === prev.salleId);
+        return toujoursLibre ? prev : { ...prev, salleId: '' };
+      });
+      return;
+    }
+
+    // Repli (aucun snapshot disponible) : lectures réseau comme avant.
     if (!offresParSpecialite.has(specialiteAffichee)) {
       const offres = await listOffresDeSpecialite(specialiteAffichee);
       setOffresParSpecialite((prev) =>
@@ -654,8 +893,9 @@ export default function GenererEDTPage() {
       }
 
       // 3) Recharge emploiParSpecialite / statutParSpecialite / seances
-      // à jour avant d'ouvrir la sélection.
-      await chargerGroupe();
+      // à jour avant d'ouvrir la sélection (l'ancien snapshot local est
+      // périmé : on vient d'écrire en base).
+      await chargerGroupe({ ignorerLocal: true });
     } catch (err) {
       setErreurChargement(
         err instanceof Error
@@ -741,22 +981,6 @@ export default function GenererEDTPage() {
         specialitesParTronc.get(s.troncCommunId)?.has(specialiteAffichee))
   );
 
-  if (!enLigne) {
-    return (
-      <div className="max-w-4xl mx-auto">
-        <p className="font-extrabold text-2xl text-gray-900 mb-4">
-          Emploi du temps
-        </p>
-        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3">
-          <WifiOff size={15} className="text-amber-600 shrink-0" />
-          <p className="text-xs font-bold text-amber-700">
-            Connexion nécessaire pour confectionner l'emploi du temps.
-          </p>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="max-w-4xl mx-auto">
       <p className="font-extrabold text-2xl text-gray-900 mb-1">
@@ -766,6 +990,33 @@ export default function GenererEDTPage() {
         Choisis un cycle, un semestre et une semaine — toutes les
         spécialités concernées se chargent automatiquement.
       </p>
+
+      {!enLigne && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+          <WifiOff size={15} className="text-amber-600 shrink-0" />
+          <p className="text-xs font-bold text-amber-700">
+            Hors ligne — tu peux continuer à confectionner l'emploi du temps
+            (brouillon gardé sur cet appareil). L'enregistrement en base se
+            fera dès que le réseau sera revenu.
+          </p>
+        </div>
+      )}
+      {enLigne && donneesDepuisLocal !== null && (
+        <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-4">
+          {actualisationEnCours ? (
+            <Loader2 size={15} className="animate-spin text-amber-600 shrink-0" />
+          ) : (
+            <WifiOff size={15} className="text-amber-600 shrink-0" />
+          )}
+          <p className="text-xs font-bold text-amber-700">
+            {actualisationEnCours
+              ? 'Données locales affichées — actualisation depuis le serveur en cours…'
+              : `Données locales du ${new Date(donneesDepuisLocal).toLocaleString(
+                  'fr-FR'
+                )} — le serveur n'a pas pu être joint, la grille peut ne pas être à jour.`}
+          </p>
+        </div>
+      )}
 
       <div className="bg-white rounded-[20px] p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
         <select
@@ -846,10 +1097,54 @@ export default function GenererEDTPage() {
               ))}
             </select>
 
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={attribuerSalles}
+                disabled={!enLigne || attributionSallesEnCours || generationEnCours || envoiEnCours}
+                title="Attribue les salles de TOUS les cycles pour cette semaine : salle par défaut aux UE de spécialité, grandes salles libres aux troncs communs (l'amphi au-delà de 9 filières)"
+                className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {attributionSallesEnCours ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <DoorOpen size={15} />
+                )}
+                Attribuer les salles
+              </button>
+              <button
+                onClick={reinitialiserSemaine}
+                disabled={!enLigne || reinitialisationEnCours || generationEnCours || envoiEnCours}
+                title="Vide toutes les séances déjà programmées de ce groupe pour cette semaine (utile après des essais de test)"
+                className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-500 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {reinitialisationEnCours ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <RotateCcw size={15} />
+                )}
+                Réinitialiser la semaine
+              </button>
+              <button
+                onClick={lancerGenerationAutomatique}
+                disabled={!enLigne || generationEnCours || envoiEnCours}
+                title="Programme automatiquement toutes les UE/troncs communs pas encore achevés de ce groupe"
+                className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {generationEnCours ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Wand2 size={15} />
+                )}
+                Générer automatiquement
+              </button>
               <button
                 onClick={handleOuvrirEnregistrement}
-                disabled={envoiEnCours}
+                disabled={envoiEnCours || !enLigne}
+                title={
+                  enLigne
+                    ? undefined
+                    : "Connexion nécessaire pour enregistrer — ton brouillon est gardé sur cet appareil"
+                }
                 className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-50"
               >
                 {envoiEnCours ? (
@@ -861,6 +1156,91 @@ export default function GenererEDTPage() {
               </button>
             </div>
           </div>
+          {resultatSalles && (
+            <div className="bg-white rounded-xl px-4 py-3.5 mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-gray-900">
+                  Salles attribuées pour toute la semaine (tous les cycles) :{' '}
+                  {resultatSalles.nbSeancesTraitees} séance
+                  {resultatSalles.nbSeancesTraitees > 1 ? 's' : ''} traitée
+                  {resultatSalles.nbSeancesTraitees > 1 ? 's' : ''},{' '}
+                  {resultatSalles.nbModifiees} modifiée
+                  {resultatSalles.nbModifiees > 1 ? 's' : ''}.
+                </p>
+                {resultatSalles.sansSalle.length > 0 && (
+                  <ul className="text-xs font-semibold text-amber-600 mt-1.5 list-disc list-inside">
+                    {resultatSalles.sansSalle.map((n, i) => (
+                      <li key={i}>
+                        {n.nom} ({n.jour} {n.creneau}) — aucune salle libre à ce
+                        créneau.
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                onClick={() => setResultatSalles(null)}
+                className="text-gray-300 hover:text-gray-500 shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+          {resultatGeneration && (
+            <div className="bg-white rounded-xl px-4 py-3.5 mb-4 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-bold text-gray-900">
+                  Génération automatique : {resultatGeneration.nbSeancesTroncPlacees}{' '}
+                  séance{resultatGeneration.nbSeancesTroncPlacees > 1 ? 's' : ''} de tronc commun,{' '}
+                  {resultatGeneration.nbSeancesSpecialitesPlacees} séance
+                  {resultatGeneration.nbSeancesSpecialitesPlacees > 1 ? 's' : ''} de spécialité placée
+                  {resultatGeneration.nbSeancesTroncPlacees +
+                    resultatGeneration.nbSeancesSpecialitesPlacees >
+                  1
+                    ? 's'
+                    : ''}
+                  .
+                </p>
+                {resultatGeneration.nonPlacees.length > 0 && (
+                  <ul className="text-xs font-semibold text-amber-600 mt-1.5 list-disc list-inside">
+                    {resultatGeneration.nonPlacees.map((n, i) => (
+                      <li key={i}>
+                        {n.nom} — {n.raison}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                onClick={() => setResultatGeneration(null)}
+                className="text-gray-300 hover:text-gray-500 shrink-0"
+              >
+                <X size={16} />
+              </button>
+            </div>
+          )}
+          {resultatGeneration &&
+            specialiteAffichee &&
+            (() => {
+              const nonPlaceesDeCetteSpecialite = resultatGeneration.nonPlacees.filter(
+                (n) => n.specialiteIds.includes(specialiteAffichee)
+              );
+              if (nonPlaceesDeCetteSpecialite.length === 0) return null;
+              return (
+                <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3.5 mb-4">
+                  <p className="text-xs font-bold text-amber-700 uppercase tracking-wide mb-1">
+                    UE en cours non programmées pour cette spécialité
+                  </p>
+                  <ul className="text-xs font-semibold text-amber-700 list-disc list-inside">
+                    {nonPlaceesDeCetteSpecialite.map((n, i) => (
+                      <li key={i}>
+                        {n.nom} — {n.raison}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            })()}
           {changements.length > 0 && (
             <p className="text-xs font-semibold text-amber-600 mb-4">
               {changements.length} modification

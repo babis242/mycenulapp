@@ -18,6 +18,7 @@ import {
   Clock,
   FileCheck,
   Gauge,
+  FileBarChart,
   LogOut,
   Menu,
   Home,
@@ -77,6 +78,12 @@ const NAV_ITEMS: {
     label: 'Rapports de séance',
     icon: ClipboardEdit,
     roles: ['administrateur', 'responsable'],
+  },
+  {
+    to: '/rapports-pdf',
+    label: 'Rapports PDF',
+    icon: FileBarChart,
+    roles: ['administrateur'],
   },
   {
     to: '/disponibilites',

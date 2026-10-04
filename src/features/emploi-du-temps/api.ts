@@ -4,10 +4,12 @@ import { db } from '@/lib/db';
 import {
   arreterCampagne,
   getDerniereCampagne,
+  getDernieresCampagnesParEnseignant,
 } from '@/features/disponibilites/api';
 import { genererCodesPourEmploi } from '@/features/codes-journaliers/api';
 import { heuresEffectueesPourSeance, seanceEstTerminee } from '@/lib/calculHeures';
-import { bornesCreneau } from '@/lib/creneaux';
+import { bornesCreneau, tousLesCreneaux } from '@/lib/creneaux';
+import { JOURS } from '@/constants/enums';
 import type { TypeCursus } from '@/types';
 
 // ── Chargement de l'emploi du temps (vierge si nouveau) ────────────
@@ -111,19 +113,31 @@ export async function getEnseignantsDisponibles(
   jour: string,
   creneau: string
 ): Promise<EnseignantDisponible[]> {
-  const campagne = await getDerniereCampagne();
-  if (!campagne) return [];
+  // Chaque enseignant est jugé sur SA propre dernière campagne (celle à
+  // laquelle il a réellement été rattaché), pas sur "la dernière
+  // campagne" au sens global — voir le commentaire de
+  // getDernieresCampagnesParEnseignant pour le bug que ça évite.
+  const campagnesParEnseignant = await getDernieresCampagnesParEnseignant();
+  if (campagnesParEnseignant.size === 0) return [];
 
   const { data, error } = await supabase
     .from('disponibilites')
-    .select('enseignant:enseignants(id, nom, matricule)')
-    .eq('campagne_id', campagne.id)
+    .select('enseignant_id, campagne_id, enseignant:enseignants(id, nom, matricule)')
     .eq('jour', jour)
     .eq('creneau', creneau)
     .eq('disponible', true);
   if (error) throw error;
 
-  return ((data ?? []) as any[]).map((d) => d.enseignant).filter(Boolean);
+  const resultats: EnseignantDisponible[] = [];
+  for (const d of (data ?? []) as any[]) {
+    if (
+      d.enseignant &&
+      campagnesParEnseignant.get(d.enseignant_id) === d.campagne_id
+    ) {
+      resultats.push(d.enseignant);
+    }
+  }
+  return resultats;
 }
 
 export async function listTousLesEnseignants(): Promise<
@@ -466,6 +480,27 @@ function dureeNominaleCreneau(creneau: string): number {
   return creneau === '14h-17h' ? 3 : 4;
 }
 
+// Durée (heures) du plus petit créneau existant — sert de seuil pour
+// décider qu'une UE/tronc est "achevé" : voir estAcheve ci-dessous.
+function dureeCreneauMinimale(): number {
+  const durees = tousLesCreneaux().map(dureeNominaleCreneau);
+  return durees.length > 0 ? Math.min(...durees) : 3;
+}
+
+// Règle demandée : une UE (ou un tronc) n'est PAS "achevé" simplement
+// quand les heures effectuées atteignent/dépassent le volume horaire —
+// elle l'est dès que son solde d'heures RESTANTES devient inférieur à la
+// durée du plus petit créneau existant, puisqu'aucun créneau ne peut
+// alors plus être programmé sans dépasser le volume horaire. Exemple
+// avec les créneaux 08h-12h (4h) et 14h-17h (3h) : s'il reste 4h, on
+// peut encore programmer un 08h-12h ; s'il reste 3h, on peut encore
+// programmer un 14h-17h ; s'il reste moins de 3h, plus aucun créneau ne
+// convient — le cours est achevé.
+function estAcheve(heuresEffectuees: number, volumeHoraire: number | null): boolean {
+  if (volumeHoraire == null) return false;
+  return volumeHoraire - heuresEffectuees < dureeCreneauMinimale();
+}
+
 // ── Heures "validées" (= réellement effectuées) par séance ─────────
 // Utilisé partout où on affiche "X/Yh" au fil de la programmation ou
 // sur le PDF (GenererEDTPage ET ValidationEDTPage) : PAS lié au statut
@@ -611,6 +646,39 @@ export async function getHeuresValideesTroncPourPdf(
       cumul += contributionSeance(s, maintenant);
       resultat.set(s.id, cumul);
     }
+  }
+  return resultat;
+}
+
+// Équivalent de getHeuresTotalesValideesParOffre, mais pour un tronc
+// commun (clé = tronc_commun_id au lieu de offre_id) — utilisé par la
+// génération automatique pour savoir si le quota horaire d'un tronc
+// commun est déjà achevé.
+export async function getHeuresTotalesValideesParTronc(
+  troncCommunIds: string[]
+): Promise<Map<string, number>> {
+  if (troncCommunIds.length === 0) return new Map();
+
+  const { data } = await supabase
+    .from('seances_edt')
+    .select('id, tronc_commun_id, jour, creneau, heure_ouverture, heure_fermeture, semaine')
+    .in('tronc_commun_id', troncCommunIds);
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000); // Cameroun UTC+1
+
+  const parTronc = new Map<string, any[]>();
+  for (const s of (data ?? []) as any[]) {
+    if (!parTronc.has(s.tronc_commun_id)) parTronc.set(s.tronc_commun_id, []);
+    parTronc.get(s.tronc_commun_id)!.push(s);
+  }
+
+  const resultat = new Map<string, number>();
+  for (const [troncId, liste] of parTronc) {
+    let cumul = 0;
+    for (const s of trierChronologiquement(liste)) {
+      cumul += contributionSeance(s, maintenant);
+    }
+    resultat.set(troncId, cumul);
   }
   return resultat;
 }
@@ -1330,6 +1398,936 @@ export async function enregistrerChangementsEnLot(
       .upsert(lignesTronc, { onConflict: 'id' });
     if (error) throw error;
   }
+}
+
+// ── Génération automatique de l'emploi du temps (v2) ────────────────
+// Reprise après une v1 retirée pour deux raisons : lenteur (un
+// nettoyage lancé à CHAQUE chargement d'écran relisait tout
+// l'historique de chaque UE/tronc du groupe) et un algorithme qui
+// rescannait toute la grille de créneaux pour chaque item à chaque
+// tour. Cette version :
+//   - ne nettoie les séances devenues superflues (quota déjà achevé)
+//     QU'AU MOMENT DE GÉNÉRER, jamais au chargement de la page ;
+//   - borne le placement par item à SES seuls créneaux réellement
+//     disponibles (déclarés par son enseignant), au lieu de rescanner
+//     toute la grille à chaque tentative ;
+//   - ignore complètement les salles (seule la disponibilité de
+//     l'enseignant compte) ;
+//   - résout la disponibilité de chaque enseignant sur SA propre
+//     dernière campagne (pas "la dernière campagne" au sens global —
+//     un enseignant peut avoir répondu à une campagne antérieure à une
+//     autre campagne plus récente concernant un groupe différent).
+//
+// Contraintes dures : quota horaire non dépassé, créneau déclaré
+// disponible par l'enseignant attitré, pas de double réservation
+// enseignant, pas de double réservation spécialité, samedi après-midi
+// toujours libre.
+// Objectif (best-effort, pas une contrainte dure) : prioriser les
+// troncs communs (le plus de filières d'abord), occuper le maximum de
+// créneaux, garantir autant que possible au moins une séance à chaque
+// UE en cours — sinon le signaler par spécialité avec la raison exacte.
+export interface ItemNonPlace {
+  nom: string;
+  raison: string;
+  // Spécialités concernées par cette UE/ce tronc non programmé — pour
+  // pouvoir signaler, une fois une spécialité précise affichée sur
+  // GenererEDTPage, les UE en cours qu'elle n'a pas pu obtenir.
+  specialiteIds: string[];
+}
+
+export interface ResultatGenerationAuto {
+  nbSeancesTroncPlacees: number;
+  nbSeancesSpecialitesPlacees: number;
+  nonPlacees: ItemNonPlace[];
+}
+
+// Supabase/PostgREST plafonne chaque requête à 1000 lignes par défaut —
+// silencieusement (pas d'erreur, juste les lignes suivantes manquantes).
+// Cette fonction récupère TOUTES les lignes, page par page.
+export async function recupererToutesLesLignes<T>(
+  requete: (debut: number, fin: number) => PromiseLike<{ data: T[] | null; error: any }>
+): Promise<T[]> {
+  const TAILLE_PAGE = 1000;
+  const resultat: T[] = [];
+  let debut = 0;
+  for (;;) {
+    const { data, error } = await requete(debut, debut + TAILLE_PAGE - 1);
+    if (error) throw error;
+    const lot = data ?? [];
+    resultat.push(...lot);
+    if (lot.length < TAILLE_PAGE) break;
+    debut += TAILLE_PAGE;
+  }
+  return resultat;
+}
+
+// ── Nettoyage des séances devenues superflues (quota déjà achevé) ──
+// Les heures "validées" comptent, pour une séance pas encore due
+// (jamais ouverte, échéance pas encore passée), sa durée nominale
+// complète par anticipation (cf. contributionSeance) — donc dès qu'une
+// UE/tronc a atteint son volume horaire, toute séance PLANIFIÉE MAIS
+// PAS ENCORE DUE au-delà de ce point est désormais inutile. Appelée
+// UNIQUEMENT au moment de générer (jamais au chargement de l'écran,
+// pour ne jamais ralentir la simple consultation) — voir le
+// commentaire en tête de fichier sur la v1 retirée pour le détail du
+// problème de performance que ça évite.
+//
+// PERF : on ne regarde d'abord que la semaine affichée (requête
+// indexée et bornée) pour repérer les quelques UE/troncs qui ont, cette
+// semaine précise, une séance pas encore due — ce n'est que pour ces
+// candidats qu'on va chercher leur historique complet.
+async function nettoyerSeancesQuotaAtteint(
+  specialiteIds: string[],
+  semaine: string
+): Promise<number> {
+  if (specialiteIds.length === 0) return 0;
+
+  // Requêtes volontairement SANS jointure imbriquée (.select('ue:ues(...)'))
+  // — ce type d'embed PostgREST peut, selon les contraintes de clé
+  // étrangère réellement déclarées en base, renvoyer silencieusement un
+  // lien vide (ue: null) sans la moindre erreur.
+  const { data: offresData, error: offresError } = await supabase
+    .from('offres')
+    .select('id, ue_id')
+    .in('specialite_id', specialiteIds);
+  if (offresError) throw offresError;
+  const offres = (offresData ?? []) as any[];
+  if (offres.length === 0) return 0;
+
+  const ueIds = Array.from(new Set(offres.map((o) => o.ue_id)));
+  const { data: liensData, error: liensError } = await supabase
+    .from('troncs_communs_ues')
+    .select('ue_id, tronc_commun_id')
+    .in('ue_id', ueIds);
+  if (liensError) throw liensError;
+
+  const troncIdParUe = new Map<string, string>();
+  for (const l of (liensData ?? []) as any[]) {
+    troncIdParUe.set(l.ue_id, l.tronc_commun_id);
+  }
+  const offresStandaloneIds = offres
+    .filter((o) => !troncIdParUe.has(o.ue_id))
+    .map((o) => o.id);
+  const troncIds = Array.from(new Set(Array.from(troncIdParUe.values())));
+
+  if (offresStandaloneIds.length === 0 && troncIds.length === 0) return 0;
+
+  const orParts: string[] = [];
+  if (offresStandaloneIds.length > 0) {
+    orParts.push(`offre_id.in.(${offresStandaloneIds.join(',')})`);
+  }
+  if (troncIds.length > 0) {
+    orParts.push(`tronc_commun_id.in.(${troncIds.join(',')})`);
+  }
+  const { data: semaineData, error: semaineError } = await supabase
+    .from('seances_edt')
+    .select('offre_id, tronc_commun_id, jour, creneau, heure_ouverture, semaine')
+    .eq('semaine', semaine)
+    .or(orParts.join(','));
+  if (semaineError) throw semaineError;
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000); // Cameroun UTC+1
+  const candidatsOffreIds = new Set<string>();
+  const candidatsTroncIds = new Set<string>();
+  for (const s of (semaineData ?? []) as any[]) {
+    const pasEncoreDue =
+      !s.heure_ouverture &&
+      !seanceEstTerminee(s.semaine, s.jour, s.creneau, maintenant);
+    if (!pasEncoreDue) continue;
+    if (s.offre_id) candidatsOffreIds.add(s.offre_id);
+    if (s.tronc_commun_id) candidatsTroncIds.add(s.tronc_commun_id);
+  }
+  if (candidatsOffreIds.size === 0 && candidatsTroncIds.size === 0) return 0;
+
+  const ueIdsAVerifier = Array.from(
+    new Set(
+      offres
+        .filter((o) => candidatsOffreIds.has(o.id))
+        .map((o) => o.ue_id)
+        .concat(
+          Array.from(troncIdParUe.entries())
+            .filter(([, troncId]) => candidatsTroncIds.has(troncId))
+            .map(([ueId]) => ueId)
+        )
+    )
+  );
+  const { data: uesData, error: uesError } = await supabase
+    .from('ues')
+    .select('id, volume_horaire')
+    .in('id', ueIdsAVerifier);
+  if (uesError) throw uesError;
+  const volumeParUe = new Map<string, number | null>(
+    ((uesData ?? []) as any[]).map((u) => [u.id, u.volume_horaire ?? null])
+  );
+
+  const volumeParOffre = new Map<string, number | null>();
+  for (const o of offres) {
+    if (candidatsOffreIds.has(o.id)) {
+      volumeParOffre.set(o.id, volumeParUe.get(o.ue_id) ?? null);
+    }
+  }
+  const volumeParTronc = new Map<string, number | null>();
+  for (const [ueId, troncId] of troncIdParUe) {
+    if (candidatsTroncIds.has(troncId) && !volumeParTronc.has(troncId)) {
+      volumeParTronc.set(troncId, volumeParUe.get(ueId) ?? null);
+    }
+  }
+
+  let total = 0;
+  const candidatsOffreIdsArr = Array.from(candidatsOffreIds);
+  if (candidatsOffreIdsArr.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        'id, offre_id, jour, creneau, heure_ouverture, heure_fermeture, semaine'
+      )
+      .in('offre_id', candidatsOffreIdsArr);
+    if (error) throw error;
+    total += await supprimerSeancesExcedentaires(
+      (data ?? []) as any[],
+      (s) => s.offre_id,
+      volumeParOffre
+    );
+  }
+
+  const candidatsTroncIdsArr = Array.from(candidatsTroncIds);
+  if (candidatsTroncIdsArr.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        'id, tronc_commun_id, jour, creneau, heure_ouverture, heure_fermeture, semaine'
+      )
+      .in('tronc_commun_id', candidatsTroncIdsArr);
+    if (error) throw error;
+    total += await supprimerSeancesExcedentaires(
+      (data ?? []) as any[],
+      (s) => s.tronc_commun_id,
+      volumeParTronc
+    );
+  }
+
+  return total;
+}
+
+async function supprimerSeancesExcedentaires(
+  lignes: any[],
+  cleDe: (s: any) => string,
+  volumeParCle: Map<string, number | null>
+): Promise<number> {
+  const parCle = new Map<string, any[]>();
+  for (const s of lignes) {
+    const cle = cleDe(s);
+    if (!cle) continue;
+    if (!parCle.has(cle)) parCle.set(cle, []);
+    parCle.get(cle)!.push(s);
+  }
+
+  const maintenant = new Date(Date.now() + 60 * 60 * 1000); // Cameroun UTC+1
+  const idsASupprimer: string[] = [];
+
+  for (const [cle, liste] of parCle) {
+    const volumeHoraire = volumeParCle.get(cle);
+    if (volumeHoraire == null) continue; // volume inconnu — impossible de juger "achevé"
+    let cumul = 0;
+    for (const s of trierChronologiquement(liste)) {
+      const dejaAchevee = estAcheve(cumul, volumeHoraire);
+      const pasEncoreDue =
+        !s.heure_ouverture &&
+        !seanceEstTerminee(s.semaine, s.jour, s.creneau, maintenant);
+      if (dejaAchevee && pasEncoreDue) {
+        idsASupprimer.push(s.id);
+        continue; // superflue — ne compte pas dans le cumul, elle disparaît
+      }
+      cumul += contributionSeance(s, maintenant);
+    }
+  }
+
+  if (idsASupprimer.length === 0) return 0;
+  const { error } = await supabase
+    .from('seances_edt')
+    .delete()
+    .in('id', idsASupprimer);
+  if (error) throw error;
+  return idsASupprimer.length;
+}
+
+export async function genererEmploiDuTempsAutomatique(
+  specialiteIds: string[],
+  semestre: string,
+  semaine: string
+): Promise<ResultatGenerationAuto> {
+  const resultatVide: ResultatGenerationAuto = {
+    nbSeancesTroncPlacees: 0,
+    nbSeancesSpecialitesPlacees: 0,
+    nonPlacees: [],
+  };
+  if (specialiteIds.length === 0) return resultatVide;
+
+  // 0) Nettoyage — uniquement ici, jamais au chargement de la page.
+  await nettoyerSeancesQuotaAtteint(specialiteIds, semaine);
+
+  const joursDispo = JOURS;
+  const creneauxDispo = tousLesCreneaux();
+  if (creneauxDispo.length === 0) return resultatVide;
+
+  // 1) Offres du groupe POUR CE SEMESTRE UNIQUEMENT (une spécialité peut
+  // avoir des offres pour plusieurs semestres — sans ce filtre, des UE
+  // d'un autre semestre se mélangent à celles demandées).
+  const { data: offresData, error: offresError } = await supabase
+    .from('offres')
+    .select('id, ue_id, specialite_id')
+    .in('specialite_id', specialiteIds)
+    .eq('semestre', semestre);
+  if (offresError) throw offresError;
+  const offres = (offresData ?? []) as any[];
+  if (offres.length === 0) return resultatVide;
+
+  const ueIds = Array.from(new Set(offres.map((o) => o.ue_id)));
+  const { data: uesData, error: uesError } = await supabase
+    .from('ues')
+    .select('id, nom, volume_horaire')
+    .in('id', ueIds);
+  if (uesError) throw uesError;
+  const ueParId = new Map<string, { nom: string; volume_horaire: number | null }>(
+    ((uesData ?? []) as any[]).map((u) => [
+      u.id,
+      { nom: u.nom, volume_horaire: u.volume_horaire ?? null },
+    ])
+  );
+
+  // 2) Liens tronc commun pour les UE du groupe (sans jointure imbriquée).
+  const { data: liensLocauxData, error: liensError } = await supabase
+    .from('troncs_communs_ues')
+    .select('ue_id, tronc_commun_id')
+    .in('ue_id', ueIds);
+  if (liensError) throw liensError;
+  const troncIdParUeLocal = new Map<string, string>();
+  for (const l of (liensLocauxData ?? []) as any[]) {
+    troncIdParUeLocal.set(l.ue_id, l.tronc_commun_id);
+  }
+  const troncIdsLocaux = Array.from(new Set(Array.from(troncIdParUeLocal.values())));
+
+  // 3) Pour chaque tronc concerné : son enseignant attitré (table
+  // troncs_communs directement — pas de jointure) et le nombre de
+  // filières distinctes qu'il regroupe (calculé sur TOUTES ses UE
+  // sœurs, même hors du groupe actuellement chargé — un tronc commun
+  // peut relier des spécialités d'autres cycles/écoles, sa vraie portée
+  // doit être connue pour bien le prioriser).
+  interface InfoTronc {
+    nom: string;
+    enseignantId: string | null;
+    volumeHoraire: number | null;
+    nbFilieres: number;
+  }
+  const infoParTronc = new Map<string, InfoTronc>();
+  if (troncIdsLocaux.length > 0) {
+    const { data: troncsData, error: troncsError } = await supabase
+      .from('troncs_communs')
+      .select('id, nom, enseignant_id')
+      .in('id', troncIdsLocaux);
+    if (troncsError) throw troncsError;
+
+    const { data: soeursData, error: soeursError } = await supabase
+      .from('troncs_communs_ues')
+      .select('ue_id, tronc_commun_id')
+      .in('tronc_commun_id', troncIdsLocaux);
+    if (soeursError) throw soeursError;
+    const ueIdsSoeursParTronc = new Map<string, Set<string>>();
+    const ueIdsSoeurs = new Set<string>();
+    for (const l of (soeursData ?? []) as any[]) {
+      if (!ueIdsSoeursParTronc.has(l.tronc_commun_id)) {
+        ueIdsSoeursParTronc.set(l.tronc_commun_id, new Set());
+      }
+      ueIdsSoeursParTronc.get(l.tronc_commun_id)!.add(l.ue_id);
+      ueIdsSoeurs.add(l.ue_id);
+    }
+
+    const { data: offresSoeursData, error: offresSoeursError } = await supabase
+      .from('offres')
+      .select('ue_id, specialite_id')
+      .in('ue_id', Array.from(ueIdsSoeurs));
+    if (offresSoeursError) throw offresSoeursError;
+    const specialiteIdsParUeSoeur = new Map<string, Set<string>>();
+    const specialiteIdsSoeurs = new Set<string>();
+    for (const o of (offresSoeursData ?? []) as any[]) {
+      if (!specialiteIdsParUeSoeur.has(o.ue_id)) {
+        specialiteIdsParUeSoeur.set(o.ue_id, new Set());
+      }
+      specialiteIdsParUeSoeur.get(o.ue_id)!.add(o.specialite_id);
+      specialiteIdsSoeurs.add(o.specialite_id);
+    }
+
+    const { data: specialitesSoeursData, error: specialitesSoeursError } =
+      await supabase
+        .from('specialites')
+        .select('id, filiere_id')
+        .in('id', Array.from(specialiteIdsSoeurs));
+    if (specialitesSoeursError) throw specialitesSoeursError;
+    const filiereIdParSpecialite = new Map<string, string>(
+      ((specialitesSoeursData ?? []) as any[]).map((s) => [s.id, s.filiere_id])
+    );
+
+    for (const t of (troncsData ?? []) as any[]) {
+      const ueIdsSoeursDeCeTronc = ueIdsSoeursParTronc.get(t.id) ?? new Set();
+      const filiereIds = new Set<string>();
+      let volumeHoraire: number | null = null;
+      for (const ueIdSoeur of ueIdsSoeursDeCeTronc) {
+        if (volumeHoraire == null) {
+          volumeHoraire = ueParId.get(ueIdSoeur)?.volume_horaire ?? null;
+        }
+        for (const specId of specialiteIdsParUeSoeur.get(ueIdSoeur) ?? []) {
+          const filiereId = filiereIdParSpecialite.get(specId);
+          if (filiereId) filiereIds.add(filiereId);
+        }
+      }
+      infoParTronc.set(t.id, {
+        nom: t.nom ?? '',
+        enseignantId: t.enseignant_id ?? null,
+        volumeHoraire,
+        nbFilieres: filiereIds.size,
+      });
+    }
+  }
+  const heuresParTronc = await getHeuresTotalesValideesParTronc(troncIdsLocaux);
+
+  // 4) Offres "spécialité seule" (UE sans tronc commun) + leur
+  // enseignant attitré (attribution active).
+  const offresStandalone = offres.filter((o) => !troncIdParUeLocal.has(o.ue_id));
+  const offreIdsStandalone = offresStandalone.map((o) => o.id);
+  let enseignantParOffre = new Map<string, string>();
+  if (offreIdsStandalone.length > 0) {
+    const { data: attributionsData, error: attribError } = await supabase
+      .from('attributions')
+      .select('offre_id, enseignant_id')
+      .in('offre_id', offreIdsStandalone)
+      .eq('statut', 'actif');
+    if (attribError) throw attribError;
+    enseignantParOffre = new Map(
+      (attributionsData ?? []).map((a: any) => [a.offre_id, a.enseignant_id])
+    );
+  }
+  const heuresParOffre = await getHeuresTotalesValideesParOffre(offreIdsStandalone);
+
+  // 5) Construction de la liste des items à placer (avant de connaître
+  // les disponibilités — elles ne sont interrogées que pour les
+  // enseignants réellement concernés, voir étape 6).
+  interface ItemAPlacer {
+    type: 'tronc' | 'offre';
+    id: string;
+    nom: string;
+    enseignantId: string;
+    representantOffreId: string;
+    representantSpecialiteId: string;
+    volumeHoraire: number | null;
+    heuresEffectuees: number;
+    nbFilieres: number;
+    specialitesDuGroupe: string[];
+  }
+  const items: ItemAPlacer[] = [];
+  const ignorees: ItemNonPlace[] = [];
+
+  for (const troncId of troncIdsLocaux) {
+    const info = infoParTronc.get(troncId);
+    if (!info) continue;
+    const heuresEffectuees = heuresParTronc.get(troncId) ?? 0;
+    if (estAcheve(heuresEffectuees, info.volumeHoraire)) {
+      continue; // quota déjà achevé — on ne le programme pas
+    }
+    const offresDuTronc = offres.filter(
+      (o) => troncIdParUeLocal.get(o.ue_id) === troncId
+    );
+    if (!info.enseignantId) {
+      ignorees.push({
+        nom: info.nom || 'Tronc commun',
+        raison: 'Aucun enseignant attitré à ce tronc commun.',
+        specialiteIds: offresDuTronc.map((o) => o.specialite_id),
+      });
+      continue;
+    }
+    const offreRepresentante = offresDuTronc[0];
+    if (!offreRepresentante) continue;
+    items.push({
+      type: 'tronc',
+      id: troncId,
+      nom: info.nom || 'Tronc commun',
+      enseignantId: info.enseignantId,
+      representantOffreId: offreRepresentante.id,
+      representantSpecialiteId: offreRepresentante.specialite_id,
+      volumeHoraire: info.volumeHoraire,
+      heuresEffectuees,
+      nbFilieres: info.nbFilieres,
+      specialitesDuGroupe: offresDuTronc.map((o) => o.specialite_id),
+    });
+  }
+
+  for (const o of offresStandalone) {
+    const heuresEffectuees = heuresParOffre.get(o.id) ?? 0;
+    const volumeHoraire = ueParId.get(o.ue_id)?.volume_horaire ?? null;
+    if (estAcheve(heuresEffectuees, volumeHoraire)) {
+      continue; // quota déjà achevé
+    }
+    const enseignantId = enseignantParOffre.get(o.id);
+    if (!enseignantId) {
+      ignorees.push({
+        nom: ueParId.get(o.ue_id)?.nom ?? 'UE',
+        raison: 'Aucun enseignant attitré (attribution active manquante).',
+        specialiteIds: [o.specialite_id],
+      });
+      continue;
+    }
+    items.push({
+      type: 'offre',
+      id: o.id,
+      nom: ueParId.get(o.ue_id)?.nom ?? 'UE',
+      enseignantId,
+      representantOffreId: o.id,
+      representantSpecialiteId: o.specialite_id,
+      volumeHoraire,
+      heuresEffectuees,
+      nbFilieres: 0,
+      specialitesDuGroupe: [o.specialite_id],
+    });
+  }
+
+  // Spécialités seules EN PREMIER (priorité demandée par l'utilisateur),
+  // troncs communs ensuite — le choix FIN de l'ordre des troncs entre eux
+  // se fait par vague plus bas, selon la couverture des spécialités
+  // encore non programmées (voir ordreVague), pas ici.
+  items.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'tronc' ? 1 : -1;
+    if (a.type === 'tronc') return b.nbFilieres - a.nbFilieres;
+    return a.nom.localeCompare(b.nom);
+  });
+
+  if (items.length === 0) {
+    return { ...resultatVide, nonPlacees: ignorees };
+  }
+
+  // 6) Disponibilités — UNIQUEMENT pour les enseignants des items
+  // retenus (jamais toute l'école), chacun sur SA PROPRE dernière
+  // campagne (pas "la dernière campagne" au sens global : un enseignant
+  // peut avoir répondu à une campagne antérieure à une campagne plus
+  // récente lancée entre-temps pour un groupe différent).
+  const enseignantIdsConcernes = Array.from(
+    new Set(items.map((item) => item.enseignantId))
+  );
+  const disponibleSet = new Set<string>(); // "enseignantId|jour|creneau"
+  const enseignantsAyantRepondu = new Set<string>();
+  const campagnesParEnseignant = await getDernieresCampagnesParEnseignant(
+    enseignantIdsConcernes
+  );
+  if (campagnesParEnseignant.size > 0) {
+    const disposData = await recupererToutesLesLignes<any>((debut, fin) =>
+      supabase
+        .from('disponibilites')
+        .select('enseignant_id, campagne_id, jour, creneau, disponible')
+        .in('enseignant_id', enseignantIdsConcernes)
+        .range(debut, fin)
+    );
+    for (const d of disposData) {
+      if (campagnesParEnseignant.get(d.enseignant_id) !== d.campagne_id) continue;
+      enseignantsAyantRepondu.add(d.enseignant_id);
+      if (d.disponible) {
+        disponibleSet.add(`${d.enseignant_id}|${d.jour}|${d.creneau}`);
+      }
+    }
+  }
+
+  // 7) Photo de la semaine entière (toutes spécialités/troncs
+  // confondus) — enseignant et spécialité seulement, PAS la salle
+  // (demande explicite : la salle n'est jamais un critère de
+  // placement, une salle est juste attribuée pour remplir le champ).
+  const specialiteIdParOffreId = new Map<string, string>(
+    offres.map((o) => [o.id, o.specialite_id])
+  );
+  const specialitesDuGroupeParTronc = new Map<string, Set<string>>();
+  for (const o of offres) {
+    const troncId = troncIdParUeLocal.get(o.ue_id);
+    if (!troncId) continue;
+    if (!specialitesDuGroupeParTronc.has(troncId)) {
+      specialitesDuGroupeParTronc.set(troncId, new Set());
+    }
+    specialitesDuGroupeParTronc.get(troncId)!.add(o.specialite_id);
+  }
+
+  const semaineData = await recupererToutesLesLignes<any>((debut, fin) =>
+    supabase
+      .from('seances_edt')
+      .select('jour, creneau, enseignant_id, tronc_commun_id, offre_id')
+      .eq('semaine', semaine)
+      .range(debut, fin)
+  );
+
+  const occupiedTeacherSlot = new Set<string>(); // "enseignantId|jour|creneau"
+  const specialiteSlotOccupied = new Set<string>(); // "specialiteId|jour|creneau"
+
+  for (const s of (semaineData ?? []) as any[]) {
+    const cleCreneau = `${s.jour}|${s.creneau}`;
+    if (s.enseignant_id) {
+      occupiedTeacherSlot.add(`${s.enseignant_id}|${cleCreneau}`);
+    }
+    if (s.offre_id) {
+      const specId = specialiteIdParOffreId.get(s.offre_id);
+      if (specId) specialiteSlotOccupied.add(`${specId}|${cleCreneau}`);
+    }
+    if (s.tronc_commun_id) {
+      const specs = specialitesDuGroupeParTronc.get(s.tronc_commun_id);
+      if (specs) {
+        for (const specId of specs) {
+          specialiteSlotOccupied.add(`${specId}|${cleCreneau}`);
+        }
+      }
+    }
+  }
+
+  // Spécialités déjà "programmées" cette semaine (au moins une séance,
+  // tronc ou offre, déjà présente avant même de lancer la génération) —
+  // sert de point de départ à l'objectif "maximum de spécialités
+  // programmées" ci-dessous : on ne veut pas compter deux fois une
+  // spécialité déjà couverte, mais bien prioriser celles qui ne le sont
+  // pas encore.
+  const specialitesCouvertes = new Set<string>();
+  for (const cle of specialiteSlotOccupied) {
+    specialitesCouvertes.add(cle.split('|')[0]);
+  }
+
+  // 8) Une salle "par défaut" par item — jamais un critère de blocage,
+  // juste une valeur à renseigner (contrainte de schéma).
+  const { data: sallesData, error: sallesError } = await supabase
+    .from('salles')
+    .select('id, specialite_par_defaut_id')
+    .order('code_salle');
+  if (sallesError) throw sallesError;
+  const salles = (sallesData ?? []) as {
+    id: string;
+    specialite_par_defaut_id: string | null;
+  }[];
+  if (salles.length === 0) {
+    return {
+      ...resultatVide,
+      nonPlacees: [
+        { nom: 'Toutes les UE', raison: 'Aucune salle enregistrée.', specialiteIds },
+        ...ignorees,
+      ],
+    };
+  }
+  const salleParDefautDeSpecialite = new Map<string, string>();
+  for (const s of salles) {
+    if (s.specialite_par_defaut_id) {
+      salleParDefautDeSpecialite.set(s.specialite_par_defaut_id, s.id);
+    }
+  }
+  const salleDeSecours = salles[0].id;
+  function salleDeLItem(specialiteId: string): string {
+    return salleParDefautDeSpecialite.get(specialiteId) ?? salleDeSecours;
+  }
+
+  // 9) Grille des créneaux (samedi après-midi toujours exclu).
+  function estCreneauApresMidi(creneau: string): boolean {
+    const bornes = bornesCreneau(creneau);
+    if (bornes) return bornes.debut >= 12 * 60;
+    const heureDebut = parseInt(creneau, 10);
+    return !Number.isNaN(heureDebut) && heureDebut >= 12;
+  }
+  const slots: { jour: string; creneau: string }[] = [];
+  for (const jour of joursDispo) {
+    for (const creneau of creneauxDispo) {
+      if (jour === 'Samedi' && estCreneauApresMidi(creneau)) continue;
+      slots.push({ jour, creneau });
+    }
+  }
+
+  // 10) CSP glouton PAR VAGUES, borné PAR ITEM : au lieu de rescanner
+  // toute la grille de créneaux à chaque tentative de placement, chaque
+  // item ne considère QUE ses propres créneaux réellement disponibles
+  // (déclarés par son enseignant) — une liste en général bien plus
+  // courte que la grille complète. À chaque vague, dans l'ordre de
+  // priorité, chaque item dont le quota n'est pas atteint tente
+  // d'obtenir UNE séance de plus parmi CETTE liste ; on répète les
+  // vagues jusqu'à ce qu'une vague entière ne place plus rien (quota
+  // atteint partout, ou plus aucun créneau/enseignant/spécialité libre
+  // parmi les créneaux disponibles de chacun).
+  const slotsDisponiblesParItem = new Map<string, { jour: string; creneau: string }[]>();
+  for (const item of items) {
+    slotsDisponiblesParItem.set(
+      item.id,
+      slots.filter((s) => disponibleSet.has(`${item.enseignantId}|${s.jour}|${s.creneau}`))
+    );
+  }
+
+  const assignations: AssignationLot[] = [];
+  let nbTroncPlacees = 0;
+  let nbSpePlacees = 0;
+
+  // Essaie les créneaux de `triesOrdonnes` DANS CET ORDRE (déjà trié par
+  // pertinence par l'appelant — voir la boucle de vagues plus bas) et
+  // revérifie l'occupation EN DIRECT à chaque tentative : un autre item
+  // de la MÊME vague, traité juste avant, a pu entre-temps prendre l'un
+  // de ces créneaux.
+  function placerItem(
+    item: ItemAPlacer,
+    triesOrdonnes: { jour: string; creneau: string }[]
+  ): boolean {
+    const salleId = salleDeLItem(item.representantSpecialiteId);
+    for (const { jour, creneau } of triesOrdonnes) {
+      const cleCreneau = `${jour}|${creneau}`;
+      if (occupiedTeacherSlot.has(`${item.enseignantId}|${cleCreneau}`)) continue;
+      const specialiteOccupee = item.specialitesDuGroupe.some((specId) =>
+        specialiteSlotOccupied.has(`${specId}|${cleCreneau}`)
+      );
+      if (specialiteOccupee) continue;
+
+      assignations.push({
+        specialiteId: item.representantSpecialiteId,
+        offreId: item.representantOffreId,
+        enseignantId: item.enseignantId,
+        salleId,
+        jour,
+        creneau,
+        seanceIdExistante: null,
+      });
+      occupiedTeacherSlot.add(`${item.enseignantId}|${cleCreneau}`);
+      for (const specId of item.specialitesDuGroupe) {
+        specialiteSlotOccupied.add(`${specId}|${cleCreneau}`);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  const heuresProjetees = new Map<string, number>(
+    items.map((item) => [item.id, item.heuresEffectuees])
+  );
+  const nbSeancesPlaceesParItem = new Map<string, number>();
+
+  function quotaAtteint(item: ItemAPlacer): boolean {
+    return estAcheve(heuresProjetees.get(item.id) ?? 0, item.volumeHoraire);
+  }
+
+  let progres = true;
+  let vague = 0;
+  // Borne de sécurité anti-boucle : le nombre maximal de séances qu'un
+  // seul item pourrait obtenir est la taille de SA liste de créneaux
+  // disponibles — jamais plus, donc ce plafond suffit toujours.
+  const maxVagues =
+    Math.max(0, ...Array.from(slotsDisponiblesParItem.values()).map((l) => l.length)) + 1;
+  while (progres && vague < maxVagues) {
+    progres = false;
+    vague++;
+
+    const itemsActifs = items.filter((item) => !quotaAtteint(item));
+    if (itemsActifs.length === 0) break;
+
+    // Pour CETTE vague : les créneaux encore réellement libres de
+    // chaque item actif (dépend de l'occupation au début de la vague —
+    // affiné en direct dans placerItem si un item précédent de la même
+    // vague vient d'en prendre un).
+    const libresParItem = new Map<string, { jour: string; creneau: string }[]>();
+    for (const item of itemsActifs) {
+      // Solde d'heures restantes à cet instant : un créneau plus long que
+      // ce solde ferait dépasser le volume horaire (ex. : il ne reste que
+      // 3h, le créneau 08h-12h de 4h n'est plus autorisé, seul un
+      // créneau de 3h type 14h-17h convient encore).
+      const resteItem =
+        item.volumeHoraire == null
+          ? Infinity
+          : item.volumeHoraire - (heuresProjetees.get(item.id) ?? 0);
+      const libres = (slotsDisponiblesParItem.get(item.id) ?? []).filter(
+        ({ jour, creneau }) => {
+          if (dureeNominaleCreneau(creneau) > resteItem) return false;
+          const cle = `${jour}|${creneau}`;
+          if (occupiedTeacherSlot.has(`${item.enseignantId}|${cle}`)) return false;
+          return !item.specialitesDuGroupe.some((specId) =>
+            specialiteSlotOccupied.has(`${specId}|${cle}`)
+          );
+        }
+      );
+      libresParItem.set(item.id, libres);
+    }
+
+    // Contention par créneau : combien d'items actifs pourraient encore
+    // vouloir ce créneau — sert à choisir, pour un item donné, le
+    // créneau le MOINS réclamé par les autres (heuristique LCV), pour
+    // ne pas lui faire perdre un créneau rare dont un autre item n'a
+    // aucune autre option.
+    const demandeParSlot = new Map<string, number>();
+    for (const libres of libresParItem.values()) {
+      for (const { jour, creneau } of libres) {
+        const cle = `${jour}|${creneau}`;
+        demandeParSlot.set(cle, (demandeParSlot.get(cle) ?? 0) + 1);
+      }
+    }
+
+    // Combien de spécialités NON ENCORE programmées (ni avant la
+    // génération, ni par une séance déjà placée pendant cette
+    // génération) un item ferait progresser s'il obtenait une séance —
+    // sert à choisir, parmi plusieurs troncs à égalité, celui qui ouvre
+    // le plus de spécialités encore à zéro séance (objectif demandé :
+    // maximiser le nombre de spécialités programmées, les troncs étant
+    // placés en fonction de cet objectif plutôt que de leur seul nombre
+    // de filières).
+    function nbSpecialitesNonCouvertes(item: ItemAPlacer): number {
+      let n = 0;
+      for (const specId of item.specialitesDuGroupe) {
+        if (!specialitesCouvertes.has(specId)) n++;
+      }
+      return n;
+    }
+
+    // Ordre de passage de la vague : l'item le plus CONTRAINT (le moins
+    // de créneaux encore valables) passe en premier (heuristique MRV) —
+    // sinon un item très flexible peut "gaspiller" un créneau qu'un
+    // autre, bien plus contraint, ne pouvait obtenir nulle part
+    // ailleurs, ce qui laisse des cases vides évitables. À nombre de
+    // créneaux égal : les SPÉCIALITÉS SEULES sont prioritaires sur les
+    // troncs communs (règle demandée), et entre deux troncs, celui qui
+    // ouvrirait le plus de spécialités encore non programmées passe
+    // devant (objectif : maximiser le nombre de spécialités
+    // programmées), le nombre de filières ne servant plus qu'à
+    // départager un reliquat d'égalité.
+    const ordreVague = [...itemsActifs].sort((a, b) => {
+      const nbA = libresParItem.get(a.id)?.length ?? 0;
+      const nbB = libresParItem.get(b.id)?.length ?? 0;
+      if (nbA !== nbB) return nbA - nbB;
+      if (a.type !== b.type) return a.type === 'tronc' ? 1 : -1;
+      if (a.type === 'tronc') {
+        const couvA = nbSpecialitesNonCouvertes(a);
+        const couvB = nbSpecialitesNonCouvertes(b);
+        if (couvA !== couvB) return couvB - couvA;
+        return b.nbFilieres - a.nbFilieres;
+      }
+      return a.nom.localeCompare(b.nom);
+    });
+
+    ordreVague.forEach((item, idx) => {
+      const libres = libresParItem.get(item.id) ?? [];
+      if (libres.length === 0) return;
+      const triesParDemandeCroissante = [...libres].sort((s1, s2) => {
+        const d1 = demandeParSlot.get(`${s1.jour}|${s1.creneau}`) ?? 0;
+        const d2 = demandeParSlot.get(`${s2.jour}|${s2.creneau}`) ?? 0;
+        return d1 - d2;
+      });
+      // Légère rotation entre créneaux à contention égale, pour ne pas
+      // toujours retenter exactement le même ordre d'une vague à
+      // l'autre (répartition un peu plus régulière dans la semaine).
+      const decalage = triesParDemandeCroissante.length > 0
+        ? (idx + vague) % triesParDemandeCroissante.length
+        : 0;
+      const triesOrdonnes = [
+        ...triesParDemandeCroissante.slice(decalage),
+        ...triesParDemandeCroissante.slice(0, decalage),
+      ];
+
+      const place = placerItem(item, triesOrdonnes);
+      if (!place) return;
+      progres = true;
+      for (const specId of item.specialitesDuGroupe) {
+        specialitesCouvertes.add(specId);
+      }
+      heuresProjetees.set(
+        item.id,
+        (heuresProjetees.get(item.id) ?? 0) +
+          dureeNominaleCreneau(assignations[assignations.length - 1].creneau)
+      );
+      nbSeancesPlaceesParItem.set(item.id, (nbSeancesPlaceesParItem.get(item.id) ?? 0) + 1);
+      if (item.type === 'tronc') nbTroncPlacees++;
+      else nbSpePlacees++;
+    });
+  }
+
+  for (const item of items) {
+    if ((nbSeancesPlaceesParItem.get(item.id) ?? 0) === 0 && !quotaAtteint(item)) {
+      const raison = !enseignantsAyantRepondu.has(item.enseignantId)
+        ? "L'enseignant attitré n'a pas encore renseigné ses disponibilités (aucun créneau ne peut lui être proposé)."
+        : 'Aucun créneau déclaré disponible par son enseignant qui soit encore libre cette semaine (enseignant ou spécialité déjà occupés sur les créneaux où il est disponible).';
+      ignorees.push({
+        nom: item.nom,
+        raison,
+        specialiteIds: item.specialitesDuGroupe,
+      });
+    }
+  }
+
+  // 11) Persistance — réutilise exactement le même chemin que la
+  // confection manuelle groupée.
+  if (assignations.length > 0) {
+    const emploiParSpecialite = await garantirEmploisPourGroupe(specialiteIds, semaine);
+    await enregistrerChangementsEnLot(assignations, [], emploiParSpecialite, semaine);
+    invaliderCacheSeancesGroupees(specialiteIds, semaine);
+  }
+
+  return {
+    nbSeancesTroncPlacees: nbTroncPlacees,
+    nbSeancesSpecialitesPlacees: nbSpePlacees,
+    nonPlacees: ignorees,
+  };
+}
+
+// ── Réinitialisation d'un groupe (cycle/semestre) pour une semaine ──
+// Vide, pour CE groupe de spécialités et CETTE semaine uniquement,
+// toutes les séances déjà programmées (cases "spécialité seule" ET
+// séances de tronc commun partagées par ce groupe) — utile pour
+// repartir d'une grille vide avant un nouvel essai de génération.
+// Retourne le nombre de séances supprimées.
+export async function reinitialiserEmploiDuTempsGroupe(
+  specialiteIds: string[],
+  semaine: string
+): Promise<number> {
+  if (specialiteIds.length === 0) return 0;
+
+  const { data: offresData, error: offresError } = await supabase
+    .from('offres')
+    .select('id, ue_id')
+    .in('specialite_id', specialiteIds);
+  if (offresError) throw offresError;
+  const ueIds = Array.from(
+    new Set(((offresData ?? []) as any[]).map((o) => o.ue_id))
+  );
+
+  let troncIds: string[] = [];
+  if (ueIds.length > 0) {
+    const { data: liens, error: liensError } = await supabase
+      .from('troncs_communs_ues')
+      .select('tronc_commun_id')
+      .in('ue_id', ueIds);
+    if (liensError) throw liensError;
+    troncIds = Array.from(
+      new Set(((liens ?? []) as any[]).map((l) => l.tronc_commun_id))
+    );
+  }
+
+  const { data: emploisData, error: emploisError } = await supabase
+    .from('emplois_du_temps')
+    .select('id')
+    .in('specialite_id', specialiteIds)
+    .eq('semaine', semaine);
+  if (emploisError) throw emploisError;
+  const emploiIds = ((emploisData ?? []) as any[]).map((e) => e.id);
+
+  let total = 0;
+  if (emploiIds.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .delete()
+      .in('emploi_du_temps_id', emploiIds)
+      .eq('semaine', semaine)
+      .select('id');
+    if (error) throw error;
+    total += (data ?? []).length;
+  }
+  if (troncIds.length > 0) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .delete()
+      .in('tronc_commun_id', troncIds)
+      .eq('semaine', semaine)
+      .select('id');
+    if (error) throw error;
+    total += (data ?? []).length;
+  }
+
+  invaliderCacheSeancesGroupees(specialiteIds, semaine);
+  return total;
 }
 
 // ── Scénario 5.5 (NOUVEAU) — Sélection des spécialités à envoyer en
@@ -2299,4 +3297,276 @@ export async function trouverOuCreerEmploi(
     .single();
   if (error) throw error;
   return data.id;
+}
+// ── Attribution automatique des salles — TOUS les groupes ─────────────
+// Travaille sur TOUTES les séances de la semaine (tous cycles, toutes
+// écoles, toutes spécialités, tronc commun compris), créneau par
+// créneau : attribuer cycle par cycle créait des conflits, chaque cycle
+// ignorant ce que les autres avaient déjà pris. Pour chaque créneau :
+//  0) les troncs de PLUS de 9 filières prennent l'amphi (salle de plus
+//     grande capacité), puis la plus grande libre suivante s'il est pris ;
+//  1) chaque UE de spécialité reçoit la salle PAR DÉFAUT de sa
+//     spécialité, si elle est libre ;
+//  2) les autres troncs, du plus grand regroupement de filières au plus
+//     petit, prennent la plus grande salle libre (amphi exclu) ;
+//  3) une UE de spécialité dont la salle par défaut est prise reçoit la
+//     plus petite salle libre (amphi exclu).
+// Les séances déjà ouvertes par l'enseignant (heure_ouverture connue) ne
+// sont jamais déplacées : leur salle reste occupée. Écrit directement en
+// base (le statut ok/conflit est recalculé comme à l'enregistrement).
+export interface ResultatAttributionSalles {
+  nbSeancesTraitees: number;
+  nbModifiees: number;
+  sansSalle: { nom: string; jour: string; creneau: string }[];
+}
+
+async function lireParLotsApi<T>(
+  ids: string[],
+  requete: (lot: string[]) => PromiseLike<{ data: T[] | null; error: any }>
+): Promise<T[]> {
+  if (ids.length === 0) return [];
+  const lots: string[][] = [];
+  for (let i = 0; i < ids.length; i += 100) lots.push(ids.slice(i, i + 100));
+  const resultats = await Promise.all(
+    lots.map(async (lot) => {
+      const { data, error } = await requete(lot);
+      if (error) throw error;
+      return data ?? [];
+    })
+  );
+  return resultats.flat();
+}
+
+export async function attribuerSallesPourSemaine(
+  semaine: string
+): Promise<ResultatAttributionSalles> {
+  const SEUIL_FILIERES_AMPHI = 9;
+  const vide: ResultatAttributionSalles = {
+    nbSeancesTraitees: 0,
+    nbModifiees: 0,
+    sansSalle: [],
+  };
+
+  // 1) Toutes les séances de la semaine (tri stable pour la pagination).
+  const seances = await recupererToutesLesLignes<any>((debut, fin) =>
+    supabase
+      .from('seances_edt')
+      .select(
+        'id, jour, creneau, offre_id, tronc_commun_id, salle_id, enseignant_id, statut, heure_ouverture'
+      )
+      .eq('semaine', semaine)
+      .order('id')
+      .range(debut, fin)
+  );
+  if (seances.length === 0) return vide;
+
+  // 2) Référentiels, à plat (jamais de jointure imbriquée).
+  const offreIds = Array.from(
+    new Set(seances.map((s) => s.offre_id).filter(Boolean) as string[])
+  );
+  const troncIds = Array.from(
+    new Set(seances.map((s) => s.tronc_commun_id).filter(Boolean) as string[])
+  );
+  const [offres, liensTronc, troncs] = await Promise.all([
+    lireParLotsApi<any>(offreIds, (lot) =>
+      supabase.from('offres').select('id, ue_id, specialite_id').in('id', lot)
+    ),
+    lireParLotsApi<any>(troncIds, (lot) =>
+      supabase
+        .from('troncs_communs_ues')
+        .select('tronc_commun_id, ue_id')
+        .in('tronc_commun_id', lot)
+    ),
+    lireParLotsApi<any>(troncIds, (lot) =>
+      supabase.from('troncs_communs').select('id, nom').in('id', lot)
+    ),
+  ]);
+
+  const ueIdsOffres = Array.from(new Set(offres.map((o) => o.ue_id as string)));
+  const ueIdsTroncs = Array.from(new Set(liensTronc.map((l) => l.ue_id as string)));
+  const [ues, offresDesTroncs] = await Promise.all([
+    lireParLotsApi<any>(ueIdsOffres, (lot) =>
+      supabase.from('ues').select('id, nom').in('id', lot)
+    ),
+    lireParLotsApi<any>(ueIdsTroncs, (lot) =>
+      supabase.from('offres').select('ue_id, specialite_id').in('ue_id', lot)
+    ),
+  ]);
+  const specialiteIdsTous = Array.from(
+    new Set([
+      ...offres.map((o) => o.specialite_id as string),
+      ...offresDesTroncs.map((o) => o.specialite_id as string),
+    ])
+  );
+  const specialites = await lireParLotsApi<any>(specialiteIdsTous, (lot) =>
+    supabase.from('specialites').select('id, filiere_id').in('id', lot)
+  );
+
+  const offreParId = new Map(offres.map((o) => [o.id as string, o]));
+  const nomUeParId = new Map(ues.map((u) => [u.id as string, u.nom as string]));
+  const nomTroncParId = new Map(troncs.map((t) => [t.id as string, t.nom as string]));
+  const filiereParSpecialite = new Map(
+    specialites.map((s) => [s.id as string, s.filiere_id as string])
+  );
+  const troncParUe = new Map(
+    liensTronc.map((l) => [l.ue_id as string, l.tronc_commun_id as string])
+  );
+  // Par tronc : spécialités membres (toutes, hors groupe affiché
+  // comprises) → nombre de filières distinctes.
+  const specialitesParTronc = new Map<string, Set<string>>();
+  for (const o of offresDesTroncs) {
+    const troncId = troncParUe.get(o.ue_id);
+    if (!troncId) continue;
+    if (!specialitesParTronc.has(troncId)) specialitesParTronc.set(troncId, new Set());
+    specialitesParTronc.get(troncId)!.add(o.specialite_id);
+  }
+  const nbFilieresDuTronc = (troncId: string): number => {
+    const membres = specialitesParTronc.get(troncId);
+    if (!membres) return 1;
+    const filieres = new Set<string>();
+    for (const specId of membres) {
+      filieres.add(filiereParSpecialite.get(specId) ?? `spe:${specId}`);
+    }
+    return filieres.size;
+  };
+
+  // 3) Salles.
+  const { data: sallesData, error: sallesError } = await supabase
+    .from('salles')
+    .select('id, capacite, specialite_par_defaut_id')
+    .order('code_salle');
+  if (sallesError) throw sallesError;
+  const salles = (sallesData ?? []) as {
+    id: string;
+    capacite: number;
+    specialite_par_defaut_id: string | null;
+  }[];
+  if (salles.length === 0) throw new Error('Aucune salle enregistrée.');
+  const sallesParCapaciteDesc = [...salles].sort((a, b) => b.capacite - a.capacite);
+  const amphiId = sallesParCapaciteDesc[0].id;
+  const salleParDefaut = new Map<string, string>();
+  for (const s of salles) {
+    if (s.specialite_par_defaut_id && !salleParDefaut.has(s.specialite_par_defaut_id)) {
+      salleParDefaut.set(s.specialite_par_defaut_id, s.id);
+    }
+  }
+
+  // 4) Répartition créneau par créneau.
+  const parCreneau = new Map<string, any[]>();
+  for (const s of seances) {
+    const cle = `${s.jour}|${s.creneau}`;
+    if (!parCreneau.has(cle)) parCreneau.set(cle, []);
+    parCreneau.get(cle)!.push(s);
+  }
+
+  const nomDe = (s: any): string =>
+    s.tronc_commun_id
+      ? nomTroncParId.get(s.tronc_commun_id) ?? 'Tronc commun'
+      : nomUeParId.get(offreParId.get(s.offre_id)?.ue_id) ?? 'UE';
+
+  const nouvelleSalle = new Map<string, string | null>();
+  const nouveauStatut = new Map<string, 'ok' | 'conflit'>();
+  const sansSalle: { nom: string; jour: string; creneau: string }[] = [];
+  let nbTraitees = 0;
+
+  for (const liste of parCreneau.values()) {
+    // Séances déjà ouvertes : figées, leur salle reste prise.
+    const figees = liste.filter((s) => !!s.heure_ouverture);
+    const aTraiter = liste.filter((s) => !s.heure_ouverture);
+    const prises = new Set<string>(
+      figees.map((s) => s.salle_id as string | null).filter((v): v is string => !!v)
+    );
+
+    const troncs = aTraiter
+      .filter((s) => s.tronc_commun_id)
+      .sort(
+        (a, b) =>
+          nbFilieresDuTronc(b.tronc_commun_id) - nbFilieresDuTronc(a.tronc_commun_id) ||
+          (specialitesParTronc.get(b.tronc_commun_id)?.size ?? 0) -
+            (specialitesParTronc.get(a.tronc_commun_id)?.size ?? 0) ||
+          nomDe(a).localeCompare(nomDe(b))
+      );
+    const troncsAmphi = troncs.filter(
+      (s) => nbFilieresDuTronc(s.tronc_commun_id) > SEUIL_FILIERES_AMPHI
+    );
+    const troncsNormaux = troncs.filter(
+      (s) => nbFilieresDuTronc(s.tronc_commun_id) <= SEUIL_FILIERES_AMPHI
+    );
+    const parSpecialite = aTraiter.filter((s) => !s.tronc_commun_id);
+
+    const poser = (s: any, salleId: string | null) => {
+      if (salleId) prises.add(salleId);
+      nouvelleSalle.set(s.id, salleId);
+    };
+
+    // 0) Amphi pour les gros troncs.
+    for (const s of troncsAmphi) {
+      poser(s, sallesParCapaciteDesc.find((x) => !prises.has(x.id))?.id ?? null);
+    }
+    // 1) Salle par défaut de la spécialité.
+    const sansDefaut: any[] = [];
+    for (const s of parSpecialite) {
+      const specId = offreParId.get(s.offre_id)?.specialite_id as string | undefined;
+      const defaut = specId ? salleParDefaut.get(specId) : undefined;
+      if (defaut && !prises.has(defaut)) poser(s, defaut);
+      else sansDefaut.push(s);
+    }
+    // 2) Autres troncs : plus grande salle libre hors amphi.
+    for (const s of troncsNormaux) {
+      poser(
+        s,
+        sallesParCapaciteDesc.find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null
+      );
+    }
+    // 3) UE de spécialité sans défaut libre : plus petite salle libre.
+    for (const s of sansDefaut) {
+      poser(
+        s,
+        [...sallesParCapaciteDesc]
+          .reverse()
+          .find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null
+      );
+    }
+
+    // Statut : même règle qu'à l'enregistrement (pas de salle, ou
+    // enseignant déjà pris sur ce créneau → conflit).
+    for (const s of aTraiter) {
+      nbTraitees++;
+      const salleId = nouvelleSalle.get(s.id) ?? null;
+      const conflitEnseignant = liste.some(
+        (l) => l.id !== s.id && l.enseignant_id === s.enseignant_id
+      );
+      nouveauStatut.set(s.id, !salleId || conflitEnseignant ? 'conflit' : 'ok');
+      if (!salleId) sansSalle.push({ nom: nomDe(s), jour: s.jour, creneau: s.creneau });
+    }
+  }
+
+  // 5) Écriture : une mise à jour par couple (salle, statut) et par lot
+  // de 100 séances — quelques requêtes seulement, pas une par séance.
+  const groupes = new Map<string, { salleId: string | null; statut: string; ids: string[] }>();
+  let nbModifiees = 0;
+  for (const s of seances) {
+    if (!nouvelleSalle.has(s.id)) continue;
+    const salleId = nouvelleSalle.get(s.id) ?? null;
+    const statut = nouveauStatut.get(s.id) ?? 'ok';
+    if (salleId === s.salle_id && statut === s.statut) continue;
+    nbModifiees++;
+    const cleGroupe = `${salleId ?? 'aucune'}|${statut}`;
+    if (!groupes.has(cleGroupe)) groupes.set(cleGroupe, { salleId, statut, ids: [] });
+    groupes.get(cleGroupe)!.ids.push(s.id);
+  }
+  for (const g of groupes.values()) {
+    for (let i = 0; i < g.ids.length; i += 100) {
+      const { error } = await supabase
+        .from('seances_edt')
+        .update({ salle_id: g.salleId, statut: g.statut })
+        .in('id', g.ids.slice(i, i + 100));
+      if (error) throw error;
+    }
+  }
+
+  // Toutes les grilles en cache de cette semaine sont périmées.
+  cacheSeancesGroupees.clear();
+
+  return { nbSeancesTraitees: nbTraitees, nbModifiees, sansSalle };
 }

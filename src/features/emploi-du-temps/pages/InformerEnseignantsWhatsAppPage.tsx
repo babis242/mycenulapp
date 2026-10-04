@@ -22,6 +22,11 @@ import {
   getInfosNotificationWhatsApp,
   type EnseignantWhatsApp,
 } from '../api';
+import {
+  getCoursDebutantsParEnseignant,
+  construireMessageDebutCours,
+  type CoursDebutant,
+} from '../coursDebutants';
 
 const JOURS_EN: Record<string, string> = {
   Lundi: 'Monday',
@@ -102,6 +107,7 @@ export default function InformerEnseignantsWhatsAppPage() {
   const estHND = cycleNom.toUpperCase() === 'HND';
 
   const [enseignants, setEnseignants] = useState<EnseignantWhatsApp[]>([]);
+  const [debutants, setDebutants] = useState<Map<string, CoursDebutant[]>>(new Map());
   const [chargement, setChargement] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
@@ -122,6 +128,17 @@ export default function InformerEnseignantsWhatsAppPage() {
           semaine
         );
         setEnseignants(donnees);
+        // Cours qui débutent (message avec syllabus) — ne bloque pas la page si ça échoue.
+        try {
+          setDebutants(
+            await getCoursDebutantsParEnseignant(
+              specialites.map((s) => s.id),
+              semaine
+            )
+          );
+        } catch {
+          setDebutants(new Map());
+        }
       } catch (err) {
         setErreur(err instanceof Error ? err.message : 'Erreur de chargement.');
       } finally {
@@ -131,9 +148,9 @@ export default function InformerEnseignantsWhatsAppPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cycleKey, semestre, semaine, enLigne]);
 
-  function ouvrirWhatsApp(e: EnseignantWhatsApp) {
+  function ouvrirWhatsApp(e: EnseignantWhatsApp, message?: string) {
     const numero = e.numeroWhatsapp || e.numeroCellulaire;
-    const message = construireMessage(e, estHND);
+    message = message ?? construireMessage(e, estHND);
     const lien = numero
       ? `https://wa.me/${formaterNumeroWhatsapp(numero)}?text=${encodeURIComponent(
           message
@@ -181,8 +198,9 @@ export default function InformerEnseignantsWhatsAppPage() {
             return (
               <div
                 key={e.enseignantId}
-                className="bg-white rounded-2xl border border-gray-100 p-4 flex items-center justify-between gap-4 flex-wrap"
+                className="bg-white rounded-2xl border border-gray-100 p-4"
               >
+                <div className="flex items-center justify-between gap-4 flex-wrap">
                 <div>
                   <p className="font-bold text-gray-900">{e.nom}</p>
                   <p className="text-xs text-gray-500">
@@ -200,6 +218,36 @@ export default function InformerEnseignantsWhatsAppPage() {
                 >
                   <MessageCircle size={16} /> Ouvrir WhatsApp
                 </button>
+                </div>
+                {(debutants.get(e.enseignantId) ?? []).length > 0 && (
+                  <div className="mt-3 pt-3 border-t border-gray-100 space-y-2">
+                    <p className="text-xs font-extrabold text-gray-400 uppercase tracking-wide">
+                      {estHND ? 'Courses starting' : 'Cours qui débutent'}
+                    </p>
+                    {(debutants.get(e.enseignantId) ?? []).map((c) => (
+                      <div
+                        key={c.ueNom}
+                        className="flex items-center justify-between gap-3 flex-wrap"
+                      >
+                        <div>
+                          <p className="text-sm font-bold text-gray-900">{c.ueNom}</p>
+                          <p className="text-xs text-gray-500">
+                            {traduireJour(c.jour, estHND)} · {c.creneau}
+                            {!c.syllabusUrl && ' · syllabus introuvable'}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() =>
+                            ouvrirWhatsApp(e, construireMessageDebutCours(c, estHND))
+                          }
+                          className="flex items-center gap-2 bg-green-600 rounded-full px-4 py-2 text-sm font-bold text-white hover:bg-green-700"
+                        >
+                          <MessageCircle size={16} /> Syllabus + consignes
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

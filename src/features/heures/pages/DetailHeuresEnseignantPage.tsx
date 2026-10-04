@@ -1,7 +1,8 @@
 // src/features/heures/pages/DetailHeuresEnseignantPage.tsx
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Loader2, ArrowLeft, AlertTriangle } from 'lucide-react';
+import * as XLSX from 'xlsx';
+import { Loader2, ArrowLeft, AlertTriangle, FileSpreadsheet } from 'lucide-react';
 import { formatHeureCameroun } from '@/lib/formatHeureCameroun';
 import { getEnseignant } from '@/features/referentiel/enseignants/api';
 import {
@@ -85,6 +86,39 @@ export default function DetailHeuresEnseignantPage() {
     a.localeCompare(b)
   );
 
+  // Export Excel du détail mensuel d'un enseignant : une ligne par jour
+  // où il a fait cours (avec l'heure d'arrivée/de départ réelle de
+  // chaque séance de ce jour), et le total d'heures du mois en dernière
+  // ligne.
+  function exporterExcel() {
+    const lignes: (string | number)[][] = [
+      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'arrivée", 'Heure de départ', 'Heures', 'Retard'],
+    ];
+    for (const [date, listeDuJour] of jours) {
+      for (const s of listeDuJour) {
+        lignes.push([
+          nomEnseignant,
+          formatDateLabel(date, s.jour),
+          s.jour,
+          s.creneau,
+          s.ueNom,
+          formatHeure(s.heureOuverture),
+          formatHeure(s.heureFermeture),
+          s.heures,
+          s.enRetard ? `Oui (+${s.retardMinutes} min)` : 'Non',
+        ]);
+      }
+    }
+    lignes.push([]);
+    lignes.push(['', '', '', '', '', '', 'Total', stats?.totalHeures ?? 0, '']);
+
+    const feuille = XLSX.utils.aoa_to_sheet(lignes);
+    const classeur = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(classeur, feuille, 'Détail');
+    const nomFichier = (nomEnseignant || 'enseignant').replace(/[^a-z0-9]+/gi, '_');
+    XLSX.writeFile(classeur, `heures_${nomFichier}_${mois}.xlsx`);
+  }
+
   return (
     <div className="max-w-2xl mx-auto">
       <button
@@ -103,12 +137,21 @@ export default function DetailHeuresEnseignantPage() {
             Toutes ses séances, ses retards et ses statistiques.
           </p>
         </div>
-        <input
-          type="month"
-          value={mois}
-          onChange={(e) => setMois(e.target.value)}
-          className="bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 outline-none"
-        />
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="month"
+            value={mois}
+            onChange={(e) => setMois(e.target.value)}
+            className="bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 outline-none"
+          />
+          <button
+            onClick={exporterExcel}
+            disabled={jours.length === 0}
+            className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <FileSpreadsheet size={16} /> Exporter le mois (Excel)
+          </button>
+        </div>
       </div>
 
       {chargement ? (
