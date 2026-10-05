@@ -20,25 +20,31 @@ import {
   arreterCampagne,
   enregistrerDisponibiliteManuelle,
   getDisponibilitesEnseignant,
+  dateLimiteCampagne,
   type CampagneResume,
   type EnseignantSuivi,
 } from '../api';
 
 function lienWhatsApp(
   numero: string | null,
-  nomEnseignant: string
+  nomEnseignant: string,
+  estHND: boolean
 ): string | null {
   if (!numero) return null;
   const chiffres = numero.replace(/[^\d]/g, '');
   if (!chiffres) return null;
-  const message = encodeURIComponent(
-    `Bonjour Monsieur/Madame ${nomEnseignant},\n\n` +
+  const texte = estHND
+    ? `Hello Sir/Madam ${nomEnseignant},\n\n` +
+      `Please fill in your availabilities for the coming week as a matter of urgency on the CENULAP YASSA platform: https://platformcenulap.pages.dev/\n\n` +
+      `Procedure: log in with the credentials received by email (if not already done), click on the "Mes disponibilités" menu, select your availabilities then click on "Envoyer".\n\n` +
+      `The deadline is Wednesday 5 PM. After this time, the collection is closed and you will no longer be able to submit or modify your availabilities.\n\n` +
+      `Thank you.`
+    : `Bonjour Monsieur/Madame ${nomEnseignant},\n\n` +
       `Bien vouloir renseigner urgemment vos disponibilités pour la semaine à venir sur la plateforme de CENULAP YASSA : https://platformcenulap.pages.dev/\n\n` +
       `Procédure : connectez-vous avec les identifiants reçus par mail (si ce n'est pas déjà fait), cliquez sur le menu "Mes disponibilités", sélectionnez vos disponibilités puis cliquez sur "Envoyer".\n\n` +
-      `Vous avez la possibilité de modifier vos disponibilités jusqu'à jeudi soir.\n\n` +
-      `Merci.`
-  );
-  return `https://wa.me/${chiffres}?text=${message}`;
+      `La date limite est fixée à mercredi 17h. Passé ce délai, la collecte est clôturée et vous ne pourrez plus envoyer ni modifier vos disponibilités.\n\n` +
+      `Merci.`;
+  return `https://wa.me/${chiffres}?text=${encodeURIComponent(texte)}`;
 }
 
 // Écran Étape 4 — État des disponibilités (journal.md Scénario 3).
@@ -192,6 +198,15 @@ export default function EtatDisponibilitesPage() {
             >
               {campagne.statut === 'active' ? 'Active' : 'Arrêtée'}
             </span>
+            {campagne.statut === 'active' &&
+              ` — clôture automatique ${dateLimiteCampagne(
+                campagne.date_lancement
+              ).toLocaleString('fr-FR', {
+                weekday: 'long',
+                hour: '2-digit',
+                minute: '2-digit',
+                timeZone: 'Africa/Douala',
+              })}`}
           </p>
         </div>
         <div className="flex gap-2">
@@ -264,7 +279,7 @@ export default function EtatDisponibilitesPage() {
       ) : (
         <div className="bg-white rounded-[20px] overflow-hidden">
           {listeAffichee.map((e) => {
-            const whatsapp = lienWhatsApp(e.numeroWhatsapp, e.nom);
+            const whatsapp = lienWhatsApp(e.numeroWhatsapp, e.nom, e.estHND);
             return (
               <div
                 key={e.id}

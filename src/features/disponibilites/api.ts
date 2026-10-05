@@ -2,6 +2,71 @@
 import { supabase } from '@/lib/supabase';
 import { getHeuresTotalesValideesParOffre } from '@/features/emploi-du-temps/api';
 
+// ── Date limite de la collecte : mercredi 17h (heure du Cameroun, UTC+1) ──
+// Calculée à partir de la date de lancement (aucune colonne en base) : le
+// premier mercredi 17h qui suit le lancement (le jour même si lancée un
+// mercredi avant 17h).
+export function dateLimiteCampagne(dateLancement: string): Date {
+  const DECALAGE = 60 * 60 * 1000; // UTC+1
+  const local = new Date(new Date(dateLancement).getTime() + DECALAGE);
+  const limite = new Date(local);
+  limite.setUTCHours(17, 0, 0, 0);
+  let jours = (3 - local.getUTCDay() + 7) % 7;
+  if (jours === 0 && local.getTime() >= limite.getTime()) jours = 7;
+  limite.setUTCDate(limite.getUTCDate() + jours);
+  return new Date(limite.getTime() - DECALAGE);
+}
+
+export function campagneExpiree(dateLancement: string): boolean {
+  return Date.now() >= dateLimiteCampagne(dateLancement).getTime();
+}
+
+export function libelleDateLimite(estHND: boolean): string {
+  return estHND ? 'Wednesday 5 PM' : 'mercredi 17h';
+}
+
+// Enseignants (ids) ayant au moins une attribution active sur une
+// spécialité du cycle HND — pour envoyer les messages en anglais.
+export async function getEnseignantsHND(
+  enseignantIds: string[]
+): Promise<Set<string>> {
+  const resultat = new Set<string>();
+  if (enseignantIds.length === 0) return resultat;
+  for (let i = 0; i < enseignantIds.length; i += 80) {
+    const lot = enseignantIds.slice(i, i + 80);
+    const { data: attrs } = await supabase
+      .from('attributions')
+      .select('enseignant_id, offre_id')
+      .in('enseignant_id', lot)
+      .eq('statut', 'actif');
+    const offreIds = Array.from(new Set((attrs ?? []).map((a) => a.offre_id)));
+    if (offreIds.length === 0) continue;
+    const { data: offres } = await supabase
+      .from('offres')
+      .select('id, specialite_id')
+      .in('id', offreIds);
+    const specIds = Array.from(
+      new Set((offres ?? []).map((o) => o.specialite_id))
+    );
+    const { data: specs } = await supabase
+      .from('specialites')
+      .select('id, cycle')
+      .in('id', specIds);
+    const hnd = new Set(
+      (specs ?? [])
+        .filter((sp) => String(sp.cycle).toUpperCase() === 'HND')
+        .map((sp) => sp.id)
+    );
+    const offreHnd = new Set(
+      (offres ?? []).filter((o) => hnd.has(o.specialite_id)).map((o) => o.id)
+    );
+    for (const a of attrs ?? []) {
+      if (offreHnd.has(a.offre_id)) resultat.add(a.enseignant_id);
+    }
+  }
+  return resultat;
+}
+
 export interface UEPourCampagne {
   ueId: string;
   ueNom: string;
@@ -289,6 +354,10 @@ export async function lancerCampagne(
       .select('id, matricule')
       .in('id', nouveauxEnseignantIds);
     const matricules = (enseignantsData ?? []).map((e) => e.matricule);
+    const idParMatricule = new Map(
+      (enseignantsData ?? []).map((e) => [e.matricule, e.id])
+    );
+    const hndIds = await getEnseignantsHND(nouveauxEnseignantIds);
 
     const { data: comptesData } = await supabase
       .from('comptes_utilisateurs')
@@ -297,13 +366,17 @@ export async function lancerCampagne(
 
     if (comptesData && comptesData.length > 0) {
       await supabase.from('notifications').insert(
-        comptesData.map((c) => ({
-          compte_id: c.id,
-          titre: 'Disponibilités demandées',
-          message:
-            'Merci de renseigner tes disponibilités pour la semaine à venir.',
-          lien: '/disponibilites/saisie',
-        }))
+        comptesData.map((c) => {
+          const estHND = hndIds.has(idParMatricule.get(c.matricule) ?? '');
+          return {
+            compte_id: c.id,
+            titre: estHND ? 'Availability requested' : 'Disponibilités demandées',
+            message: estHND
+              ? 'Please fill in your availabilities for the coming week before Wednesday 5 PM.'
+              : 'Merci de renseigner tes disponibilités pour la semaine à venir avant mercredi 17h.',
+            lien: '/disponibilites/saisie',
+          };
+        })
       );
     }
   }
@@ -327,6 +400,15 @@ export async function getDerniereCampagne(): Promise<CampagneResume | null> {
     .limit(1)
     .maybeSingle();
   if (error) throw error;
+  // Date limite dépassée (mercredi 17h) : la campagne s'arrête d'elle-même.
+  if (data && data.statut === 'active' && campagneExpiree(data.date_lancement)) {
+    try {
+      await arreterCampagne(data.id);
+    } catch {
+      // droits insuffisants (enseignant) : on l'affiche quand même arrêtée
+    }
+    return { ...data, statut: 'arretee' };
+  }
   return data;
 }
 
@@ -386,6 +468,7 @@ export interface EnseignantSuivi {
   numeroWhatsapp: string | null;
   numeroCellulaire: string | null;
   aRepondu: boolean;
+  estHND: boolean;
 }
 
 export async function listSuiviCampagne(
@@ -406,6 +489,9 @@ export async function listSuiviCampagne(
     .eq('campagne_id', campagneId);
   const idsAyantRepondu = new Set((reponses ?? []).map((r) => r.enseignant_id));
 
+  const hndIds = await getEnseignantsHND(
+    ((liaisons ?? []) as any[]).map((l) => l.enseignant.id)
+  );
   let resultats = ((liaisons ?? []) as any[]).map((l) => ({
     id: l.enseignant.id,
     nom: l.enseignant.nom,
@@ -414,6 +500,7 @@ export async function listSuiviCampagne(
     numeroWhatsapp: l.enseignant.numero_whatsapp,
     numeroCellulaire: l.enseignant.numero_cellulaire,
     aRepondu: idsAyantRepondu.has(l.enseignant.id),
+    estHND: hndIds.has(l.enseignant.id),
   }));
 
   // Périmètre (règle transversale, journal.md) : un Responsable ne voit

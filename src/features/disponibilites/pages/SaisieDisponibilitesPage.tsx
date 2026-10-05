@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useAuthStore } from '@/stores/authStore';
 import { JOURS, tousLesCreneaux } from '@/constants/enums';
+import { campagneExpiree } from '../api';
 
 interface CampagneActive {
   id: string;
@@ -34,7 +35,9 @@ async function lireDepuisCache(matricule: string): Promise<{
 
   const campagneActive = liaisons
     .map((l: any) => campagneParId.get(l.campagne_id))
-    .find((c: any) => c?.statut === 'active');
+    .find(
+      (c: any) => c?.statut === 'active' && !campagneExpiree(c.date_lancement)
+    );
 
   if (!campagneActive) {
     return {
@@ -125,7 +128,9 @@ export default function SaisieDisponibilitesPage() {
 
         const campagneActive = (liaisons ?? [])
           .map((l: any) => l.campagne)
-          .find((c: any) => c?.statut === 'active');
+          .find(
+      (c: any) => c?.statut === 'active' && !campagneExpiree(c.date_lancement)
+    );
 
         if (campagneActive) {
           setCampagne({
@@ -172,6 +177,10 @@ export default function SaisieDisponibilitesPage() {
 
   async function handleEnregistrer() {
     if (!campagne || !enseignantId) return;
+    if (campagneExpiree(campagne.date_lancement)) {
+      setCampagne(null);
+      return;
+    }
     setSaving(true);
     try {
       const lignes = JOURS.flatMap((jour) =>
