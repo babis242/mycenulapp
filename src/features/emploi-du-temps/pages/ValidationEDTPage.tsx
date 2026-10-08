@@ -517,6 +517,15 @@ export default function ValidationEDTPage() {
                   <MessageCircle size={16} /> Informer les enseignants via
                   WhatsApp
                 </Link>
+                <Link
+                  to={`/emploi-du-temps/informer-provisoire?cycle=${encodeURIComponent(
+                    cycleKey
+                  )}&semestre=${encodeURIComponent(semestre)}&semaine=${semaine}`}
+                  target="_blank"
+                  className="flex items-center gap-2 bg-white border border-green-600 rounded-full px-4 py-2 text-sm font-bold text-green-700 hover:bg-green-50"
+                >
+                  <MessageCircle size={16} /> Informer provisoirement
+                </Link>
               </div>
             </div>
 

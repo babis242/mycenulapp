@@ -1,6 +1,13 @@
 // src/features/seances/pages/SaisieManuellePage.tsx
-import { useState } from 'react';
-import { Loader2, Search, Save, CheckCircle2, WifiOff } from 'lucide-react';
+import { useRef, useState } from 'react';
+import {
+  Loader2,
+  Search,
+  Save,
+  CheckCircle2,
+  WifiOff,
+  MousePointerClick,
+} from 'lucide-react';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import RapportSeanceForm from '../components/RapportSeanceForm';
@@ -124,6 +131,20 @@ export default function SaisieManuellePage() {
   const [succes, setSucces] = useState(false);
   const [enregistreHorsLigne, setEnregistreHorsLigne] = useState(false);
 
+  // ── Saisie en groupe (cases à cocher) ──
+  const [cochees, setCochees] = useState<Set<string>>(new Set());
+  const [groupeArrivee, setGroupeArrivee] = useState('');
+  const [groupeDepart, setGroupeDepart] = useState('');
+  const [groupeCreneau, setGroupeCreneau] = useState(false);
+  // null = automatique (jour commun des séances cochées, ou leur propre
+  // jour si elles n'en ont pas un seul en commun).
+  const [groupeJour, setGroupeJour] = useState<string | null>(null);
+  const [groupeEnCours, setGroupeEnCours] = useState(false);
+  const [groupeMessage, setGroupeMessage] = useState<{
+    ok: boolean;
+    texte: string;
+  } | null>(null);
+
   async function lancerRecherche(e?: React.FormEvent) {
     e?.preventDefault();
     setChargement(true);
@@ -171,12 +192,187 @@ export default function SaisieManuellePage() {
       (!filtreCreneau || s.creneau === filtreCreneau)
   );
 
+  const seancesCochees = resultats.filter((s) => cochees.has(s.id));
+  const toutesCocheesFiltrees =
+    resultatsFiltres.length > 0 &&
+    resultatsFiltres.every((s) => cochees.has(s.id));
+
+  function basculerCochee(id: string) {
+    setGroupeMessage(null);
+    setCochees((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function basculerToutesFiltrees() {
+    setGroupeMessage(null);
+    setCochees((prev) => {
+      const next = new Set(prev);
+      if (toutesCocheesFiltrees) resultatsFiltres.forEach((s) => next.delete(s.id));
+      else resultatsFiltres.forEach((s) => next.add(s.id));
+      return next;
+    });
+  }
+
+  // Combine la date réelle de la séance et une heure "HH:mm" → ISO.
+  function isoDate(d: Date): string {
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  // Jour commun à toutes les séances cochées (null s'il y en a plusieurs).
+  const joursDesCochees = Array.from(
+    new Set(seancesCochees.map((s) => isoDate(dateAttendue(s.semaine, s.jour))))
+  );
+  const jourCommun = joursDesCochees.length === 1 ? joursDesCochees[0] : null;
+  const jourEffectif = groupeJour ?? jourCommun ?? '';
+
+  function isoPourSeance(seance: SeanceRecherche, minutes: number): string {
+    const d = jourEffectif
+      ? (() => {
+          const [y, m, j] = jourEffectif.split('-').map(Number);
+          return new Date(y, m - 1, j);
+        })()
+      : dateAttendue(seance.semaine, seance.jour);
+    d.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+    return d.toISOString();
+  }
+
+  function enMinutes(hhmm: string): number | null {
+    const m = hhmm.match(/^(\d{1,2}):(\d{2})$/);
+    return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+  }
+
+  async function handleEnregistrerGroupe() {
+    setGroupeMessage(null);
+    const arrivee = groupeCreneau ? null : enMinutes(groupeArrivee);
+    const depart = groupeCreneau ? null : enMinutes(groupeDepart);
+    if (!groupeCreneau && arrivee == null && depart == null) {
+      setGroupeMessage({ ok: false, texte: "Renseigne au moins une heure d'arrivée ou de départ." });
+      return;
+    }
+
+    // Calcule + valide chaque séance avant d'enregistrer quoi que ce soit.
+    const aEnregistrer: { s: SeanceRecherche; ouv: string | null; ferm: string | null }[] = [];
+    const erreurs: string[] = [];
+    for (const s of seancesCochees) {
+      const { debut, fin } = bornesCreneau(s.creneau);
+      const ouv = groupeCreneau ? isoPourSeance(s, debut) : arrivee != null ? isoPourSeance(s, arrivee) : null;
+      const ferm = groupeCreneau ? isoPourSeance(s, fin) : depart != null ? isoPourSeance(s, depart) : null;
+      const etiquette = `${s.ueNom} (${s.jour} ${formatDateCourte(dateAttendue(s.semaine, s.jour))} · ${s.creneau})`;
+      const e1 = ouv ? validerHeureContreCreneau(versDatetimeLocal(ouv), "Arrivée", s) : null;
+      const e2 = ferm ? validerHeureContreCreneau(versDatetimeLocal(ferm), 'Départ', s) : null;
+      if (e1 || e2) erreurs.push(`${etiquette} — ${[e1, e2].filter(Boolean).join(' ')}`);
+      else aEnregistrer.push({ s, ouv, ferm });
+    }
+    if (erreurs.length > 0) {
+      setGroupeMessage({
+        ok: false,
+        texte: `Rien n'a été enregistré. ${erreurs.length} séance(s) hors créneau : ${erreurs.join(' | ')}`,
+      });
+      return;
+    }
+
+    setGroupeEnCours(true);
+    let nbOk = 0;
+    let horsLigne = false;
+    const echecs: string[] = [];
+    const reussies = new Map<string, { ouv: string | null; ferm: string | null }>();
+    for (const { s, ouv, ferm } of aEnregistrer) {
+      try {
+        if (await appliquerHeures(s.id, ouv, ferm)) horsLigne = true;
+        reussies.set(s.id, { ouv, ferm });
+        nbOk++;
+      } catch (err) {
+        echecs.push(`${s.ueNom} : ${err instanceof Error ? err.message : 'échec'}`);
+      }
+    }
+    setResultats((prev) =>
+      prev.map((s) => {
+        const r = reussies.get(s.id);
+        return r
+          ? { ...s, heureOuverture: r.ouv ?? s.heureOuverture, heureFermeture: r.ferm ?? s.heureFermeture }
+          : s;
+      })
+    );
+    setCochees((prev) => {
+      const next = new Set(prev);
+      reussies.forEach((_, id) => next.delete(id));
+      return next;
+    });
+    setGroupeEnCours(false);
+    setGroupeMessage({
+      ok: echecs.length === 0,
+      texte:
+        `${nbOk} séance(s) enregistrée(s)` +
+        (horsLigne ? ' localement — envoi au retour du réseau' : '') +
+        (echecs.length ? `. Échecs : ${echecs.join(' | ')}` : '.'),
+    });
+  }
+
+  // Sur petit écran le panneau est sous la liste : on y amène l'écran.
+  // Sur ordinateur il est déjà visible à droite.
+  const panneauRef = useRef<HTMLDivElement>(null);
+
   function selectionner(s: SeanceRecherche) {
     setSelection(s);
+    if (!window.matchMedia('(min-width: 640px)').matches) {
+      setTimeout(
+        () =>
+          panneauRef.current?.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start',
+          }),
+        50
+      );
+    }
     setHeureOuverture(versDatetimeLocal(s.heureOuverture));
     setHeureFermeture(versDatetimeLocal(s.heureFermeture));
     setSucces(false);
     setErreur(null);
+  }
+
+  // Enregistre les heures d'une séance (en ligne, ou en file d'attente
+  // hors ligne). Renvoie true si l'enregistrement est parti en file.
+  async function appliquerHeures(
+    seanceId: string,
+    nouvelleOuverture: string | null,
+    nouvelleFermeture: string | null
+  ): Promise<boolean> {
+    if (navigator.onLine) {
+      await saisirHeureManuelle(seanceId, {
+        heureOuverture: nouvelleOuverture,
+        heureFermeture: nouvelleFermeture,
+      });
+      return false;
+    }
+    await enqueueSyncAction({
+      entity: 'seancesEDT',
+      operation: 'update',
+      payload: {
+        seanceId,
+        heureOuverture: nouvelleOuverture,
+        heureFermeture: nouvelleFermeture,
+      },
+    });
+    const seanceLocale = await db.seancesEDT.get(seanceId);
+    if (seanceLocale) {
+      await db.seancesEDT.put({
+        ...seanceLocale,
+        heure_ouverture: nouvelleOuverture ?? (seanceLocale as any).heure_ouverture,
+        heure_fermeture: nouvelleFermeture ?? (seanceLocale as any).heure_fermeture,
+        mode_ouverture: nouvelleOuverture
+          ? 'manuel'
+          : (seanceLocale as any).mode_ouverture,
+        mode_fermeture: nouvelleFermeture
+          ? 'manuel'
+          : (seanceLocale as any).mode_fermeture,
+      } as any);
+    }
+    return true;
   }
 
   async function handleEnregistrer() {
@@ -207,42 +403,12 @@ export default function SaisieManuellePage() {
         ? new Date(heureFermeture).toISOString()
         : null;
 
-      if (navigator.onLine) {
-        await saisirHeureManuelle(selection.id, {
-          heureOuverture: nouvelleOuverture,
-          heureFermeture: nouvelleFermeture,
-        });
-        setEnregistreHorsLigne(false);
-      } else {
-        // Hors ligne : mise en file (rejouée au retour du réseau, cf.
-        // src/lib/sync.ts), + mise à jour optimiste du cache local pour
-        // que la recherche reflète la saisie si on y revient avant la
-        // synchro.
-        await enqueueSyncAction({
-          entity: 'seancesEDT',
-          operation: 'update',
-          payload: {
-            seanceId: selection.id,
-            heureOuverture: nouvelleOuverture,
-            heureFermeture: nouvelleFermeture,
-          },
-        });
-        const seanceLocale = await db.seancesEDT.get(selection.id);
-        if (seanceLocale) {
-          await db.seancesEDT.put({
-            ...seanceLocale,
-            heure_ouverture: nouvelleOuverture ?? (seanceLocale as any).heure_ouverture,
-            heure_fermeture: nouvelleFermeture ?? (seanceLocale as any).heure_fermeture,
-            mode_ouverture: nouvelleOuverture
-              ? 'manuel'
-              : (seanceLocale as any).mode_ouverture,
-            mode_fermeture: nouvelleFermeture
-              ? 'manuel'
-              : (seanceLocale as any).mode_fermeture,
-          } as any);
-        }
-        setEnregistreHorsLigne(true);
-      }
+      const horsLigne = await appliquerHeures(
+        selection.id,
+        nouvelleOuverture,
+        nouvelleFermeture
+      );
+      setEnregistreHorsLigne(horsLigne);
 
       setSucces(true);
       setResultats((prev) =>
@@ -266,7 +432,34 @@ export default function SaisieManuellePage() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="saisie-page mx-auto">
+      <style>{`
+        .saisie-page { max-width: 42rem; }
+        .saisie-grille { display: block; }
+        .saisie-dates { display: grid; grid-template-columns: 1fr; gap: 0.75rem; }
+        @media (min-width: 1100px) { .saisie-dates { grid-template-columns: 1fr 1fr; } }
+        .saisie-panneau-vide { display: none; }
+        @media (min-width: 640px) {
+          .saisie-page { max-width: 80rem; }
+          .saisie-grille {
+            display: grid;
+            grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+            gap: 1.5rem;
+            align-items: start;
+          }
+          .saisie-liste { max-height: calc(100vh - 17rem); overflow-y: auto; margin-bottom: 0 !important; }
+          .saisie-panneau {
+            position: sticky; top: 0;
+            max-height: calc(100vh - 3rem);
+            overflow-y: auto;
+          }
+          .saisie-panneau-vide {
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; text-align: center; min-height: 320px;
+          }
+          .saisie-panneau-haut { margin-top: 0 !important; }
+        }
+      `}</style>
       <p className="font-extrabold text-2xl text-gray-900 mb-1">
         Saisie manuelle
       </p>
@@ -286,6 +479,8 @@ export default function SaisieManuellePage() {
         </div>
       )}
 
+      <div className="saisie-grille">
+      <div className="min-w-0">
       <form
         onSubmit={lancerRecherche}
         className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full mb-4"
@@ -374,39 +569,195 @@ export default function SaisieManuellePage() {
           Aucune séance ne correspond à ce filtre.
         </div>
       ) : resultatsFiltres.length > 0 ? (
-        <div className="bg-white rounded-[20px] overflow-hidden mb-5">
+        <div className="bg-white rounded-[20px] overflow-hidden mb-5 saisie-liste">
+          <label className="flex items-center gap-3 px-5 py-2.5 border-b border-gray-100 bg-gray-50/60 cursor-pointer text-xs font-bold text-gray-500">
+            <input
+              type="checkbox"
+              checked={toutesCocheesFiltrees}
+              onChange={basculerToutesFiltrees}
+              className="shrink-0"
+            />
+            Tout cocher ({resultatsFiltres.length}) — saisie en groupe
+          </label>
           {resultatsFiltres.map((s) => (
-            <button
+            <div
               key={s.id}
-              onClick={() => selectionner(s)}
-              className={`w-full text-left flex items-center justify-between gap-3 px-5 py-3.5 border-b border-gray-50 last:border-0 hover:bg-gray-50 ${
-                selection?.id === s.id ? 'bg-red-50' : ''
+              className={`flex items-stretch border-b border-gray-50 last:border-0 hover:bg-gray-50 ${
+                selection?.id === s.id
+                  ? 'bg-red-50 border-l-4 border-l-red-600'
+                  : ''
               }`}
             >
-              <div className="min-w-0">
-                <p className="font-bold text-sm text-gray-900 truncate">
-                  {s.ueNom}
-                </p>
-                <p className="text-xs text-gray-400">{s.enseignantNom}</p>
-              </div>
-              <div className="text-right shrink-0">
-                <p className="text-xs font-bold text-gray-500">
-                  {s.jour} {formatDateCourte(dateAttendue(s.semaine, s.jour))}{' '}
-                  · {s.creneau}
-                </p>
-                {s.heureOuverture && s.heureFermeture && (
-                  <p className="text-[11px] font-semibold text-green-600">
-                    Déjà renseignée
+              <label className="flex items-center pl-5 pr-1 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={cochees.has(s.id)}
+                  onChange={() => basculerCochee(s.id)}
+                  className="shrink-0"
+                />
+              </label>
+              <button
+                onClick={() => selectionner(s)}
+                className="flex-1 min-w-0 text-left flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-4 py-3.5"
+              >
+                <div className="min-w-[9rem] flex-1">
+                  <p className="font-bold text-sm text-gray-900">
+                    {s.ueNom}
                   </p>
-                )}
-              </div>
-            </button>
+                  <p className="text-xs text-gray-400">{s.enseignantNom}</p>
+                </div>
+                <div className="shrink-0">
+                  <p className="text-xs font-bold text-gray-500">
+                    {s.jour} {formatDateCourte(dateAttendue(s.semaine, s.jour))}{' '}
+                    · {s.creneau}
+                  </p>
+                  {s.heureOuverture && s.heureFermeture && (
+                    <p className="text-[11px] font-semibold text-green-600">
+                      Déjà renseignée
+                    </p>
+                  )}
+                </div>
+              </button>
+            </div>
           ))}
         </div>
       ) : null}
 
+      </div>
+
+      <div
+        ref={panneauRef}
+        className="saisie-panneau min-w-0"
+      >
+      {(cochees.size > 0 || groupeMessage) && (
+        <div className="bg-white rounded-[20px] p-6 mb-5 border-2 border-red-600">
+          <p className="font-extrabold text-gray-900 mb-0.5">
+            Saisie en groupe — {seancesCochees.length} séance
+            {seancesCochees.length > 1 ? 's' : ''} sélectionnée
+            {seancesCochees.length > 1 ? 's' : ''}
+          </p>
+          <p className="text-xs text-gray-400 mb-4">
+            Les heures s'appliquent à la date réelle de chaque séance
+            (±{MARGE_TOLERANCE_MIN} min tolérés autour de son créneau).
+          </p>
+
+          <label className="block mb-3">
+            <span className="text-xs font-bold text-gray-500 mb-1 block">
+              Jour {jourCommun ? '(commun aux séances cochées)' : ''}
+            </span>
+            <input
+              type="date"
+              value={jourEffectif}
+              onChange={(e) => setGroupeJour(e.target.value || null)}
+              className="w-full bg-gray-50 rounded-xl px-3 py-2 text-sm font-semibold outline-none"
+            />
+            <span className="text-[11px] text-gray-400 mt-1 block">
+              {jourCommun
+                ? 'Toutes les séances cochées ont lieu ce jour-là.'
+                : 'Les séances cochées sont sur des jours différents : laisse vide pour que chacune garde son propre jour, ou choisis un jour commun.'}
+              {groupeJour && (
+                <button
+                  type="button"
+                  onClick={() => setGroupeJour(null)}
+                  className="ml-2 font-bold text-red-600 hover:underline"
+                >
+                  Remettre automatique
+                </button>
+              )}
+            </span>
+          </label>
+
+          <label className="flex items-center gap-2 text-sm font-semibold text-gray-700 mb-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={groupeCreneau}
+              onChange={(e) => setGroupeCreneau(e.target.checked)}
+            />
+            Utiliser les heures exactes du créneau de chaque séance
+            (ex : 08h → 12h)
+          </label>
+
+          {!groupeCreneau && (
+            <div className="saisie-dates mb-4">
+              <label className="block">
+                <span className="text-xs font-bold text-gray-500 mb-1 block">
+                  Heure d'arrivée
+                </span>
+                <input
+                  type="time"
+                  value={groupeArrivee}
+                  onChange={(e) => setGroupeArrivee(e.target.value)}
+                  className="w-full bg-gray-50 rounded-xl px-3 py-2 text-sm font-semibold outline-none"
+                />
+              </label>
+              <label className="block">
+                <span className="text-xs font-bold text-gray-500 mb-1 block">
+                  Heure de départ
+                </span>
+                <input
+                  type="time"
+                  value={groupeDepart}
+                  onChange={(e) => setGroupeDepart(e.target.value)}
+                  className="w-full bg-gray-50 rounded-xl px-3 py-2 text-sm font-semibold outline-none"
+                />
+              </label>
+            </div>
+          )}
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={handleEnregistrerGroupe}
+              disabled={groupeEnCours || seancesCochees.length === 0}
+              className="flex items-center gap-2 bg-red-600 rounded-full px-4 py-2 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-40"
+            >
+              {groupeEnCours ? (
+                <Loader2 size={15} className="animate-spin" />
+              ) : (
+                <Save size={15} />
+              )}
+              Enregistrer pour {seancesCochees.length} séance
+              {seancesCochees.length > 1 ? 's' : ''}
+            </button>
+            <button
+              onClick={() => {
+                setCochees(new Set());
+                setGroupeJour(null);
+                setGroupeMessage(null);
+              }}
+              className="text-xs font-bold text-gray-500 hover:text-gray-800"
+            >
+              Tout décocher
+            </button>
+          </div>
+          {groupeMessage && (
+            <p
+              className={`text-xs font-semibold mt-3 ${
+                groupeMessage.ok ? 'text-green-600' : 'text-red-600'
+              }`}
+            >
+              {groupeMessage.texte}
+            </p>
+          )}
+        </div>
+      )}
+
+      {!selection && cochees.size === 0 && !groupeMessage && (
+        <div className="saisie-panneau-vide bg-white rounded-[20px] p-12">
+          <div className="w-12 h-12 rounded-full bg-red-50 text-red-600 flex items-center justify-center mb-3">
+            <MousePointerClick size={22} />
+          </div>
+          <p className="font-extrabold text-gray-900 mb-1">
+            Sélectionne une séance
+          </p>
+          <p className="text-sm text-gray-400 max-w-xs">
+            Clique sur un cours ou un enseignant dans la liste : la saisie
+            des heures et le rapport de séance s'afficheront ici.
+          </p>
+        </div>
+      )}
+
       {selection && (
-        <div className="bg-white rounded-[20px] p-6">
+        <div className="bg-white rounded-[20px] p-6 mt-5 saisie-panneau-haut">
           <p className="font-extrabold text-gray-900 mb-0.5">
             {selection.ueNom}
           </p>
@@ -426,7 +777,7 @@ export default function SaisieManuellePage() {
             (±{MARGE_TOLERANCE_MIN} min tolérés)
           </p>
 
-          <div className="grid sm:grid-cols-2 gap-3 mb-4">
+          <div className="saisie-dates mb-4">
             <label className="block">
               <span className="text-xs font-bold text-gray-500 mb-1 block">
                 Heure d'ouverture
@@ -498,6 +849,8 @@ export default function SaisieManuellePage() {
           />
         </div>
       )}
+      </div>
+      </div>
     </div>
   );
 }
