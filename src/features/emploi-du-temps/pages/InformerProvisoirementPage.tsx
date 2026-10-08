@@ -74,7 +74,7 @@ function construireMessage(
           })`
       ),
       '',
-      'This is a provisional timetable. Kindly confirm (validate) that this schedule suits you, please.',
+      'This is a provisional timetable. We kindly ask you to confirm (validate) that this schedule suits you tomorrow before 10 AM at the latest.',
       '',
       'Thank you.',
     ].join('\n');
@@ -92,7 +92,7 @@ function construireMessage(
         })`
     ),
     '',
-    "Il s'agit d'un emploi du temps provisoire. Bien vouloir nous confirmer (valider) que ce programme vous convient, svp.",
+    "Il s'agit d'un emploi du temps provisoire. Nous vous prions de bien vouloir nous confirmer (valider) que ce programme vous convient demain avant 10h au plus tard.",
     '',
     'Merci.',
   ].join('\n');
