@@ -199,6 +199,22 @@ function appliquerChangement(
 // qui existait déjà mais n'était jamais utilisé). ValidationEDTPage n'a
 // donc plus besoin de recevoir quoi que ce soit — il lit directement ce
 // qui a été enregistré en base pour ce cycle/semestre/semaine.
+// Les erreurs Supabase/PostgREST ne sont PAS des instances d'Error (ce
+// sont des objets simples) : sans ça, le vrai message (contrainte
+// violée, droit refusé, colonne manquante...) était perdu.
+function detailErreur(err: unknown): string {
+  if (!err) return '.';
+  if (err instanceof Error) return ` : ${err.message}`;
+  if (typeof err === 'object') {
+    const e = err as { message?: string; details?: string; hint?: string; code?: string };
+    const morceaux = [e.message, e.details, e.hint, e.code ? `(code ${e.code})` : '']
+      .filter(Boolean)
+      .join(' — ');
+    if (morceaux) return ` : ${morceaux}`;
+  }
+  return '.';
+}
+
 export default function GenererEDTPage() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
@@ -897,11 +913,7 @@ export default function GenererEDTPage() {
       // périmé : on vient d'écrire en base).
       await chargerGroupe({ ignorerLocal: true });
     } catch (err) {
-      setErreurChargement(
-        err instanceof Error
-          ? `Erreur lors de l'enregistrement : ${err.message}`
-          : "Erreur lors de l'enregistrement."
-      );
+      setErreurChargement(`Erreur lors de l'enregistrement${detailErreur(err)}`);
       setEnvoiEnCours(false);
       return;
     } finally {
@@ -945,9 +957,7 @@ export default function GenererEDTPage() {
       );
     } catch (err) {
       setErreurChargement(
-        err instanceof Error
-          ? `Erreur lors de l'enregistrement de la sélection : ${err.message}`
-          : "Erreur lors de l'enregistrement de la sélection."
+        `Erreur lors de l'enregistrement de la sélection${detailErreur(err)}`
       );
     } finally {
       setEnregistrementSelectionEnCours(false);

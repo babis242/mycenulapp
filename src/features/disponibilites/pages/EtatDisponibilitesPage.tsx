@@ -7,6 +7,7 @@ import {
   StopCircle,
   Plus,
   Printer,
+  FileText,
   CheckCircle2,
   X,
   Search,
@@ -215,6 +216,12 @@ export default function EtatDisponibilitesPage() {
             className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
           >
             <Printer size={16} /> Export PDF
+          </button>
+          <button
+            onClick={() => navigate('/disponibilites/pdf')}
+            className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2 text-sm font-bold text-gray-700 hover:bg-gray-50"
+          >
+            <FileText size={16} /> PDF par cycle
           </button>
           {campagne.statut === 'active' && (
             <button

@@ -22,7 +22,13 @@ import { CYCLES, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import {
   createTroncCommun,
   enregistrerPointsClesTronc,
+  getTroncCommunDeUE,
 } from '@/features/referentiel/troncs-communs/api';
+import {
+  attribuerCoursEtGroupe,
+  listEnseignantsOptions,
+  type EnseignantOption,
+} from '@/features/repartition/api';
 import type { TypeCursus } from '@/types';
 
 interface Ecole {
@@ -245,6 +251,12 @@ function ModaleCreation({
 // Une UE = une spécialité. Le tronc commun n'est plus géré ici : c'est un
 // Jumelage créé après coup (Référentiel → Jumelages), qui regroupe
 // plusieurs UEs distinctes sans les modifier.
+function detailErreur(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === 'object' && 'message' in err) return String((err as any).message);
+  return 'erreur inconnue';
+}
+
 export default function AjouterUEPage() {
   const navigate = useNavigate();
   const enLigne = useOnlineStatus();
@@ -284,6 +296,17 @@ export default function AjouterUEPage() {
   const [analyseEnCours, setAnalyseEnCours] = useState(false);
   const [erreurAnalyse, setErreurAnalyse] = useState<string | null>(null);
   const [pointsCles, setPointsCles] = useState<string[]>([]);
+
+  // Attribution directe (optionnelle) de l'enseignant à la création.
+  const [enseignants, setEnseignants] = useState<EnseignantOption[]>([]);
+  const [enseignantId, setEnseignantId] = useState('');
+  const [rechercheEnseignant, setRechercheEnseignant] = useState('');
+
+  useEffect(() => {
+    if (navigator.onLine) {
+      listEnseignantsOptions().then(setEnseignants).catch(() => setEnseignants([]));
+    }
+  }, []);
 
   useEffect(() => {
     if (navigator.onLine) {
@@ -534,6 +557,16 @@ export default function AjouterUEPage() {
       setError("Le nom de l'UE est obligatoire.");
       return;
     }
+    if (enseignantId && !fichierSyllabus) {
+      setError(
+        "Pour attribuer un enseignant maintenant, importe d'abord le syllabus (un cours ne s'attribue jamais sans syllabus)."
+      );
+      return;
+    }
+    if (enseignantId && !navigator.onLine) {
+      setError("L'attribution d'un enseignant nécessite une connexion Internet.");
+      return;
+    }
 
     if (modeTronc) {
       if (specialitesTronc.length < 2) {
@@ -585,6 +618,28 @@ export default function AjouterUEPage() {
           );
         }
 
+        if (enseignantId) {
+          try {
+            const troncComplet = await getTroncCommunDeUE(uesCreees[0]);
+            await attribuerCoursEtGroupe(
+              {
+                offreId: '',
+                ueId: uesCreees[0],
+                ueNom: nom.trim(),
+                attributionId: null,
+                enseignantId: null,
+                enseignantNom: null,
+                troncCommun: troncComplet,
+              },
+              enseignantId
+            );
+          } catch (errAttrib) {
+            window.alert(
+              `Le tronc commun a été créé, mais l'attribution de l'enseignant a échoué : ${detailErreur(errAttrib)}\nTu peux l'attribuer depuis Répartition → Troncs communs.`
+            );
+          }
+        }
+
         navigate(`/referentiel/troncs-communs/${tronc.id}`);
       } catch (err) {
         setError(
@@ -630,6 +685,27 @@ export default function AjouterUEPage() {
             ue.id,
             pointsCles.map((p) => p.trim()).filter(Boolean)
           );
+        }
+
+        if (enseignantId) {
+          try {
+            await attribuerCoursEtGroupe(
+              {
+                offreId: ue.offreId,
+                ueId: ue.id,
+                ueNom: nom.trim(),
+                attributionId: null,
+                enseignantId: null,
+                enseignantNom: null,
+                troncCommun: null,
+              },
+              enseignantId
+            );
+          } catch (errAttrib) {
+            window.alert(
+              `L'UE a été créée, mais l'attribution de l'enseignant a échoué : ${detailErreur(errAttrib)}\nTu peux l'attribuer depuis Répartition.`
+            );
+          }
         }
       } else {
         // Hors ligne : id généré côté client pour pouvoir l'afficher tout
@@ -1105,6 +1181,60 @@ export default function AjouterUEPage() {
               </select>
             </div>
               </div>
+            </>
+          )}
+        </div>
+
+        <div className="bg-white rounded-[20px] p-5">
+          <p className="font-extrabold text-sm text-gray-900 mb-0.5">
+            Enseignant{' '}
+            <span className="text-gray-400 font-semibold">(optionnel)</span>
+          </p>
+          <p className="text-xs text-gray-400 mb-3">
+            Attribue l'enseignant tout de suite, sans repasser par la
+            Répartition. Nécessite le syllabus
+            {modeTronc ? ' ; il sera attribué à tout le tronc commun' : ''}.
+          </p>
+          {!enLigne ? (
+            <p className="text-xs font-semibold text-amber-700">
+              Disponible uniquement en ligne.
+            </p>
+          ) : (
+            <>
+              <input
+                value={rechercheEnseignant}
+                onChange={(e) => setRechercheEnseignant(e.target.value)}
+                placeholder="Rechercher un enseignant (nom ou matricule)..."
+                className="w-full border border-gray-200 rounded-xl px-3.5 py-2 text-sm font-semibold outline-none focus:border-red-600 mb-2"
+              />
+              <select
+                value={enseignantId}
+                onChange={(e) => setEnseignantId(e.target.value)}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
+              >
+                <option value="">Aucun — je l'attribuerai plus tard</option>
+                {enseignants
+                  .filter((en) => {
+                    const q = rechercheEnseignant.trim().toLowerCase();
+                    return (
+                      en.id === enseignantId ||
+                      !q ||
+                      en.nom.toLowerCase().includes(q) ||
+                      en.matricule.toLowerCase().includes(q)
+                    );
+                  })
+                  .map((en) => (
+                    <option key={en.id} value={en.id}>
+                      {en.nom} ({en.matricule})
+                    </option>
+                  ))}
+              </select>
+              {enseignantId && !fichierSyllabus && (
+                <p className="text-xs font-semibold text-red-600 mt-2">
+                  Importe le syllabus plus haut pour pouvoir attribuer cet
+                  enseignant.
+                </p>
+              )}
             </>
           )}
         </div>

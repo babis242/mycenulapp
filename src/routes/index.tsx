@@ -28,6 +28,7 @@ import DetailMonCoursPage from '@/features/seances/pages/DetailMonCoursPage';
 import ImporterAttributionsPage from '@/features/repartition/pages/ImporterAttributionsPage';
 import AttributionTroncsCommunsPage from '@/features/repartition/pages/AttributionTroncsCommunsPage';
 import LancerDemandePage from '@/features/disponibilites/pages/LancerDemandePage';
+import DisponibilitesPdfPage from '@/features/disponibilites/pages/DisponibilitesPdfPage';
 import SaisieDisponibilitesPage from '@/features/disponibilites/pages/SaisieDisponibilitesPage';
 import EtatDisponibilitesPage from '@/features/disponibilites/pages/EtatDisponibilitesPage';
 import GenererEDTPage from '@/features/emploi-du-temps/pages/GenererEDTPage';
@@ -182,6 +183,10 @@ export default function AppRoutes() {
             <Route
               path="/disponibilites/etat"
               element={<EtatDisponibilitesPage />}
+            />
+            <Route
+              path="/disponibilites/pdf"
+              element={<DisponibilitesPdfPage />}
             />
           </Route>
 

@@ -571,3 +571,165 @@ export async function getDisponibilitesEnseignant(
     .eq('enseignant_id', enseignantId);
   return data ?? [];
 }
+// ── PDF des disponibilités par cycle + spécialités ───────────────────
+
+export interface SpecialiteDuCycle {
+  id: string;
+  nom: string;
+  ecoleNom: string;
+  filiereNom: string;
+}
+
+// Toutes les spécialités d'un cycle (sans filtre de semestre), pour les
+// cocher avant de générer le PDF.
+export async function listSpecialitesDuCycle(
+  cycle: string,
+  sousCycle: string | null,
+  perimetreSpecialiteIds: string[] | null
+): Promise<SpecialiteDuCycle[]> {
+  let query = supabase
+    .from('specialites')
+    .select('id, nom, filiere:filieres(nom, ecole:ecoles(nom))')
+    .eq('cycle', cycle);
+  query = sousCycle
+    ? query.eq('sous_cycle', sousCycle)
+    : query.is('sous_cycle', null);
+  const { data, error } = await query;
+  if (error) throw error;
+  return ((data ?? []) as any[])
+    .filter((s) => !perimetreSpecialiteIds || perimetreSpecialiteIds.includes(s.id))
+    .map((s) => ({
+      id: s.id,
+      nom: s.nom,
+      ecoleNom: s.filiere?.ecole?.nom ?? '',
+      filiereNom: s.filiere?.nom ?? '',
+    }))
+    .sort((a, b) => a.nom.localeCompare(b.nom));
+}
+
+export interface LigneDisponibilitesEnseignant {
+  enseignantId: string;
+  nom: string;
+  matricule: string;
+  specialites: string[];
+  specialiteIds: string[];
+  aRepondu: boolean;
+  // clés "jour|creneau" cochées par l'enseignant
+  cases: Set<string>;
+}
+
+function parLots<T>(liste: T[], taille: number): T[][] {
+  const lots: T[][] = [];
+  for (let i = 0; i < liste.length; i += taille) lots.push(liste.slice(i, i + taille));
+  return lots;
+}
+
+// Pour chaque enseignant ayant une attribution active sur l'une des
+// spécialités choisies : les disponibilités qu'il a cochées dans la
+// campagne la plus récente à laquelle il a été rattaché (requêtes à plat,
+// par lots, pour rester sous la limite de 1000 lignes).
+export async function getDisponibilitesParSpecialites(
+  specialiteIds: string[]
+): Promise<LigneDisponibilitesEnseignant[]> {
+  if (specialiteIds.length === 0) return [];
+
+  const { data: specs, error: specsError } = await supabase
+    .from('specialites')
+    .select('id, nom')
+    .in('id', specialiteIds);
+  if (specsError) throw specsError;
+  const nomSpecialite = new Map((specs ?? []).map((s: any) => [s.id, s.nom as string]));
+
+  const { data: offres, error: offresError } = await supabase
+    .from('offres')
+    .select('id, specialite_id')
+    .in('specialite_id', specialiteIds);
+  if (offresError) throw offresError;
+  const specialiteParOffre = new Map(
+    (offres ?? []).map((o: any) => [o.id, o.specialite_id as string])
+  );
+  const offreIds = Array.from(specialiteParOffre.keys());
+  if (offreIds.length === 0) return [];
+
+  const specialitesParEnseignant = new Map<string, Set<string>>();
+  const specialiteIdsParEnseignant = new Map<string, Set<string>>();
+  for (const lot of parLots(offreIds, 80)) {
+    const { data: attributions, error } = await supabase
+      .from('attributions')
+      .select('offre_id, enseignant_id')
+      .in('offre_id', lot)
+      .eq('statut', 'actif');
+    if (error) throw error;
+    for (const a of (attributions ?? []) as any[]) {
+      const specId = specialiteParOffre.get(a.offre_id) ?? '';
+      const nom = nomSpecialite.get(specId);
+      if (!nom) continue;
+      if (!specialiteIdsParEnseignant.has(a.enseignant_id))
+        specialiteIdsParEnseignant.set(a.enseignant_id, new Set());
+      specialiteIdsParEnseignant.get(a.enseignant_id)!.add(specId);
+      if (!specialitesParEnseignant.has(a.enseignant_id))
+        specialitesParEnseignant.set(a.enseignant_id, new Set());
+      specialitesParEnseignant.get(a.enseignant_id)!.add(nom);
+    }
+  }
+  const enseignantIds = Array.from(specialitesParEnseignant.keys());
+  if (enseignantIds.length === 0) return [];
+
+  const infos = new Map<string, { nom: string; matricule: string }>();
+  for (const lot of parLots(enseignantIds, 80)) {
+    const { data, error } = await supabase
+      .from('enseignants')
+      .select('id, nom, matricule')
+      .in('id', lot);
+    if (error) throw error;
+    for (const e of (data ?? []) as any[]) infos.set(e.id, { nom: e.nom, matricule: e.matricule });
+  }
+
+  // Campagne la plus récente de chaque enseignant.
+  const campagneParEnseignant = new Map<string, string>();
+  for (const lot of parLots(enseignantIds, 80)) {
+    const m = await getDernieresCampagnesParEnseignant(lot);
+    m.forEach((campagneId, ensId) => campagneParEnseignant.set(ensId, campagneId));
+  }
+
+  // Disponibilités cochées, par campagne puis par lots d'enseignants.
+  const casesParEnseignant = new Map<string, Set<string>>();
+  const aReponduIds = new Set<string>();
+  const parCampagne = new Map<string, string[]>();
+  campagneParEnseignant.forEach((campagneId, ensId) => {
+    if (!parCampagne.has(campagneId)) parCampagne.set(campagneId, []);
+    parCampagne.get(campagneId)!.push(ensId);
+  });
+  for (const [campagneId, ids] of parCampagne) {
+    for (const lot of parLots(ids, 40)) {
+      // 40 enseignants × 12 cases ≈ 480 lignes (< 1000), toutes lignes
+      // (cochées ou non) pour savoir qui a répondu.
+      const { data, error } = await supabase
+        .from('disponibilites')
+        .select('enseignant_id, jour, creneau, disponible')
+        .eq('campagne_id', campagneId)
+        .in('enseignant_id', lot)
+        .range(0, 999);
+      if (error) throw error;
+      for (const d of (data ?? []) as any[]) {
+        aReponduIds.add(d.enseignant_id);
+        if (!d.disponible) continue;
+        if (!casesParEnseignant.has(d.enseignant_id))
+          casesParEnseignant.set(d.enseignant_id, new Set());
+        casesParEnseignant.get(d.enseignant_id)!.add(`${d.jour}|${d.creneau}`);
+      }
+    }
+  }
+
+  return enseignantIds
+    .map((id) => ({
+      enseignantId: id,
+      nom: infos.get(id)?.nom ?? '(inconnu)',
+      matricule: infos.get(id)?.matricule ?? '',
+      specialites: Array.from(specialitesParEnseignant.get(id) ?? []).sort(),
+      specialiteIds: Array.from(specialiteIdsParEnseignant.get(id) ?? []),
+      aRepondu: aReponduIds.has(id),
+      cases: casesParEnseignant.get(id) ?? new Set<string>(),
+    }))
+    .sort((a, b) => a.nom.localeCompare(b.nom));
+}

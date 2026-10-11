@@ -352,14 +352,18 @@ export async function createUE(input: NouvelleUE) {
 
   if (ueError) throw ueError;
 
-  const { error: offreError } = await supabase.from('offres').insert({
-    ue_id: ue.id,
-    specialite_id: input.specialite_id,
-    semestre: input.semestre,
-  });
+  const { data: offre, error: offreError } = await supabase
+    .from('offres')
+    .insert({
+      ue_id: ue.id,
+      specialite_id: input.specialite_id,
+      semestre: input.semestre,
+    })
+    .select('id')
+    .single();
   if (offreError) throw offreError;
 
-  return ue;
+  return { ...ue, offreId: offre.id as string };
 }
 
 // ── Détail / Modification / Suppression (écran 1.5) ──────────────
