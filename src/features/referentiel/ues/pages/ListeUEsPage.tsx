@@ -61,9 +61,9 @@ export default function ListeUEsPage() {
     .filter((ue) => !idsSupprimes.has(ue.id))
     .filter((ue) => ue.nom.toLowerCase().includes(search.toLowerCase()))
     .filter(
-      (ue) => !specialiteFiltre || ue.offre?.specialite.id === specialiteFiltre
+      (ue) => !specialiteFiltre || ue.offre?.specialite?.id === specialiteFiltre
     )
-    .filter((ue) => !cycleFiltre || ue.offre?.specialite.cycle === cycleFiltre)
+    .filter((ue) => !cycleFiltre || ue.offre?.specialite?.cycle === cycleFiltre)
     .filter((ue) => !semestreFiltre || ue.offre?.semestre === semestreFiltre);
 
   const specialiteChoisie = toutesSpecialites.find(
@@ -342,7 +342,7 @@ export default function ListeUEsPage() {
                 const specialites = Array.from(
                   new Set(
                     uesDuSemestre.map(
-                      (ue) => ue.offre?.specialite.nom ?? 'Sans spécialité'
+                      (ue) => ue.offre?.specialite?.nom ?? 'Sans spécialité'
                     )
                   )
                 ).sort();
@@ -370,7 +370,7 @@ export default function ListeUEsPage() {
                         {uesDuSemestre
                           .filter(
                             (ue) =>
-                              (ue.offre?.specialite.nom ?? 'Sans spécialité') ===
+                              (ue.offre?.specialite?.nom ?? 'Sans spécialité') ===
                               specialite
                           )
                           .map((ue) => (
@@ -407,7 +407,7 @@ export default function ListeUEsPage() {
                                 {ue.volume_horaire ?? '—'}
                               </td>
                               <td className="px-5 py-3.5 text-gray-500">
-                                {ue.offre?.specialite.nom ?? '—'}
+                                {ue.offre?.specialite?.nom ?? '—'}
                               </td>
                               <td className="px-5 py-3.5">
                                 <span

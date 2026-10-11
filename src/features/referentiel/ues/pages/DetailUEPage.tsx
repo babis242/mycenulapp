@@ -376,11 +376,11 @@ export default function DetailUEPage() {
               {ue.offre ? (
                 <>
                   <p className="text-sm font-bold text-gray-900">
-                    {ue.offre.specialite.nom} — {ue.offre.semestre}
+                    {ue.offre.specialite?.nom ?? 'Spécialité inconnue'} — {ue.offre.semestre}
                   </p>
                   <p className="text-xs text-gray-400">
-                    {ue.offre.specialite.filiere.ecole.nom} ·{' '}
-                    {ue.offre.specialite.filiere.nom}
+                    {ue.offre.specialite?.filiere?.ecole?.nom ?? '—'} ·{' '}
+                    {ue.offre.specialite?.filiere?.nom ?? '—'}
                   </p>
                 </>
               ) : (
