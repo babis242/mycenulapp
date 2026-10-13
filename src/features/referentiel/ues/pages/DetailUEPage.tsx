@@ -16,7 +16,10 @@ import {
 } from 'lucide-react';
 import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
 import { extraireTextePdf } from '@/lib/pdfExtraction';
-import { getTroncCommunDeUE } from '@/features/referentiel/troncs-communs/api';
+import {
+  getTroncCommunDeUE,
+  updateVolumeHoraireTroncCommun,
+} from '@/features/referentiel/troncs-communs/api';
 import {
   getUE,
   updateUE,
@@ -116,6 +119,14 @@ export default function DetailUEPage() {
         volume_horaire: volumeHoraire ? Number(volumeHoraire) : undefined,
         coefficient: coefficient ? Number(coefficient) : undefined,
       });
+      // UE d'un tronc commun : le volume horaire est partagé par tout le
+      // groupe — on l'aligne sur toutes les UEs du tronc.
+      if (troncCommun) {
+        await updateVolumeHoraireTroncCommun(
+          troncCommun.id,
+          volumeHoraire ? Number(volumeHoraire) : null
+        );
+      }
       setUe((prev) => (prev ? { ...prev, nom: nom.trim(), code } : prev));
       setEditing(false);
     } catch (err) {

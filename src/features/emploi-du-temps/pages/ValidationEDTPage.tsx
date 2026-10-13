@@ -19,6 +19,8 @@ import {
   listCyclesDisponibles,
   listSpecialitesEnvoyeesEnValidation,
   getSeancesGroupees,
+  filtrerSeancesDuSemestre,
+  seanceDuSemestre,
   getHeuresValideesPourPdf,
   getHeuresValideesTroncPourPdf,
   uploaderDocumentSigneGroupe,
@@ -148,6 +150,7 @@ export default function ValidationEDTPage() {
   // (statut 'en_attente_validation' ou 'valide' en base) — pas toutes
   // celles du cycle/semestre.
   const [specialites, setSpecialites] = useState<SpecialiteGroupe[]>([]);
+  const [troncSemestres, setTroncSemestres] = useState<Map<string, Set<string>>>(new Map());
   const [specialiteAffichee, setSpecialiteAffichee] = useState('');
   const [emplois, setEmplois] = useState<EmploiGroupe[]>([]);
   const [seances, setSeances] = useState<SeanceGroupee[]>([]);
@@ -240,9 +243,15 @@ export default function ValidationEDTPage() {
         })
       );
 
-      const donnees = await getSeancesGroupees(specialiteIds, semaine);
+      const donneesBrutes = await getSeancesGroupees(specialiteIds, semaine);
+      // Uniquement les séances du semestre choisi (S1 ≠ S3).
+      const donnees = {
+        ...donneesBrutes,
+        seances: filtrerSeancesDuSemestre(donneesBrutes, specialiteIds, semestre),
+      };
       setSeances(donnees.seances);
       setSpecialitesParTronc(donnees.specialitesParTronc);
+      setTroncSemestres(donnees.troncSpecialiteSemestres);
 
       const troncIdsGlobal = Array.from(
         new Set(
@@ -561,7 +570,8 @@ export default function ValidationEDTPage() {
                               (s.troncCommunId &&
                                 specialitesParTronc
                                   .get(s.troncCommunId)
-                                  ?.has(specialiteAffichee)))
+                                  ?.has(specialiteAffichee) &&
+                                seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres)))
                         );
                         return (
                           <td
@@ -672,7 +682,8 @@ export default function ValidationEDTPage() {
                 (s) =>
                   s.specialiteId === sp.id ||
                   (s.troncCommunId &&
-                    specialitesParTronc.get(s.troncCommunId)?.has(sp.id))
+                    specialitesParTronc.get(s.troncCommunId)?.has(sp.id) &&
+                    seanceDuSemestre(s, sp.id, semestre, troncSemestres))
               );
               const heuresEffectuees =
                 heuresEffectueesParSpecialite.get(sp.id) ?? new Map();

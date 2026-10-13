@@ -51,6 +51,8 @@ export interface SnapshotEDT {
   emploiParSpecialite: [string, string][];
   specialitesParTronc: [string, string[]][];
   ueVersTronc: [string, { troncCommunId: string; nom: string }][];
+  // "troncId|specialiteId" → semestres concernés (absent dans les anciens snapshots)
+  troncSpecialiteSemestres?: [string, string[]][];
   statutParSpecialite: [string, string][];
   offresParSpecialite: [string, OffreDeSpecialite[]][];
   toutesSalles: SalleLocale[];
@@ -173,7 +175,7 @@ export async function prechargerSnapshotGroupe(
   // requête d'attribution PAR offre, comme listOffresDeSpecialite).
   async function chargerOffres(): Promise<[string, OffreDeSpecialite[]][]> {
     const offres = await lireParLots<any>(specialiteIds, (lot) =>
-      supabase.from('offres').select('id, ue_id, specialite_id').in('specialite_id', lot)
+      supabase.from('offres').select('id, ue_id, specialite_id, semestre').in('specialite_id', lot)
     );
     const ueIds = Array.from(new Set(offres.map((o) => o.ue_id as string)));
     const offreIds = offres.map((o) => o.id as string);
@@ -216,6 +218,7 @@ export async function prechargerSnapshotGroupe(
         ueId: ue.id,
         ueNom: ue.nom,
         volumeHoraire: ue.volume_horaire ?? null,
+        semestre: o.semestre ?? null,
         enseignantAttribueId: enseignantId,
         enseignantAttribueNom: enseignantId ? enseignantParId.get(enseignantId) ?? null : null,
       });
@@ -336,6 +339,9 @@ export async function prechargerSnapshotGroupe(
       ([k, v]) => [k, Array.from(v)] as [string, string[]]
     ),
     ueVersTronc: Array.from(donnees.ueVersTronc.entries()),
+    troncSpecialiteSemestres: Array.from(donnees.troncSpecialiteSemestres.entries()).map(
+      ([k, v]) => [k, Array.from(v)] as [string, string[]]
+    ),
     statutParSpecialite: statuts.map((e) => [e.specialite_id, e.statut] as [string, string]),
     offresParSpecialite,
     toutesSalles,

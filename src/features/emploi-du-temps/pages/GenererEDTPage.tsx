@@ -22,6 +22,7 @@ import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
   invaliderCacheSeancesGroupees,
+  seanceDuSemestre,
   garantirEmploisPourGroupe,
   enregistrerChangementsEnLot,
   listOffresDeSpecialite,
@@ -169,7 +170,7 @@ function appliquerChangement(
     specialiteId: c.specialiteId,
     ueNom: offre?.ueNom ?? '',
     volumeHoraire: offre?.volumeHoraire ?? null,
-    semestre: null,
+    semestre: offre?.semestre ?? null,
     enseignantId: offre?.enseignantAttribueId ?? null,
     enseignantNom: offre?.enseignantAttribueNom ?? '',
     salleCode: salle?.code_salle ?? null,
@@ -258,6 +259,9 @@ export default function GenererEDTPage() {
   >(new Map());
 
   const [toutesSalles, setToutesSalles] = useState<Salle[]>([]);
+  const [troncSemestres, setTroncSemestres] = useState<Map<string, Set<string>>>(
+    new Map()
+  );
   const [offresParSpecialite, setOffresParSpecialite] = useState<
     Map<string, OffreDeSpecialite[]>
   >(new Map());
@@ -415,6 +419,13 @@ export default function GenererEDTPage() {
     setEmploiParSpecialite(emploi);
     setSpecialitesParTronc(groupes);
     setUeVersTronc(new Map(snap.ueVersTronc));
+    setTroncSemestres(
+      new Map(
+        (snap.troncSpecialiteSemestres ?? []).map(
+          ([k, v]) => [k, new Set(v)] as [string, Set<string>]
+        )
+      )
+    );
     setStatutParSpecialite(new Map(snap.statutParSpecialite));
     setOffresParSpecialite(offres);
     setSalleParDefautParSpecialite(new Map(snap.sallesParDefaut));
@@ -984,11 +995,15 @@ export default function GenererEDTPage() {
 
   // Séances visibles pour la spécialité actuellement affichée : les
   // siennes en propre + celles de tronc commun dont elle est membre.
+  // Restreintes au semestre choisi : S1 et S3 d'une même spécialité ne
+  // doivent pas montrer le même emploi du temps.
   const seancesAffichees = seances.filter(
     (s) =>
-      s.specialiteId === specialiteAffichee ||
+      (s.specialiteId === specialiteAffichee &&
+        seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres)) ||
       (s.troncCommunId &&
-        specialitesParTronc.get(s.troncCommunId)?.has(specialiteAffichee))
+        specialitesParTronc.get(s.troncCommunId)?.has(specialiteAffichee) &&
+        seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres))
   );
 
   return (
@@ -1390,8 +1405,9 @@ export default function GenererEDTPage() {
                   UE
                 </label>
                 {(() => {
-                  const offres =
-                    offresParSpecialite.get(modal.specialiteId) ?? [];
+                  const offres = (
+                    offresParSpecialite.get(modal.specialiteId) ?? []
+                  ).filter((o) => !o.semestre || o.semestre === semestre);
                   const disponibles = offres.filter((o) =>
                     enseignantsDispoModal.some(
                       (e) => e.id === o.enseignantAttribueId

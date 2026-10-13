@@ -11,7 +11,7 @@
 import { supabase } from '@/lib/supabase';
 import { urlPubliqueR2 } from '@/lib/r2';
 import { bornesCreneau } from '@/lib/creneaux';
-import { getSeancesGroupees, recupererToutesLesLignes } from './api';
+import { getSeancesGroupees, recupererToutesLesLignes, seanceDuSemestre } from './api';
 
 export interface CoursDebutant {
   ueNom: string;
@@ -68,13 +68,24 @@ function urlSyllabus(cle: string | null | undefined): string | null {
 
 export async function getCoursDebutantsParEnseignant(
   specialiteIds: string[],
-  semaine: string
+  semaine: string,
+  semestre?: string
 ): Promise<Map<string, CoursDebutant[]>> {
   const resultat = new Map<string, CoursDebutant[]>();
   if (specialiteIds.length === 0) return resultat;
 
   const donnees = await getSeancesGroupees(specialiteIds, semaine);
-  const seances = donnees.seances.filter((s) => s.enseignantId);
+  const seances = donnees.seances.filter(
+    (s) =>
+      s.enseignantId &&
+      (s.specialiteId
+        ? seanceDuSemestre(s, s.specialiteId, semestre, donnees.troncSpecialiteSemestres)
+        : specialiteIds.some(
+            (id) =>
+              donnees.specialitesParTronc.get(s.troncCommunId ?? '')?.has(id) &&
+              seanceDuSemestre(s, id, semestre, donnees.troncSpecialiteSemestres)
+          ))
+  );
   if (seances.length === 0) return resultat;
 
   const offreIds = Array.from(

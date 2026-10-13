@@ -24,6 +24,7 @@ import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import {
   getTroncCommun,
   updateTroncCommun,
+  updateVolumeHoraireTroncCommun,
   deleteTroncCommun,
   retirerUEDuTroncCommun,
   ajouterUEsAuTroncCommun,
@@ -58,6 +59,7 @@ export default function DetailTroncCommunPage() {
 
   const [nom, setNom] = useState('');
   const [enseignantId, setEnseignantId] = useState('');
+  const [volumeHoraire, setVolumeHoraire] = useState('');
   const [enseignants, setEnseignants] = useState<EnseignantOption[]>([]);
 
   const [ajoutOuvert, setAjoutOuvert] = useState(false);
@@ -90,6 +92,7 @@ export default function DetailTroncCommunPage() {
         if (data) {
           setNom(data.nom);
           setEnseignantId(data.enseignant_id ?? '');
+          setVolumeHoraire(data.ues[0]?.volume_horaire?.toString() ?? '');
           if (data.syllabus_key) listPointsClesTronc(id).then(setPointsCles);
         }
       })
@@ -118,6 +121,17 @@ export default function DetailTroncCommunPage() {
         nom: nom.trim(),
         enseignant_id: enseignantId || null,
       });
+      const nouveau = volumeHoraire.trim() === '' ? null : Number(volumeHoraire);
+      if (nouveau !== null && (!Number.isFinite(nouveau) || nouveau < 0)) {
+        throw new Error('Le volume horaire doit être un nombre positif.');
+      }
+      const actuel = troncCommun?.ues[0]?.volume_horaire ?? null;
+      const volumesDifferents = new Set(
+        (troncCommun?.ues ?? []).map((u) => u.volume_horaire ?? null)
+      ).size > 1;
+      if (nouveau !== actuel || volumesDifferents) {
+        await updateVolumeHoraireTroncCommun(id, nouveau);
+      }
       recharger();
       setEditing(false);
     } catch (err) {
@@ -379,6 +393,39 @@ export default function DetailTroncCommunPage() {
           ) : (
             <p className="text-sm font-semibold text-gray-900">
               {troncCommun.nom}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs font-bold text-gray-500 mb-1.5">
+            Volume horaire (h){' '}
+            {editing && (
+              <span className="text-gray-300 font-normal">
+                — appliqué à toutes les UEs du groupe
+              </span>
+            )}
+          </label>
+          {editing ? (
+            <input
+              type="number"
+              min={0}
+              step="any"
+              value={volumeHoraire}
+              onChange={(e) => setVolumeHoraire(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600"
+            />
+          ) : (
+            <p className="text-sm font-semibold text-gray-900">
+              {troncCommun.ues[0]?.volume_horaire != null
+                ? `${troncCommun.ues[0].volume_horaire} h`
+                : '—'}
+              {new Set(troncCommun.ues.map((u) => u.volume_horaire ?? null)).size >
+                1 && (
+                <span className="ml-2 text-xs font-bold text-amber-600">
+                  Volumes différents selon les UEs — modifie pour les aligner
+                </span>
+              )}
             </p>
           )}
         </div>

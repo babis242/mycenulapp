@@ -37,6 +37,25 @@ export async function createSalle(input: NouvelleSalle) {
   return data;
 }
 
+// Modifie le code (et/ou la capacité) d'une salle. L'identifiant ne change
+// pas : les séances déjà programmées gardent leur salle, seul le code
+// affiché change partout.
+export async function updateSalle(
+  id: string,
+  input: { code_salle: string; capacite: number }
+): Promise<void> {
+  const { error } = await supabase
+    .from('salles')
+    .update({ code_salle: input.code_salle, capacite: input.capacite })
+    .eq('id', id);
+  if (error) {
+    if ((error as any).code === '23505') {
+      throw new Error('Une salle avec ce code existe déjà.');
+    }
+    throw new Error(error.message);
+  }
+}
+
 export async function deleteSalle(id: string): Promise<void> {
   const { error } = await supabase.from('salles').delete().eq('id', id);
   if (error) throw error;

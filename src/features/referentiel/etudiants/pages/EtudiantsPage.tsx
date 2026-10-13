@@ -65,6 +65,9 @@ export default function EtudiantsPage() {
   const [saving, setSaving] = useState(false);
   const [messageAjout, setMessageAjout] = useState<string | null>(null);
   const [erreur, setErreur] = useState<string | null>(null);
+  // Étudiants lus dans le fichier Excel, en attente de confirmation.
+  const [apercu, setApercu] = useState<NouvelEtudiant[] | null>(null);
+  const [nomFichier, setNomFichier] = useState('');
 
   useEffect(() => {
     if (navigator.onLine) {
@@ -321,6 +324,42 @@ export default function EtudiantsPage() {
     XLSX.writeFile(classeur, 'modele_import_etudiants.xlsx');
   }
 
+  async function enregistrerApercu() {
+    if (!apercu || apercu.length === 0) return;
+    setErreur(null);
+    if (!navigator.onLine) {
+      setErreur(
+        "Pas de connexion internet — l'enregistrement nécessite d'être en ligne. Réessaie dès que le réseau est revenu."
+      );
+      return;
+    }
+    setSaving(true);
+    try {
+      const { ajoutes, doublons } = await ajouterEtudiants(
+        specialiteId,
+        semestre,
+        apercu
+      );
+      setMessageAjout(
+        `${ajoutes} étudiant(s) enregistré(s)` +
+          (doublons > 0 ? `, ${doublons} déjà présent(s) ignoré(s)` : '')
+      );
+      setApercu(null);
+      setModeAjout(null);
+      charger();
+    } catch (err: any) {
+      const detail =
+        err?.message || err?.details || err?.hint || 'erreur inconnue';
+      setErreur(
+        /fetch|network|resolve|internet/i.test(String(detail))
+          ? 'Connexion au serveur impossible — vérifie ta connexion internet et réessaie.'
+          : `Échec de l'enregistrement : ${detail}`
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function handleImportExcel(e: React.ChangeEvent<HTMLInputElement>) {
     const fichier = e.target.files?.[0];
     if (!fichier) return;
@@ -329,6 +368,8 @@ export default function EtudiantsPage() {
 
     const reader = new FileReader();
     reader.onload = async (evt) => {
+      // 1) Lecture du fichier — seule cette étape peut être "illisible".
+      let aAjouter: NouvelEtudiant[];
       try {
         const data = evt.target?.result;
         const classeur = XLSX.read(data, { type: 'binary' });
@@ -336,38 +377,31 @@ export default function EtudiantsPage() {
         const lignes: Record<string, string>[] =
           XLSX.utils.sheet_to_json(feuille);
 
-        const aAjouter: NouvelEtudiant[] = lignes
+        aAjouter = lignes
           .map((l) => ({
             matricule: String(l['Matricule'] ?? '').trim(),
             nom_complet: String(l['Nom complet'] ?? '').trim(),
           }))
           .filter((l) => l.matricule && l.nom_complet);
-
-        if (aAjouter.length === 0) {
-          setErreur(
-            "Aucune ligne valide trouvée (colonnes attendues : Matricule, Nom complet)."
-          );
-          return;
-        }
-
-        setSaving(true);
-        const { ajoutes, doublons } = await ajouterEtudiants(
-          specialiteId,
-          semestre,
-          aAjouter
-        );
-        setMessageAjout(
-          `${ajoutes} étudiant(s) importé(s)` +
-            (doublons > 0 ? `, ${doublons} déjà présent(s) ignoré(s)` : '')
-        );
-        setModeAjout(null);
-        charger();
       } catch {
         setErreur('Fichier illisible — vérifie le format Excel.');
-      } finally {
-        setSaving(false);
         e.target.value = '';
+        return;
       }
+
+      if (aAjouter.length === 0) {
+        setErreur(
+          "Aucune ligne valide trouvée (colonnes attendues : Matricule, Nom complet)."
+        );
+        e.target.value = '';
+        return;
+      }
+
+      // 2) Aperçu : rien n'est enregistré tant que l'admin n'a pas cliqué
+      // sur "Enregistrer".
+      setApercu(aAjouter);
+      setNomFichier(fichier.name);
+      e.target.value = '';
     };
     reader.readAsBinaryString(fichier);
   }
@@ -603,7 +637,10 @@ export default function EtudiantsPage() {
               <div className="flex items-center justify-between mb-4">
                 <p className="font-extrabold text-gray-900">Import Excel</p>
                 <button
-                  onClick={() => setModeAjout(null)}
+                  onClick={() => {
+                    setApercu(null);
+                    setModeAjout(null);
+                  }}
                   className="text-gray-300 hover:text-gray-600"
                 >
                   <X size={18} />
@@ -634,6 +671,84 @@ export default function EtudiantsPage() {
                   className="hidden"
                 />
               </label>
+
+              {apercu && (
+                <div className="mt-5">
+                  <p className="text-sm font-bold text-gray-900 mb-1">
+                    Aperçu — {apercu.length} étudiant(s) lu(s)
+                    {nomFichier ? ` dans « ${nomFichier} »` : ''}
+                  </p>
+                  <p className="text-xs text-gray-400 mb-3">
+                    Rien n'est encore enregistré. Vérifie la liste puis clique sur
+                    « Enregistrer ». Les matricules déjà présents dans ce
+                    semestre seront ignorés.
+                  </p>
+                  <div className="border border-gray-100 rounded-2xl overflow-hidden max-h-72 overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead>
+                        <tr className="bg-gray-50 text-left text-xs font-bold text-gray-400 uppercase tracking-wide">
+                          <th className="px-4 py-2">Matricule</th>
+                          <th className="px-4 py-2">Nom complet</th>
+                          <th className="px-4 py-2"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {apercu.map((l, i) => {
+                          const existe = etudiants.some(
+                            (e) =>
+                              e.matricule.trim().toLowerCase() ===
+                              l.matricule.trim().toLowerCase()
+                          );
+                          return (
+                            <tr key={`${l.matricule}-${i}`} className="border-t border-gray-50">
+                              <td className="px-4 py-2 font-bold text-gray-900">{l.matricule}</td>
+                              <td className="px-4 py-2 text-gray-600">
+                                {l.nom_complet}
+                                {existe && (
+                                  <span className="ml-2 text-[11px] font-bold text-amber-600">
+                                    déjà présent
+                                  </span>
+                                )}
+                              </td>
+                              <td className="px-4 py-2 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setApercu((prev) =>
+                                      prev ? prev.filter((_, k) => k !== i) : prev
+                                    )
+                                  }
+                                  className="text-gray-300 hover:text-red-600"
+                                  title="Retirer cette ligne"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="flex items-center gap-3 mt-4">
+                    <button
+                      onClick={enregistrerApercu}
+                      disabled={saving || apercu.length === 0}
+                      className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
+                    >
+                      {saving && <Loader2 size={15} className="animate-spin" />}
+                      Enregistrer {apercu.length} étudiant(s)
+                    </button>
+                    <button
+                      onClick={() => setApercu(null)}
+                      disabled={saving}
+                      className="px-4 py-2.5 text-sm font-bold text-gray-500"
+                    >
+                      Annuler
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

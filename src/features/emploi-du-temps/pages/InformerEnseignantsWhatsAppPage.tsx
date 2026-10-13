@@ -125,7 +125,8 @@ export default function InformerEnseignantsWhatsAppPage() {
         );
         const donnees = await getInfosNotificationWhatsApp(
           specialites.map((s) => s.id),
-          semaine
+          semaine,
+          semestre
         );
         setEnseignants(donnees);
         // Cours qui débutent (message avec syllabus) — ne bloque pas la page si ça échoue.
@@ -133,7 +134,8 @@ export default function InformerEnseignantsWhatsAppPage() {
           setDebutants(
             await getCoursDebutantsParEnseignant(
               specialites.map((s) => s.id),
-              semaine
+              semaine,
+              semestre
             )
           );
         } catch {

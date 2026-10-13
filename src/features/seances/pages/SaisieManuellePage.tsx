@@ -9,10 +9,12 @@ import {
   MousePointerClick,
 } from 'lucide-react';
 import { db, enqueueSyncAction } from '@/lib/db';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import RapportSeanceForm from '../components/RapportSeanceForm';
 import {
   rechercherSeancesPourSaisieManuelle,
+  dernieresSemaines,
   lireSeancesPourSaisieManuelleDepuisCache,
   saisirHeureManuelle,
   type SeanceRecherche,
@@ -145,23 +147,30 @@ export default function SaisieManuellePage() {
     texte: string;
   } | null>(null);
 
-  async function lancerRecherche(e?: React.FormEvent) {
+  // La recherche respecte toujours la semaine / le jour / le créneau
+  // choisis : seuls les résultats de ce filtre sont retournés.
+  async function lancerRecherche(
+    e?: React.FormEvent,
+    filtres: { semaine: string; jour: string; creneau: string } = {
+      semaine: filtreSemaine,
+      jour: filtreJour,
+      creneau: filtreCreneau,
+    }
+  ) {
     e?.preventDefault();
     setChargement(true);
     setErreur(null);
     setARecherche(true);
     try {
+      const f = {
+        semaine: filtres.semaine || undefined,
+        jour: filtres.jour || undefined,
+        creneau: filtres.creneau || undefined,
+      };
       const data = navigator.onLine
-        ? await rechercherSeancesPourSaisieManuelle(recherche)
-        : await lireSeancesPourSaisieManuelleDepuisCache(recherche);
+        ? await rechercherSeancesPourSaisieManuelle(recherche, f)
+        : await lireSeancesPourSaisieManuelleDepuisCache(recherche, f);
       setResultats(data);
-      // Une nouvelle recherche peut ne plus contenir la semaine/jour/
-      // créneau actuellement filtré (ex: on cherche un autre enseignant)
-      // — on réinitialise pour ne pas se retrouver avec une liste vide
-      // sans comprendre pourquoi.
-      setFiltreSemaine('');
-      setFiltreJour('');
-      setFiltreCreneau('');
     } catch (err) {
       setErreur(err instanceof Error ? err.message : 'Erreur de recherche.');
     } finally {
@@ -173,16 +182,19 @@ export default function SaisieManuellePage() {
   // valeur qui n'existerait dans aucune séance retournée) — semaines
   // triées de la plus récente à la plus ancienne, jours dans l'ordre du
   // calendrier, créneaux dans l'ordre chronologique de la journée.
+  // Options toujours proposées (5 dernières semaines, jours, créneaux
+  // configurés) + celles présentes dans les résultats : on peut choisir
+  // un filtre AVANT de lancer la recherche.
   const semainesDisponibles = Array.from(
-    new Set(resultats.map((s) => s.semaine))
+    new Set([...dernieresSemaines(5), ...resultats.map((s) => s.semaine)])
   ).sort((a, b) => b.localeCompare(a));
 
   const joursDisponibles = Array.from(
-    new Set(resultats.map((s) => s.jour))
+    new Set([...JOURS, ...resultats.map((s) => s.jour)])
   ).sort((a, b) => (JOURS_INDEX[a] ?? 0) - (JOURS_INDEX[b] ?? 0));
 
   const creneauxDisponibles = Array.from(
-    new Set(resultats.map((s) => s.creneau))
+    new Set([...tousLesCreneaux(), ...resultats.map((s) => s.creneau)])
   ).sort((a, b) => bornesCreneau(a).debut - bornesCreneau(b).debut);
 
   const resultatsFiltres = resultats.filter(
@@ -500,11 +512,14 @@ export default function SaisieManuellePage() {
         </button>
       </form>
 
-      {resultats.length > 0 && (
+      {true && (
         <div className="flex flex-wrap items-center gap-2 mb-4">
           <select
             value={filtreSemaine}
-            onChange={(e) => setFiltreSemaine(e.target.value)}
+            onChange={(e) => {
+              setFiltreSemaine(e.target.value);
+              lancerRecherche(undefined, { semaine: e.target.value, jour: filtreJour, creneau: filtreCreneau });
+            }}
             className="bg-white rounded-full px-3.5 py-2 text-xs font-bold text-gray-600 outline-none"
           >
             <option value="">Toutes les semaines</option>
@@ -517,7 +532,10 @@ export default function SaisieManuellePage() {
 
           <select
             value={filtreJour}
-            onChange={(e) => setFiltreJour(e.target.value)}
+            onChange={(e) => {
+              setFiltreJour(e.target.value);
+              lancerRecherche(undefined, { semaine: filtreSemaine, jour: e.target.value, creneau: filtreCreneau });
+            }}
             className="bg-white rounded-full px-3.5 py-2 text-xs font-bold text-gray-600 outline-none"
           >
             <option value="">Tous les jours</option>
@@ -530,7 +548,10 @@ export default function SaisieManuellePage() {
 
           <select
             value={filtreCreneau}
-            onChange={(e) => setFiltreCreneau(e.target.value)}
+            onChange={(e) => {
+              setFiltreCreneau(e.target.value);
+              lancerRecherche(undefined, { semaine: filtreSemaine, jour: filtreJour, creneau: e.target.value });
+            }}
             className="bg-white rounded-full px-3.5 py-2 text-xs font-bold text-gray-600 outline-none"
           >
             <option value="">Tous les créneaux</option>
@@ -547,6 +568,7 @@ export default function SaisieManuellePage() {
                 setFiltreSemaine('');
                 setFiltreJour('');
                 setFiltreCreneau('');
+                lancerRecherche(undefined, { semaine: '', jour: '', creneau: '' });
               }}
               className="text-xs font-bold text-red-600 hover:text-red-700 px-1"
             >

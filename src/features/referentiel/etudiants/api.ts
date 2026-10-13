@@ -1,6 +1,7 @@
 // src/features/referentiel/etudiants/api.ts
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
+import { niveauDeSemestre } from '@/constants/enums';
 
 export interface Etudiant {
   id: string;
@@ -55,11 +56,12 @@ export async function ajouterEtudiants(
 ): Promise<{ ajoutes: number; doublons: number }> {
   if (etudiants.length === 0) return { ajoutes: 0, doublons: 0 };
 
-  const { data: existants } = await supabase
+  const { data: existants, error: erreurExistants } = await supabase
     .from('etudiants')
     .select('matricule')
     .eq('specialite_id', specialiteId)
     .eq('semestre', semestre);
+  if (erreurExistants) throw erreurExistants;
   const matriculesExistants = new Set(
     (existants ?? []).map((e) => e.matricule.trim().toLowerCase())
   );
@@ -76,6 +78,9 @@ export async function ajouterEtudiants(
       nom_complet: e.nom_complet.trim(),
       specialite_id: specialiteId,
       semestre,
+      // La colonne "niveau" est obligatoire en base : déduite du semestre
+      // (S1/S2 → Niveau 1, S3/S4 → Niveau 2, …).
+      niveau: niveauDeSemestre('standard', semestre) ?? 'Niveau 1',
     }))
   );
   if (error) throw error;

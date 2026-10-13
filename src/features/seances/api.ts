@@ -75,7 +75,7 @@ function decalerSemaine(semaineISO: string, nbSemaines: number): string {
 // Les N dernières semaines (lundis), semaine actuelle incluse — utilisé
 // pour la Saisie manuelle, dont la fenêtre de recherche doit couvrir
 // large (jusqu'à 1 mois en arrière).
-function dernieresSemaines(nb: number): string[] {
+export function dernieresSemaines(nb: number): string[] {
   const actuelle = lundiDeLaSemaine();
   return Array.from({ length: nb }, (_, i) => decalerSemaine(actuelle, -i));
 }
@@ -552,10 +552,17 @@ export interface SeanceRecherche {
 // ligne (le cas d'usage même de cet écran : l'app était injoignable, la
 // secrétaire a noté les heures sur papier, et rattrape ça maintenant,
 // éventuellement encore hors ligne).
+export interface FiltresSaisieManuelle {
+  semaine?: string;
+  jour?: string;
+  creneau?: string;
+}
+
 export async function lireSeancesPourSaisieManuelleDepuisCache(
-  recherche: string
+  recherche: string,
+  filtres: FiltresSaisieManuelle = {}
 ): Promise<SeanceRecherche[]> {
-  const semaines = dernieresSemaines(5);
+  const semaines = filtres.semaine ? [filtres.semaine] : dernieresSemaines(5);
 
   const [emplois, seancesToutes, offres, ues, enseignants, troncsCommuns, specialites] =
     await Promise.all([
@@ -620,10 +627,13 @@ export async function lireSeancesPourSaisieManuelleDepuisCache(
     })
     .filter(
       (s) =>
-        !q ||
-        s.ueNom.toLowerCase().includes(q) ||
-        s.enseignantNom.toLowerCase().includes(q) ||
-        s.jour.toLowerCase().includes(q)
+        (!filtres.jour || s.jour === filtres.jour) &&
+        (!filtres.creneau || s.creneau === filtres.creneau) &&
+        (!filtres.semaine || s.semaine === filtres.semaine) &&
+        (!q ||
+          s.ueNom.toLowerCase().includes(q) ||
+          s.enseignantNom.toLowerCase().includes(q) ||
+          s.jour.toLowerCase().includes(q))
     );
 }
 
@@ -1092,9 +1102,10 @@ export async function enregistrerRapportEnFile(params: {
 }
 
 export async function rechercherSeancesPourSaisieManuelle(
-  recherche: string
+  recherche: string,
+  filtres: FiltresSaisieManuelle = {}
 ): Promise<SeanceRecherche[]> {
-  const semaines = dernieresSemaines(5);
+  const semaines = filtres.semaine ? [filtres.semaine] : dernieresSemaines(5);
 
   const { data: emplois } = await supabase
     .from('emplois_du_temps')
@@ -1173,10 +1184,12 @@ export async function rechercherSeancesPourSaisieManuelle(
     })
     .filter(
       (s) =>
-        !q ||
-        s.ueNom.toLowerCase().includes(q) ||
-        s.enseignantNom.toLowerCase().includes(q) ||
-        s.jour.toLowerCase().includes(q)
+        (!filtres.jour || s.jour === filtres.jour) &&
+        (!filtres.creneau || s.creneau === filtres.creneau) &&
+        (!q ||
+          s.ueNom.toLowerCase().includes(q) ||
+          s.enseignantNom.toLowerCase().includes(q) ||
+          s.jour.toLowerCase().includes(q))
     );
 }
 

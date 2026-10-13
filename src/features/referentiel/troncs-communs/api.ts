@@ -446,6 +446,26 @@ export async function updateTroncCommun(
   if (error) throw error;
 }
 
+// Applique le même volume horaire à TOUTES les UEs du tronc commun (elles
+// partagent une seule séance, donc un seul quota d'heures).
+export async function updateVolumeHoraireTroncCommun(
+  troncCommunId: string,
+  volumeHoraire: number | null
+) {
+  const { data: liens, error: liensError } = await supabase
+    .from('troncs_communs_ues')
+    .select('ue_id')
+    .eq('tronc_commun_id', troncCommunId);
+  if (liensError) throw liensError;
+  const ueIds = (liens ?? []).map((l: any) => l.ue_id as string);
+  if (ueIds.length === 0) return;
+  const { error } = await supabase
+    .from('ues')
+    .update({ volume_horaire: volumeHoraire })
+    .in('id', ueIds);
+  if (error) throw error;
+}
+
 export async function retirerUEDuTroncCommun(
   troncCommunId: string,
   ueId: string

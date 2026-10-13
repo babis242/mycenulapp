@@ -1,0 +1,201 @@
+// src/features/sondage/codes.ts
+//
+// Libellés du sondage étudiants (FR / EN). Les réponses sont stockées sous
+// forme de CODES stables (indépendants de la langue) pour que les résultats
+// restent comparables entre les spécialités francophones et anglophones.
+
+export type Langue = 'fr' | 'en';
+
+interface Code {
+  code: string;
+  fr: string;
+  en: string;
+}
+
+export const POSITIFS: Code[] = [
+  { code: 'explique_clairement', fr: 'Explique clairement', en: 'Explains clearly' },
+  { code: 'donne_exemples', fr: 'Donne des exemples', en: 'Gives examples' },
+  { code: 'ponctuel', fr: 'Ponctuel', en: 'Punctual' },
+  { code: 'interactif', fr: 'Interactif', en: 'Interactive' },
+  { code: 'repond_questions', fr: 'Répond aux questions', en: 'Answers questions' },
+  { code: 'bonne_pedagogie', fr: 'Bonne pédagogie', en: 'Good teaching skills' },
+  { code: 'respectueux', fr: 'Respectueux', en: 'Respectful' },
+];
+
+export const NEGATIFS: Code[] = [
+  { code: 'telephone', fr: 'Manipule son téléphone', en: 'Uses his/her phone' },
+  { code: 'dicte', fr: 'Dicte le cours', en: 'Only dictates the lesson' },
+  { code: 'ne_repond_pas', fr: 'Ne répond pas aux questions', en: "Doesn't answer questions" },
+  { code: 'lit_diapos', fr: 'Lit seulement les diapositives', en: 'Only reads the slides' },
+  { code: 'trop_vite', fr: 'Va trop vite', en: 'Goes too fast' },
+  { code: 'confus', fr: 'Cours confus / hors sujet', en: 'Confusing / off-topic' },
+  { code: 'quitte_tot', fr: 'Quitte la classe tôt', en: 'Leaves class early' },
+  { code: 'impoli', fr: 'Impoli ou méprisant', en: 'Rude or disrespectful' },
+  { code: 'favoritisme', fr: 'Favoritisme', en: 'Favoritism' },
+  { code: 'pas_exercices', fr: "Pas d'exercices ni d'exemples", en: 'No exercises or examples' },
+];
+
+// Raisons proposées pour « doit s'améliorer ».
+export const RAISONS_AMELIORER: Code[] = [
+  NEGATIFS[0], NEGATIFS[1], NEGATIFS[2], NEGATIFS[4],
+  { code: 'retards_frequents', fr: 'Souvent en retard', en: 'Often late' },
+  { code: 'pas_support', fr: 'Pas de support de cours', en: 'No course material' },
+];
+
+export const CONDITIONS_POS: Code[] = [
+  { code: 'salles_propres', fr: 'Salles propres', en: 'Clean classrooms' },
+  { code: 'bon_materiel', fr: 'Bon matériel', en: 'Good equipment' },
+  { code: 'horaires_respectes', fr: 'Horaires respectés', en: 'Schedule respected' },
+  { code: 'bonne_ambiance', fr: 'Bonne ambiance', en: 'Good atmosphere' },
+];
+
+export const CONDITIONS_NEG: Code[] = [
+  { code: 'salle_chaude', fr: 'Salle trop chaude', en: 'Classroom too hot' },
+  { code: 'pas_electricite', fr: "Pas d'électricité / réseau", en: 'No power / internet' },
+  { code: 'manque_places', fr: 'Manque de places', en: 'Not enough seats' },
+  { code: 'retards_nombreux', fr: 'Beaucoup de retards', en: 'Many delays' },
+  { code: 'bruit', fr: 'Bruit', en: 'Noise' },
+  { code: 'toilettes_sales', fr: 'Toilettes sales', en: 'Dirty toilets' },
+];
+
+const TOUS = [...POSITIFS, ...NEGATIFS, ...RAISONS_AMELIORER, ...CONDITIONS_POS, ...CONDITIONS_NEG];
+export function libelleCode(code: string, langue: Langue = 'fr'): string {
+  return TOUS.find((c) => c.code === code)?.[langue] ?? code;
+}
+
+export const TEXTES = {
+  fr: {
+    titre: 'Sondage de la semaine',
+    semaine: 'Semaine du',
+    bienvenue: 'Ton avis compte 👋',
+    intro: "Quelques minutes pour dire ce qui va et ce qui ne va pas cette semaine. Ça aide l'école à améliorer les cours.",
+    laSpecialite: 'Ta spécialité',
+    choisirSpecialite: 'Choisis ta spécialité…',
+    anonyme: 'Ce sondage est 100 % anonyme : aucun nom, aucun matricule. Tes réponses sont lues de façon groupée.',
+    commencer: 'Commencer',
+    aucunSondage: "Aucun sondage n'est ouvert pour le moment. Reviens plus tard.",
+    chargement: 'Chargement…',
+    partie1: 'Partie 1/3 · Cours par cours',
+    partie2: 'Partie 2/3 · Ton bilan de la semaine',
+    partie3: "Partie 3/3 · L'école en général",
+    aucunCours: "Aucun cours n'est programmé cette semaine pour cette spécialité.",
+    coursAEuLieu: 'Le cours a-t-il eu lieu ?',
+    oui: 'Oui',
+    enPartie: 'En partie',
+    non: 'Non',
+    compris: 'As-tu compris le cours ?',
+    pasCompris: 'Pas compris',
+    moyen: 'Moyen',
+    biencompris: 'Bien compris',
+    ponctualite: "Ponctualité de l'enseignant",
+    alHeure: "À l'heure",
+    retard: 'Retard < 30 min',
+    grosRetard: 'Gros retard',
+    support: 'A-t-il donné le support de cours ?',
+    supportOui: 'Oui, complet',
+    commentDonne: "Comment l'enseignant a-t-il donné cours ?",
+    malPasse: 'Mal passé',
+    bienPasse: 'Bien passé',
+    ceQuiEtaitBien: 'Ce qui était bien',
+    comportements: 'Comportements à signaler',
+    commentaireCours: 'Un commentaire sur ce cours ? (facultatif)',
+    continuer: 'Continuer',
+    retour: 'Retour',
+    meilleurTitre: "🏆 Quel enseignant t'a le mieux donné cours ?",
+    meilleurAide: "Celui qui t'a le plus marqué cette semaine.",
+    pourquoi: "Pourquoi ? (touche ce qui s'applique)",
+    ameliorerTitre: '⚠️ Quel enseignant doit s’améliorer ?',
+    ameliorerAide: "Celui qui t'a le moins bien donné cours.",
+    choisirEns: 'Choisis un enseignant…',
+    pourquoi2: 'Pourquoi ?',
+    unePhrase: 'Explique en une phrase (facultatif)',
+    revoirTitre: '📚 Cours à revoir',
+    revoirAide: "Les cours que tu n'as pas compris et que tu voudrais qu'on reprenne.",
+    revoirPrecision: 'Quelle partie précise ? (ex. : les ratios financiers, les boucles…)',
+    conditions: 'Conditions de la semaine',
+    touche: "Touche ce qui s'applique.",
+    admin: 'Administration et suivi',
+    infosClaires: "Les informations (emploi du temps, annonces) sont-elles claires ?",
+    parfois: 'Parfois',
+    suggestion: 'Une suggestion',
+    facultatif: 'Facultatif',
+    suggestionPh: 'Ex. : plus d’exercices en classe, des supports en PDF…',
+    semaineGenerale: 'Ta semaine en général',
+    echelle: '1 = très mauvaise · 5 = excellente',
+    envoyer: 'Envoyer mes réponses',
+    envoi: 'Envoi…',
+    merci: 'Merci !',
+    merciTexte: 'Tes réponses ont bien été envoyées. Rendez-vous la semaine prochaine 🙌',
+    dejaRepondu: 'Tu as déjà répondu à ce sondage cette semaine. Merci !',
+    erreurChoix: 'Merci de répondre aux questions marquées en rouge.',
+    erreurSpecialite: 'Choisis ta spécialité pour continuer.',
+    erreurEnvoi: "L'envoi a échoué. Vérifie ta connexion et réessaie.",
+  },
+  en: {
+    titre: 'Weekly survey',
+    semaine: 'Week of',
+    bienvenue: 'Your opinion matters 👋',
+    intro: 'A few minutes to tell us what went well and what did not this week. It helps the school improve the courses.',
+    laSpecialite: 'Your programme',
+    choisirSpecialite: 'Choose your programme…',
+    anonyme: 'This survey is 100% anonymous: no name, no student ID. Answers are only read as a group.',
+    commencer: 'Start',
+    aucunSondage: 'No survey is open at the moment. Please come back later.',
+    chargement: 'Loading…',
+    partie1: 'Part 1/3 · Course by course',
+    partie2: 'Part 2/3 · Your weekly review',
+    partie3: 'Part 3/3 · The school in general',
+    aucunCours: 'No course is scheduled this week for this programme.',
+    coursAEuLieu: 'Did the class take place?',
+    oui: 'Yes',
+    enPartie: 'Partly',
+    non: 'No',
+    compris: 'Did you understand the lesson?',
+    pasCompris: 'Not understood',
+    moyen: 'So-so',
+    biencompris: 'Well understood',
+    ponctualite: "Teacher's punctuality",
+    alHeure: 'On time',
+    retard: 'Late < 30 min',
+    grosRetard: 'Very late',
+    support: 'Did the teacher provide the course material?',
+    supportOui: 'Yes, complete',
+    commentDonne: 'How did the teacher deliver the class?',
+    malPasse: 'Poorly',
+    bienPasse: 'Well',
+    ceQuiEtaitBien: 'What was good',
+    comportements: 'Behaviours to report',
+    commentaireCours: 'Any comment about this course? (optional)',
+    continuer: 'Continue',
+    retour: 'Back',
+    meilleurTitre: '🏆 Which teacher taught you best?',
+    meilleurAide: 'The one who impressed you most this week.',
+    pourquoi: 'Why? (tap what applies)',
+    ameliorerTitre: '⚠️ Which teacher needs to improve?',
+    ameliorerAide: 'The one who taught you least well.',
+    choisirEns: 'Choose a teacher…',
+    pourquoi2: 'Why?',
+    unePhrase: 'Explain in one sentence (optional)',
+    revoirTitre: '📚 Courses to review',
+    revoirAide: 'The courses you did not understand and would like to see again.',
+    revoirPrecision: 'Which part exactly? (e.g. financial ratios, loops…)',
+    conditions: 'Conditions this week',
+    touche: 'Tap what applies.',
+    admin: 'Administration and follow-up',
+    infosClaires: 'Is the information (timetable, announcements) clear?',
+    parfois: 'Sometimes',
+    suggestion: 'A suggestion',
+    facultatif: 'Optional',
+    suggestionPh: 'E.g. more exercises in class, course notes in PDF…',
+    semaineGenerale: 'Your week overall',
+    echelle: '1 = very bad · 5 = excellent',
+    envoyer: 'Submit my answers',
+    envoi: 'Sending…',
+    merci: 'Thank you!',
+    merciTexte: 'Your answers have been sent. See you next week 🙌',
+    dejaRepondu: 'You have already answered this survey this week. Thank you!',
+    erreurChoix: 'Please answer the questions marked in red.',
+    erreurSpecialite: 'Choose your programme to continue.',
+    erreurEnvoi: 'Sending failed. Check your connection and try again.',
+  },
+} as const;

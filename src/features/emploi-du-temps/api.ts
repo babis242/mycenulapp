@@ -67,6 +67,9 @@ export interface OffreDeSpecialite {
   volumeHoraire: number | null;
   enseignantAttribueId: string | null;
   enseignantAttribueNom: string | null;
+  // Semestre de l'offre (S1, S3…) — sert à n'afficher, pour un semestre
+  // choisi, que les UE de ce semestre.
+  semestre?: string | null;
 }
 
 export async function listOffresDeSpecialite(
@@ -74,7 +77,7 @@ export async function listOffresDeSpecialite(
 ): Promise<OffreDeSpecialite[]> {
   const { data: offresData } = await supabase
     .from('offres')
-    .select('id, ue:ues(id, nom, volume_horaire)')
+    .select('id, semestre, ue:ues(id, nom, volume_horaire)')
     .eq('specialite_id', specialiteId);
 
   const resultats: OffreDeSpecialite[] = [];
@@ -91,6 +94,7 @@ export async function listOffresDeSpecialite(
       ueId: o.ue.id,
       ueNom: o.ue.nom,
       volumeHoraire: o.ue.volume_horaire ?? null,
+      semestre: o.semestre ?? null,
       enseignantAttribueId: attribution?.enseignant_id ?? null,
       enseignantAttribueNom: (attribution as any)?.enseignant?.nom ?? null,
     });
@@ -841,6 +845,7 @@ export async function lireOffresDeSpecialiteDepuisCache(
       ueId: o.ue_id,
       ueNom: ue?.nom ?? '',
       volumeHoraire: ue?.volume_horaire ?? null,
+      semestre: o.semestre ?? null,
       enseignantAttribueId: attribution?.enseignant_id ?? null,
       enseignantAttribueNom: enseignant?.nom ?? null,
     } as OffreDeSpecialite;
@@ -2928,6 +2933,46 @@ export interface DonneesGroupees {
   // à un groupe, et propager localement vers les autres spécialités du
   // groupe déjà chargées dans cette session.
   ueVersTronc: Map<string, { troncCommunId: string; nom: string }>;
+  // "troncId|specialiteId" → semestres dans lesquels cette spécialité a
+  // une UE de ce tronc. Permet de n'afficher une séance de tronc commun
+  // que dans le semestre concerné (S1 ≠ S3).
+  troncSpecialiteSemestres: Map<string, Set<string>>;
+}
+
+// Une séance appartient-elle au semestre choisi pour cette spécialité ?
+// - séance de spécialité : son offre doit être de ce semestre ;
+// - séance de tronc commun : la spécialité doit avoir une UE du tronc
+//   dans ce semestre. Si l'info manque (ancien cache), on l'affiche.
+export function seanceDuSemestre(
+  s: { troncCommunId: string | null; semestre: string | null },
+  specialiteId: string,
+  semestre: string | undefined | null,
+  troncSpecialiteSemestres: Map<string, Set<string>> | undefined
+): boolean {
+  if (!semestre) return true;
+  if (s.troncCommunId) {
+    const set = troncSpecialiteSemestres?.get(`${s.troncCommunId}|${specialiteId}`);
+    return !set || set.size === 0 || set.has(semestre);
+  }
+  return s.semestre == null || s.semestre === semestre;
+}
+
+// Séances du groupe restreintes au semestre choisi.
+export function filtrerSeancesDuSemestre(
+  donnees: DonneesGroupees,
+  specialiteIds: string[],
+  semestre: string | undefined | null
+): SeanceGroupee[] {
+  if (!semestre) return donnees.seances;
+  return donnees.seances.filter((s) =>
+    s.specialiteId
+      ? seanceDuSemestre(s, s.specialiteId, semestre, donnees.troncSpecialiteSemestres)
+      : specialiteIds.some(
+          (id) =>
+            donnees.specialitesParTronc.get(s.troncCommunId ?? '')?.has(id) &&
+            seanceDuSemestre(s, id, semestre, donnees.troncSpecialiteSemestres)
+        )
+  );
 }
 
 // ── Cache mémoire (ÉTAPE 3 — optimisation) ──────────────────────────
@@ -3027,11 +3072,21 @@ async function chargerSeancesGroupeesDepuisSupabase(
 
   const { data: offresGroupe } = await supabase
     .from('offres')
-    .select('ue_id, specialite_id')
+    .select('ue_id, specialite_id, semestre')
     .in('specialite_id', specialiteIds);
   const specialiteParUe = new Map(
     (offresGroupe ?? []).map((o: any) => [o.ue_id, o.specialite_id])
   );
+  const semestreParUe = new Map(
+    (offresGroupe ?? []).map((o: any) => [o.ue_id, o.semestre as string | null])
+  );
+  const troncSpecialiteSemestres = new Map<string, Set<string>>();
+  function noterSemestre(troncId: string, specialiteId: string, sem: string | null | undefined) {
+    if (!sem) return;
+    const k = `${troncId}|${specialiteId}`;
+    if (!troncSpecialiteSemestres.has(k)) troncSpecialiteSemestres.set(k, new Set());
+    troncSpecialiteSemestres.get(k)!.add(sem);
+  }
   const ueIds = Array.from(specialiteParUe.keys());
 
   let seancesTronc: any[] = [];
@@ -3053,6 +3108,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
           specialitesParTronc.set(l.tronc_commun_id, new Set());
         }
         specialitesParTronc.get(l.tronc_commun_id)!.add(specialiteId);
+        noterSemestre(l.tronc_commun_id, specialiteId, semestreParUe.get(l.ue_id));
       }
       troncsDetectes.add(l.tronc_commun_id);
       ueVersTronc.set(l.ue_id, {
@@ -3088,7 +3144,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
       if (ueIdsSoeurs.length > 0) {
         const { data: offresSoeurs } = await supabase
           .from('offres')
-          .select('ue_id, specialite_id')
+          .select('ue_id, specialite_id, semestre')
           .in('ue_id', ueIdsSoeurs);
         for (const o of (offresSoeurs ?? []) as any[]) {
           const troncId = troncParUeSoeur.get(o.ue_id);
@@ -3097,6 +3153,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
             specialitesParTronc.set(troncId, new Set());
           }
           specialitesParTronc.get(troncId)!.add(o.specialite_id);
+          noterSemestre(troncId, o.specialite_id, o.semestre);
         }
       }
     }
@@ -3159,6 +3216,7 @@ async function chargerSeancesGroupeesDepuisSupabase(
     emploiParSpecialite,
     specialitesParTronc,
     ueVersTronc,
+    troncSpecialiteSemestres,
   };
 }
 
@@ -3190,10 +3248,23 @@ export interface EnseignantWhatsApp {
 // plutôt que de refaire les requêtes de zéro.
 export async function getInfosNotificationWhatsApp(
   specialiteIds: string[],
-  semaine: string
+  semaine: string,
+  semestre?: string
 ): Promise<EnseignantWhatsApp[]> {
   if (specialiteIds.length === 0) return [];
-  const donnees = await getSeancesGroupees(specialiteIds, semaine);
+  const donneesBrutes = await getSeancesGroupees(specialiteIds, semaine);
+  // Ne garde que les séances du semestre choisi (S1 ≠ S3).
+  const donnees = {
+    ...donneesBrutes,
+    seances: donneesBrutes.seances.filter((s) =>
+      s.specialiteId
+        ? seanceDuSemestre(s, s.specialiteId, semestre, donneesBrutes.troncSpecialiteSemestres)
+        : specialiteIds.some((id) =>
+            donneesBrutes.specialitesParTronc.get(s.troncCommunId ?? '')?.has(id) &&
+            seanceDuSemestre(s, id, semestre, donneesBrutes.troncSpecialiteSemestres)
+          )
+    ),
+  };
   if (donnees.seances.length === 0) return [];
 
   // Noms de toutes les spécialités concernées, directement ou via un

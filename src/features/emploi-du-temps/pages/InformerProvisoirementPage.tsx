@@ -131,7 +131,8 @@ export default function InformerProvisoirementPage() {
         setEnseignants(
           await getInfosNotificationWhatsApp(
             specialites.map((s) => s.id),
-            semaine
+            semaine,
+            semestre
           )
         );
       } catch (err) {

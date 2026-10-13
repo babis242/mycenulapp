@@ -1,10 +1,10 @@
 // src/features/referentiel/salles/pages/ListeSallesPage.tsx
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, UploadCloud, Loader2, Search, WifiOff, Trash2 } from 'lucide-react';
+import { Plus, UploadCloud, Loader2, Search, WifiOff, Trash2, Pencil, Check, X } from 'lucide-react';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
 import { db } from '@/lib/db';
-import { listSalles, deleteSalle, type SalleAvecSpecialite } from '../api';
+import { listSalles, deleteSalle, updateSalle, type SalleAvecSpecialite } from '../api';
 
 // Reconstruit la forme "salle + spécialité jointe" depuis deux tables
 // Dexie séparées — le cache local ne stocke que les tables brutes, pas
@@ -43,6 +43,57 @@ export default function ListeSallesPage() {
     depuisCache,
   } = useCacheSupabase<SalleAvecSpecialite>(lireSallesDepuisCache, listSalles);
 
+  // Modification du code / de la capacité (en ligne uniquement).
+  const [enEdition, setEnEdition] = useState<string | null>(null);
+  const [codeEdite, setCodeEdite] = useState('');
+  const [capaciteEditee, setCapaciteEditee] = useState('');
+  const [enregistrement, setEnregistrement] = useState(false);
+  const [erreurEdition, setErreurEdition] = useState<string | null>(null);
+  const [modifications, setModifications] = useState<
+    Map<string, { code_salle: string; capacite: number }>
+  >(new Map());
+
+  function commencerEdition(s: SalleAvecSpecialite) {
+    setEnEdition(s.id);
+    setCodeEdite(s.code_salle);
+    setCapaciteEditee(String(s.capacite));
+    setErreurEdition(null);
+  }
+
+  async function enregistrerEdition(s: SalleAvecSpecialite) {
+    const code = codeEdite.trim();
+    const cap = Number(capaciteEditee);
+    if (!code) {
+      setErreurEdition('Le code de la salle est obligatoire.');
+      return;
+    }
+    if (!Number.isFinite(cap) || cap <= 0) {
+      setErreurEdition('La capacité doit être un nombre positif.');
+      return;
+    }
+    if (!navigator.onLine) {
+      setErreurEdition('Modification impossible hors ligne.');
+      return;
+    }
+    setEnregistrement(true);
+    setErreurEdition(null);
+    try {
+      await updateSalle(s.id, { code_salle: code, capacite: cap });
+      try {
+        const locale = await db.salles.get(s.id);
+        if (locale) await db.salles.put({ ...locale, code_salle: code, capacite: cap } as any);
+      } catch {
+        // cache local : pas bloquant
+      }
+      setModifications((prev) => new Map(prev).set(s.id, { code_salle: code, capacite: cap }));
+      setEnEdition(null);
+    } catch (err) {
+      setErreurEdition(err instanceof Error ? err.message : 'Erreur lors de la modification.');
+    } finally {
+      setEnregistrement(false);
+    }
+  }
+
   async function handleSupprimer(s: SalleAvecSpecialite) {
     if (!window.confirm(`Supprimer la salle "${s.code_salle}" ?`)) return;
     setSuppression(s.id);
@@ -62,6 +113,7 @@ export default function ListeSallesPage() {
 
   const filtered = salles
     .filter((s) => !supprimees.has(s.id))
+    .map((s) => ({ ...s, ...(modifications.get(s.id) ?? {}) }))
     .filter((s) => s.code_salle.toLowerCase().includes(search.toLowerCase()));
 
   return (
@@ -142,17 +194,68 @@ export default function ListeSallesPage() {
                   className="border-b border-gray-50 last:border-0 hover:bg-gray-50/60"
                 >
                   <td className="px-5 py-3.5 font-bold text-gray-900">
-                    {s.code_salle}
+                    {enEdition === s.id ? (
+                      <div>
+                        <input
+                          value={codeEdite}
+                          onChange={(e) => setCodeEdite(e.target.value)}
+                          autoFocus
+                          className="w-full min-w-28 border border-gray-200 rounded-xl px-3 py-1.5 text-sm font-semibold outline-none focus:border-red-600"
+                        />
+                        {erreurEdition && (
+                          <p className="text-xs font-semibold text-red-600 mt-1">{erreurEdition}</p>
+                        )}
+                      </div>
+                    ) : (
+                      s.code_salle
+                    )}
                   </td>
-                  <td className="px-5 py-3.5 text-gray-500">{s.capacite}</td>
+                  <td className="px-5 py-3.5 text-gray-500">
+                    {enEdition === s.id ? (
+                      <input
+                        type="number"
+                        min={1}
+                        value={capaciteEditee}
+                        onChange={(e) => setCapaciteEditee(e.target.value)}
+                        className="w-24 border border-gray-200 rounded-xl px-3 py-1.5 text-sm font-semibold outline-none focus:border-red-600"
+                      />
+                    ) : (
+                      s.capacite
+                    )}
+                  </td>
                   <td className="px-5 py-3.5 text-gray-500">
                     {s.specialite?.nom ?? '—'}
                   </td>
                   <td className="px-5 py-3.5 text-right">
+                    {enEdition === s.id ? (
+                      <div className="flex items-center justify-end gap-2">
+                        <button
+                          onClick={() => enregistrerEdition(s)}
+                          disabled={enregistrement}
+                          className="flex items-center gap-1.5 bg-red-600 rounded-full px-3.5 py-1.5 text-xs font-bold text-white hover:bg-red-700 disabled:opacity-60"
+                        >
+                          {enregistrement ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                          Enregistrer
+                        </button>
+                        <button
+                          onClick={() => setEnEdition(null)}
+                          className="flex items-center gap-1 px-2 py-1.5 text-xs font-bold text-gray-500"
+                        >
+                          <X size={13} /> Annuler
+                        </button>
+                      </div>
+                    ) : (
+                    <div className="flex items-center justify-end gap-2">
+                    <button
+                      onClick={() => commencerEdition(s)}
+                      className="flex items-center gap-1.5 bg-gray-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-gray-700 hover:bg-gray-100"
+                    >
+                      <Pencil size={13} /> Modifier
+                    </button>
                     <button
                       onClick={() => handleSupprimer(s)}
                       disabled={suppression === s.id}
-                      className="flex items-center gap-1.5 bg-red-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 ml-auto w-fit"
+                      className="flex items-center gap-1.5 bg-red-50 rounded-full px-3.5 py-1.5 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50 w-fit"
                     >
                       {suppression === s.id ? (
                         <Loader2 size={13} className="animate-spin" />
@@ -161,6 +264,8 @@ export default function ListeSallesPage() {
                       )}
                       Supprimer
                     </button>
+                    </div>
+                    )}
                   </td>
                 </tr>
               ))}

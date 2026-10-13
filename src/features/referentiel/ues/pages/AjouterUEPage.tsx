@@ -9,7 +9,10 @@ import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { extraireTextePdf } from '@/lib/pdfExtraction';
 import { televerserFichier } from '@/lib/r2';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
-import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
+import {
+  listSpecialitesRecherche,
+  type SpecialiteRecherche,
+} from '@/lib/rechercheSpecialite';
 import {
   createUE,
   createEcole,
@@ -283,6 +286,9 @@ export default function AjouterUEPage() {
   // plusieurs (recherche) — une UE est créée pour chacune, regroupées
   // automatiquement dans un nouveau tronc commun.
   const [modeTronc, setModeTronc] = useState(false);
+  // Sélection par cycles (cases à cocher) en mode tronc commun.
+  const [toutesSpecialites, setToutesSpecialites] = useState<SpecialiteRecherche[] | null>(null);
+  const [cyclesTronc, setCyclesTronc] = useState<string[]>([]);
   const [specialitesTronc, setSpecialitesTronc] = useState<
     SpecialiteRecherche[]
   >([]);
@@ -404,6 +410,49 @@ export default function AjouterUEPage() {
     // Le semestre choisi peut ne plus être valable pour la nouvelle
     // combinaison de spécialités — on le remet à zéro pour forcer un
     // nouveau choix cohérent.
+    setSemestre('');
+  }
+
+  // Charge la liste des spécialités dès qu'on passe en mode tronc commun.
+  useEffect(() => {
+    if (!modeTronc || !enLigne || toutesSpecialites !== null) return;
+    listSpecialitesRecherche()
+      .then(setToutesSpecialites)
+      .catch(() => setToutesSpecialites([]));
+  }, [modeTronc, enLigne, toutesSpecialites]);
+
+  const libelleCycle = (s: SpecialiteRecherche) =>
+    s.sousCycle ? `${s.cycle} (${s.sousCycle})` : s.cycle;
+  const cyclesDisponibles = Array.from(
+    new Set((toutesSpecialites ?? []).map(libelleCycle))
+  ).sort((a, b) => a.localeCompare(b));
+  const specialitesDesCycles = (toutesSpecialites ?? []).filter((s) =>
+    cyclesTronc.includes(libelleCycle(s))
+  );
+
+  function basculerCycleTronc(c: string) {
+    setCyclesTronc((prev) =>
+      prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]
+    );
+  }
+
+  function basculerSpecialiteTronc(s: SpecialiteRecherche) {
+    if (specialitesTronc.some((p) => p.id === s.id)) retirerSpecialiteTronc(s.id);
+    else ajouterSpecialiteTronc(s);
+  }
+
+  function toutCocherCycles() {
+    const tousCoches = specialitesDesCycles.every((s) =>
+      specialitesTronc.some((p) => p.id === s.id)
+    );
+    setSpecialitesTronc((prev) => {
+      if (tousCoches) {
+        const ids = new Set(specialitesDesCycles.map((s) => s.id));
+        return prev.filter((p) => !ids.has(p.id));
+      }
+      const deja = new Set(prev.map((p) => p.id));
+      return [...prev, ...specialitesDesCycles.filter((s) => !deja.has(s.id))];
+    });
     setSemestre('');
   }
 
@@ -956,7 +1005,77 @@ export default function AjouterUEPage() {
               </p>
 
               {enLigne ? (
-                <RechercheSpecialite onSelect={ajouterSpecialiteTronc} />
+                <>
+                  <p className="text-xs font-bold text-gray-500 mb-1.5">
+                    Cycles
+                  </p>
+                  {toutesSpecialites === null ? (
+                    <p className="text-xs text-gray-400 mb-3">Chargement...</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-1.5 mb-3">
+                      {cyclesDisponibles.map((c) => {
+                        const actif = cyclesTronc.includes(c);
+                        return (
+                          <button
+                            key={c}
+                            type="button"
+                            onClick={() => basculerCycleTronc(c)}
+                            className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${
+                              actif
+                                ? 'bg-red-600 border-red-600 text-white'
+                                : 'bg-white border-gray-200 text-gray-500 hover:border-red-300'
+                            }`}
+                          >
+                            {c}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  {specialitesDesCycles.length > 0 && (
+                    <div className="border border-gray-100 rounded-2xl mb-3 overflow-hidden">
+                      <label className="flex items-center gap-2.5 px-4 py-2.5 bg-gray-50 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={specialitesDesCycles.every((s) =>
+                            specialitesTronc.some((p) => p.id === s.id)
+                          )}
+                          onChange={toutCocherCycles}
+                          className="w-4 h-4 accent-red-600"
+                        />
+                        <span className="text-xs font-extrabold text-gray-700">
+                          Tout cocher ({specialitesDesCycles.length})
+                        </span>
+                      </label>
+                      <div className="max-h-64 overflow-y-auto">
+                        {specialitesDesCycles.map((s) => (
+                          <label
+                            key={s.id}
+                            className="flex items-center gap-2.5 px-4 py-2.5 border-t border-gray-50 cursor-pointer hover:bg-gray-50/60"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={specialitesTronc.some((p) => p.id === s.id)}
+                              onChange={() => basculerSpecialiteTronc(s)}
+                              className="w-4 h-4 accent-red-600 shrink-0"
+                            />
+                            <span className="min-w-0">
+                              <span className="block text-sm font-bold text-gray-900 truncate">
+                                {s.nom}
+                              </span>
+                              <span className="block text-xs text-gray-400 truncate">
+                                {s.ecoleNom} · {s.filiereNom} · {libelleCycle(s)}
+                              </span>
+                            </span>
+                          </label>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <RechercheSpecialite onSelect={ajouterSpecialiteTronc} />
+                </>
               ) : (
                 <p className="text-xs font-semibold text-amber-600 mb-2">
                   Indisponible hors ligne.

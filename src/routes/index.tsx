@@ -22,6 +22,13 @@ import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
 import SuiviSupportsCoursPage from '@/features/repartition/pages/SuiviSupportsCoursPage';
 import EtatCouverturePage from '@/features/repartition/pages/EtatCouverturePage';
 import RapportsPdfPage from '@/features/rapports-pdf/pages/RapportsPdfPage';
+import FichesPresencePage from '@/features/fiches-presence/pages/FichesPresencePage';
+import FichesArriveePage from '@/features/fiches-presence/pages/FichesArriveePage';
+import SondageAdminPage from '@/features/sondage/pages/SondageAdminPage';
+import SondagePublicPage from '@/features/sondage/pages/SondagePublicPage';
+import FichesControlePage from '@/features/fiches-presence/pages/FichesControlePage';
+import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
+import ConsulterPresencesPage from '@/features/fiches-presence/pages/ConsulterPresencesPage';
 import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
 import DetailRapportPage from '@/features/rapports/pages/DetailRapportPage';
 import DetailMonCoursPage from '@/features/seances/pages/DetailMonCoursPage';
@@ -73,6 +80,7 @@ export default function AppRoutes() {
           path="/mot-de-passe-oublie"
           element={<MotDePasseOubliePage />}
         />
+        <Route path="/sondage" element={<SondagePublicPage />} />
         <Route
           path="/inscription-enseignant"
           element={<InscriptionEnseignantPage />}
@@ -188,6 +196,7 @@ export default function AppRoutes() {
               path="/disponibilites/pdf"
               element={<DisponibilitesPdfPage />}
             />
+            <Route path="/sondage-etudiants" element={<SondageAdminPage />} />
           </Route>
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>
@@ -238,6 +247,11 @@ export default function AppRoutes() {
               />
             }
           >
+            <Route path="/fiches-presence" element={<FichesPresencePage />} />
+            <Route path="/fiches-controle" element={<FichesControlePage />} />
+            <Route path="/fiches-arrivee" element={<FichesArriveePage />} />
+            <Route path="/lecture-fiches" element={<LecturePresencesPage />} />
+            <Route path="/presences" element={<ConsulterPresencesPage />} />
             <Route path="/codes-journaliers" element={<ListeCodesPage />} />
             <Route path="/qr-ouverture" element={<EcranQrPage />} />
             <Route
