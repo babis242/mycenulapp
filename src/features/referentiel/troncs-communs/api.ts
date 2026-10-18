@@ -3,6 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import type { TypeCursus } from '@/types';
 import { createUE } from '@/features/referentiel/ues/api';
+import { getHeuresTotalesValideesParOffre } from '@/features/emploi-du-temps/api';
 
 export interface UEDeTroncCommunResume {
   id: string;
@@ -196,6 +197,115 @@ export interface NouveauTroncCommun {
   enseignant_id?: string;
 }
 
+export interface ResultatMigrationHeures {
+  seancesMigrees: number;
+  heuresConservees: number;
+  doublonsSupprimes: number;
+  ueReference: string | null;
+}
+
+// Quand des UEs déjà en cours deviennent un tronc commun, leurs séances
+// passées (rattachées à l'offre) doivent suivre : sinon le tronc repart
+// à 0 heure. On prend l'UE qui a le plus d'heures effectuées comme
+// référence : ses séances (avec rapports, présences, ouvertures…)
+// passent EN PLACE au tronc — mêmes identifiants, donc rien n'est perdu
+// et le total d'heures effectuées reste identique. Les séances encore
+// non ouvertes des autres UEs, tombant exactement au même créneau,
+// n'étaient que des doublons de ce même cours : elles sont retirées.
+// Toutes les autres séances restent intactes.
+export async function migrerHeuresVersTronc(
+  troncCommunId: string,
+  ueIds: string[]
+): Promise<ResultatMigrationHeures> {
+  const vide: ResultatMigrationHeures = {
+    seancesMigrees: 0,
+    heuresConservees: 0,
+    doublonsSupprimes: 0,
+    ueReference: null,
+  };
+  if (ueIds.length === 0) return vide;
+
+  const { data: offres, error: offresError } = await supabase
+    .from('offres')
+    .select('id, ue_id')
+    .in('ue_id', ueIds);
+  if (offresError) throw offresError;
+  const offreIds = (offres ?? []).map((o: any) => o.id as string);
+  if (offreIds.length === 0) return vide;
+
+  const heuresParOffre = await getHeuresTotalesValideesParOffre(offreIds);
+  const { data: seances, error: seancesError } = await supabase
+    .from('seances_edt')
+    .select('id, offre_id, semaine, jour, creneau, heure_ouverture')
+    .in('offre_id', offreIds);
+  if (seancesError) throw seancesError;
+  const liste = (seances ?? []) as any[];
+  if (liste.length === 0) return vide;
+
+  let offreRef = '';
+  let heuresRef = -1;
+  for (const id of offreIds) {
+    const h = heuresParOffre.get(id) ?? 0;
+    const nb = liste.filter((x) => x.offre_id === id).length;
+    if (nb > 0 && h > heuresRef) {
+      heuresRef = h;
+      offreRef = id;
+    }
+  }
+  if (!offreRef) return vide;
+
+  const aMigrer = liste.filter((x) => x.offre_id === offreRef);
+  const creneauxMigres = new Set(aMigrer.map((x) => `${x.semaine}|${x.jour}|${x.creneau}`));
+  const doublons = liste.filter(
+    (x) =>
+      x.offre_id !== offreRef &&
+      !x.heure_ouverture &&
+      creneauxMigres.has(`${x.semaine}|${x.jour}|${x.creneau}`)
+  );
+
+  if (doublons.length > 0) {
+    const { error } = await supabase
+      .from('seances_edt')
+      .delete()
+      .in('id', doublons.map((d) => d.id));
+    if (error) throw error;
+  }
+  const { error: majError } = await supabase
+    .from('seances_edt')
+    .update({ tronc_commun_id: troncCommunId, offre_id: null, emploi_du_temps_id: null })
+    .eq('offre_id', offreRef);
+  if (majError) throw majError;
+
+  // Enseignant du tronc : à défaut, celui qui assurait l'UE de référence.
+  const { data: tronc } = await supabase
+    .from('troncs_communs')
+    .select('enseignant_id')
+    .eq('id', troncCommunId)
+    .maybeSingle();
+  if (tronc && !(tronc as any).enseignant_id) {
+    const { data: att } = await supabase
+      .from('attributions')
+      .select('enseignant_id')
+      .eq('offre_id', offreRef)
+      .eq('statut', 'actif')
+      .maybeSingle();
+    if (att?.enseignant_id) {
+      await supabase
+        .from('troncs_communs')
+        .update({ enseignant_id: att.enseignant_id })
+        .eq('id', troncCommunId);
+    }
+  }
+
+  const ueRef = (offres ?? []).find((o: any) => o.id === offreRef)?.ue_id ?? null;
+  return {
+    seancesMigrees: aMigrer.length,
+    heuresConservees: Math.max(heuresRef, 0),
+    doublonsSupprimes: doublons.length,
+    ueReference: ueRef,
+  };
+}
+
 export async function createTroncCommun(input: NouveauTroncCommun) {
   const { data: troncCommun, error } = await supabase
     .from('troncs_communs')
@@ -211,7 +321,10 @@ export async function createTroncCommun(input: NouveauTroncCommun) {
     );
   if (liaisonError) throw liaisonError;
 
-  return troncCommun;
+  // Les heures déjà effectuées suivent les UEs devenues tronc commun.
+  const migration = await migrerHeuresVersTronc(troncCommun.id, input.ue_ids);
+
+  return { ...troncCommun, migration };
 }
 
 export async function deleteTroncCommun(id: string) {
@@ -517,4 +630,55 @@ export async function ajouterSpecialitesAuTroncCommun(
     ueIds.push(ue.id);
   }
   await ajouterUEsAuTroncCommun(troncCommunId, ueIds);
+}
+
+export interface InfosUeTronc {
+  ueId: string;
+  nom: string;
+  specialiteNom: string | null;
+  semestre: string | null;
+  volumeHoraire: number | null;
+  heuresEffectuees: number;
+  enseignantId: string | null;
+  enseignantNom: string | null;
+}
+
+// Informations d'une UE à transformer en tronc commun (nom, semestre, volume
+// horaire, heures déjà effectuées, enseignant actuel) — affichées et reprises
+// automatiquement dans le formulaire.
+export async function infosUePourTronc(ueId: string): Promise<InfosUeTronc> {
+  const { data: ue, error } = await supabase
+    .from('ues')
+    .select('id, nom, volume_horaire, offres(id, semestre, specialite:specialites(nom))')
+    .eq('id', ueId)
+    .single();
+  if (error) throw error;
+  const u = ue as any;
+  const offre = u.offres?.[0];
+  let heures = 0;
+  let enseignantId: string | null = null;
+  let enseignantNom: string | null = null;
+  if (offre) {
+    const h = await getHeuresTotalesValideesParOffre((u.offres as any[]).map((o) => o.id));
+    for (const v of h.values()) heures = Math.max(heures, v);
+    const { data: att } = await supabase
+      .from('attributions')
+      .select('enseignant:enseignants(id, nom)')
+      .eq('offre_id', offre.id)
+      .eq('statut', 'actif')
+      .maybeSingle();
+    const ens = (att as any)?.enseignant;
+    enseignantId = ens?.id ?? null;
+    enseignantNom = ens?.nom ?? null;
+  }
+  return {
+    ueId,
+    nom: u.nom,
+    specialiteNom: offre?.specialite?.nom ?? null,
+    semestre: offre?.semestre ?? null,
+    volumeHoraire: u.volume_horaire ?? null,
+    heuresEffectuees: Math.round(heures * 100) / 100,
+    enseignantId,
+    enseignantNom,
+  };
 }

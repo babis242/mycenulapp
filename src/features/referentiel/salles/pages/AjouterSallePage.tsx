@@ -8,6 +8,8 @@ import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
 import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { createSalle } from '../api';
+import { libelleNiveau } from '@/features/disponibilites/components/DisponibilitesParSpecialitePdf';
+import ZoneSallesSpecialites from '../components/ZoneSallesSpecialites';
 
 interface Ecole {
   id: string;
@@ -56,6 +58,7 @@ export default function AjouterSallePage() {
   >({});
   const [cycleKey, setCycleKey] = useState('');
   const [specialiteId, setSpecialiteId] = useState('');
+  const [niveau, setNiveau] = useState(1);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -193,6 +196,7 @@ export default function AjouterSallePage() {
           code_salle: codeSalle.trim(),
           capacite: Number(capacite),
           specialite_par_defaut_id: specialiteId,
+          niveau,
         });
       } else {
         const id = crypto.randomUUID();
@@ -201,6 +205,7 @@ export default function AjouterSallePage() {
           code_salle: codeSalle.trim(),
           capacite: Number(capacite),
           specialite_par_defaut_id: specialiteId,
+          niveau,
           date_creation: new Date().toISOString(),
         } as any);
         await enqueueSyncAction({
@@ -211,6 +216,7 @@ export default function AjouterSallePage() {
             code_salle: codeSalle.trim(),
             capacite: Number(capacite),
             specialite_par_defaut_id: specialiteId,
+            niveau,
           },
         });
       }
@@ -228,7 +234,17 @@ export default function AjouterSallePage() {
     'w-full border border-gray-200 rounded-xl px-3.5 py-2.5 text-sm font-semibold outline-none focus:border-red-600 disabled:bg-gray-50 disabled:text-gray-300';
 
   return (
-    <div className="max-w-md mx-auto">
+    <div className="salle-mise-en-page">
+    <style>{`
+      .salle-mise-en-page { display: flex; flex-wrap: wrap; gap: 20px; align-items: flex-start; max-width: 1000px; margin: 0 auto; }
+      .salle-mise-en-page .salle-zone { order: 2; flex: 1 1 320px; min-width: 300px; position: sticky; top: 16px; }
+      .salle-mise-en-page .salle-form { order: 1; flex: 0 1 448px; width: 100%; max-width: 448px; }
+      @media (max-width: 900px) {
+        .salle-mise-en-page .salle-zone { order: 3; position: static; flex-basis: 100%; }
+        .salle-mise-en-page .salle-form { flex-basis: 100%; max-width: none; }
+      }
+    `}</style>
+    <div className="salle-form">
       <button
         onClick={() => navigate('/referentiel/salles')}
         className="flex items-center gap-1.5 text-xs font-bold text-gray-400 hover:text-gray-700 mb-4"
@@ -292,7 +308,7 @@ export default function AjouterSallePage() {
 
           <div className="border-t border-gray-100 pt-4 flex flex-col gap-3">
             <p className="text-xs font-bold text-gray-500">
-              Spécialité par défaut *
+              Spécialité et niveau *
             </p>
 
             {enLigne && <RechercheSpecialite onSelect={handleSelectionRecherche} />}
@@ -372,6 +388,23 @@ export default function AjouterSallePage() {
               </select>
             </div>
 
+            <div>
+              <label className="block text-xs font-bold text-gray-500 mb-1.5">
+                Niveau *
+              </label>
+              <select
+                value={niveau}
+                onChange={(e) => setNiveau(Number(e.target.value))}
+                className={selectClasses}
+              >
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <option key={n} value={n}>
+                    {specialiteChoisie ? libelleNiveau(specialiteChoisie.cycle, n) : `Niveau ${n}`}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             {resume && (
               <p className="text-xs font-semibold text-gray-500 bg-gray-50 rounded-xl px-3.5 py-2.5">
                 {resume}
@@ -404,6 +437,13 @@ export default function AjouterSallePage() {
           </div>
         </form>
       )}
+    </div>
+
+    {enLigne && (
+      <aside className="salle-zone">
+        <ZoneSallesSpecialites selectionId={specialiteId} niveau={niveau} onNiveau={setNiveau} onChoisir={handleSelectionRecherche} />
+      </aside>
+    )}
     </div>
   );
 }

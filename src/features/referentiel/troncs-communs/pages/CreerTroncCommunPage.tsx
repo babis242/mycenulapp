@@ -17,11 +17,17 @@ import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { extraireTextePdf } from '@/lib/pdfExtraction';
 import { televerserFichier } from '@/lib/r2';
+import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
+import type { SpecialiteRecherche } from '@/lib/rechercheSpecialite';
 import { extraireSyllabusPdf } from '@/features/referentiel/ues/api';
 import {
   listUEsPourTroncCommun,
   lireUEsPourTroncCommunDepuisCache,
   createTroncCommun,
+  getTroncCommun,
+  infosUePourTronc,
+  type InfosUeTronc,
+  ajouterSpecialitesAuTroncCommun,
   enregistrerPointsClesTronc,
   type UEOption,
 } from '../api';
@@ -45,6 +51,9 @@ export default function CreerTroncCommunPage() {
     new Set()
   );
   const [recherche, setRecherche] = useState('');
+  const [nomAuto, setNomAuto] = useState('');
+  const [infosUe, setInfosUe] = useState<InfosUeTronc | null>(null);
+  const [specialitesAjoutees, setSpecialitesAjoutees] = useState<SpecialiteRecherche[]>([]);
 
   const [enseignants, setEnseignants] = useState<EnseignantOption[]>([]);
   const [enseignantId, setEnseignantId] = useState('');
@@ -86,12 +95,37 @@ export default function CreerTroncCommunPage() {
   }, []);
 
   function toggleUE(id: string) {
-    setUeIdsSelectionnes((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
+    const next = new Set(ueIdsSelectionnes);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setUeIdsSelectionnes(next);
+
+    // La première UE cochée sert de modèle : son nom, son enseignant et ses
+    // caractéristiques se propagent au tronc commun (sans écraser une saisie
+    // manuelle de l'utilisateur).
+    const refId = next.has(id) ? id : Array.from(next)[0];
+    if (!refId) {
+      setInfosUe(null);
+      if (nom === nomAuto) setNom('');
+      setNomAuto('');
+      return;
+    }
+    if (!next.has(id) && refId === Array.from(next)[0] && infosUe?.ueId === refId) return;
+    const ue = ues.find((u) => u.id === refId);
+    if (ue && (!nom.trim() || nom === nomAuto)) {
+      setNom(ue.nom);
+      setNomAuto(ue.nom);
+    }
+    if (navigator.onLine) {
+      infosUePourTronc(refId)
+        .then((infos) => {
+          setInfosUe(infos);
+          if (infos.enseignantId) {
+            setEnseignantId((cur) => cur || infos.enseignantId!);
+          }
+        })
+        .catch(() => setInfosUe(null));
+    }
   }
 
   async function handleImporterSyllabus(fichier: File | undefined) {
@@ -136,8 +170,12 @@ export default function CreerTroncCommunPage() {
       setError('Le nom du tronc commun est obligatoire.');
       return;
     }
-    if (ueIdsSelectionnes.size < 2) {
-      setError('Sélectionne au moins 2 UEs à regrouper.');
+    if (ueIdsSelectionnes.size < 1) {
+      setError('Sélectionne au moins 1 UE à transformer en tronc commun.');
+      return;
+    }
+    if (ueIdsSelectionnes.size + specialitesAjoutees.length < 2) {
+      setError('Un tronc commun doit couvrir au moins 2 spécialités : sélectionne une autre UE ou ajoute une spécialité.');
       return;
     }
     if (
@@ -158,6 +196,31 @@ export default function CreerTroncCommunPage() {
           ue_ids: Array.from(ueIdsSelectionnes),
           enseignant_id: enseignantId || undefined,
         });
+
+        if (specialitesAjoutees.length > 0) {
+          const detail = await getTroncCommun(troncCommun.id);
+          const modele = detail?.ues.find((u) => u.semestre) ?? detail?.ues[0];
+          if (!detail || !modele?.semestre) {
+            throw new Error(
+              "Tronc créé, mais le semestre des UEs est inconnu : ajoute les spécialités depuis la fiche du tronc."
+            );
+          }
+          const dejaLa = new Set(detail.ues.map((u) => u.specialite_id));
+          const aCreer = specialitesAjoutees.filter((s) => !dejaLa.has(s.id));
+          if (aCreer.length > 0) {
+            await ajouterSpecialitesAuTroncCommun(
+              troncCommun.id,
+              aCreer.map((s) => s.id),
+              {
+                nom: nom.trim(),
+                code: modele.code,
+                volumeHoraire: modele.volume_horaire,
+                coefficient: modele.coefficient,
+                semestre: modele.semestre,
+              }
+            );
+          }
+        }
 
         if (fichierSyllabus) {
           await televerserFichier(
@@ -226,11 +289,11 @@ export default function CreerTroncCommunPage() {
       </button>
 
       <p className="font-extrabold text-2xl text-gray-900 mb-1">
-        Créer un tronc commun
+        Transformer des UEs en tronc commun
       </p>
       <p className="text-sm text-gray-400 mb-6">
-        Regroupe plusieurs UEs distinctes, chacune restant rattachée à sa
-        spécialité.
+        Choisis une ou plusieurs UEs existantes, puis ajoute si besoin d'autres
+        spécialités. Les heures déjà effectuées sont conservées.
       </p>
       {!enLigne && (
         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 mb-5">
@@ -371,7 +434,7 @@ export default function CreerTroncCommunPage() {
 
         <div>
           <p className="font-extrabold text-sm text-gray-900 mb-2.5">
-            UEs à regrouper *{' '}
+            UEs à transformer *{' '}
             <span className="text-gray-400 font-semibold">
               ({ueIdsSelectionnes.size} sélectionnée(s))
             </span>
@@ -434,6 +497,67 @@ export default function CreerTroncCommunPage() {
           </div>
         </div>
 
+        {infosUe && (
+          <div className="bg-white rounded-[20px] p-5">
+            <p className="font-extrabold text-sm text-gray-900 mb-2">
+              Informations reprises de l'UE sélectionnée
+            </p>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+              <span className="text-gray-400 font-bold">Spécialité</span>
+              <span className="font-bold text-gray-800">{infosUe.specialiteNom ?? '—'}</span>
+              <span className="text-gray-400 font-bold">Semestre</span>
+              <span className="font-bold text-gray-800">{infosUe.semestre ?? '—'}</span>
+              <span className="text-gray-400 font-bold">Volume horaire</span>
+              <span className="font-bold text-gray-800">{infosUe.volumeHoraire != null ? `${infosUe.volumeHoraire}h` : '—'}</span>
+              <span className="text-gray-400 font-bold">Heures déjà effectuées</span>
+              <span className="font-bold text-green-700">{infosUe.heuresEffectuees}h (conservées)</span>
+              <span className="text-gray-400 font-bold">Enseignant</span>
+              <span className="font-bold text-gray-800">{infosUe.enseignantNom ?? '—'}</span>
+            </div>
+          </div>
+        )}
+
+        {enLigne && (
+          <div className="bg-white rounded-[20px] p-5">
+            <p className="font-extrabold text-sm text-gray-900 mb-1">
+              Ajouter d'autres spécialités{' '}
+              <span className="text-gray-300 font-normal">(optionnel)</span>
+            </p>
+            <p className="text-xs text-gray-400 mb-3">
+              Une UE (mêmes nom, volume horaire, coefficient et semestre) est
+              créée automatiquement pour chaque spécialité ajoutée. Elle
+              rejoint le tronc sans modifier les heures déjà effectuées.
+            </p>
+            <RechercheSpecialite
+              onSelect={(s) =>
+                setSpecialitesAjoutees((prev) =>
+                  prev.some((x) => x.id === s.id) ? prev : [...prev, s]
+                )
+              }
+            />
+            {specialitesAjoutees.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-3">
+                {specialitesAjoutees.map((s) => (
+                  <span
+                    key={s.id}
+                    className="flex items-center gap-1.5 bg-purple-50 text-purple-700 text-xs font-bold px-3 py-1.5 rounded-full"
+                  >
+                    {s.nom}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSpecialitesAjoutees((prev) => prev.filter((x) => x.id !== s.id))
+                      }
+                    >
+                      <X size={12} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         {error && (
           <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3">
             <p className="text-sm font-bold text-red-600">{error}</p>
@@ -447,7 +571,7 @@ export default function CreerTroncCommunPage() {
             className="flex items-center gap-2 bg-red-600 rounded-full px-5 py-2.5 text-sm font-bold text-white hover:bg-red-700 disabled:opacity-60"
           >
             {saving && <Loader2 size={15} className="animate-spin" />}
-            Créer le tronc commun
+            Transformer en tronc commun
           </button>
           <button
             type="button"

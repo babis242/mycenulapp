@@ -6,6 +6,7 @@ export interface SalleAvecSpecialite {
   code_salle: string;
   capacite: number;
   specialite_par_defaut_id: string;
+  niveau?: number | null;
   specialite: { id: string; nom: string } | null;
 }
 
@@ -13,7 +14,7 @@ export async function listSalles(): Promise<SalleAvecSpecialite[]> {
   const { data, error } = await supabase
     .from('salles')
     .select(
-      'id, code_salle, capacite, specialite_par_defaut_id, specialite:specialites(id, nom)'
+      'id, code_salle, capacite, specialite_par_defaut_id, niveau, specialite:specialites(id, nom)'
     )
     .order('code_salle', { ascending: true });
 
@@ -25,6 +26,7 @@ export interface NouvelleSalle {
   code_salle: string;
   capacite: number;
   specialite_par_defaut_id: string;
+  niveau?: number | null;
 }
 
 export async function createSalle(input: NouvelleSalle) {

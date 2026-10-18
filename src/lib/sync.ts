@@ -1,4 +1,5 @@
 // src/lib/sync.ts
+import { migrerHeuresVersTronc } from '@/features/referentiel/troncs-communs/api';
 import { supabase } from './supabase';
 import { db, enqueueSyncAction } from './db';
 import type { SyncAction } from '@/types';
@@ -265,16 +266,17 @@ async function rejouerAction(action: SyncAction): Promise<void> {
     }
     case 'salles': {
       if (action.operation === 'create') {
-        const { id, code_salle, capacite, specialite_par_defaut_id } =
+        const { id, code_salle, capacite, specialite_par_defaut_id, niveau } =
           payload as {
             id: string;
             code_salle: string;
             capacite: number;
             specialite_par_defaut_id: string;
+            niveau?: number | null;
           };
         const { error } = await supabase
           .from('salles')
-          .upsert({ id, code_salle, capacite, specialite_par_defaut_id });
+          .upsert({ id, code_salle, capacite, specialite_par_defaut_id, niveau: niveau ?? null });
         if (error) throw error;
       }
       return;
@@ -507,6 +509,7 @@ async function rejouerAction(action: SyncAction): Promise<void> {
             );
           if (liaisonError) throw liaisonError;
         }
+        await migrerHeuresVersTronc(id, ue_ids);
       }
       return;
     }

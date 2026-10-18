@@ -39,22 +39,44 @@ interface Props {
   lignes: LigneDisponibilitesEnseignant[];
   specialites: SpecialiteDuCycle[];
   cycleLabel: string;
+  cycle?: string; // code du cycle (BTS, HND…) pour afficher « BTS 1 »
   genereLe: Date;
+}
+
+export function libelleNiveau(cycle: string | undefined, niveau: number): string {
+  if (niveau <= 0) return 'Niveau non précisé';
+  return cycle ? `${cycle.toUpperCase()} ${niveau}` : `Niveau ${niveau}`;
 }
 
 export default function DisponibilitesParSpecialitePdf({
   lignes,
   specialites,
   cycleLabel,
+  cycle,
   genereLe,
 }: Props) {
   const creneaux = tousLesCreneaux();
 
+  // Une page par (spécialité, niveau) : niveau 1, puis niveau 2…
+  const pages: { spec: SpecialiteDuCycle; niveau: number | null }[] = [];
+  for (const spec of specialites) {
+    const niveaux = new Set<number>();
+    for (const l of lignes) {
+      for (const [niv, d] of l.niveaux) if (d.specialiteIds.includes(spec.id)) niveaux.add(niv);
+    }
+    if (niveaux.size === 0) pages.push({ spec, niveau: null });
+    else Array.from(niveaux).sort((a, b) => a - b).forEach((niveau) => pages.push({ spec, niveau }));
+  }
+
   return (
     <div className="dispo-pdf" style={{ fontFamily: 'Arial, Helvetica, sans-serif', color: '#111' }}>
-      {specialites.map((spec, idxSpec) => {
+      {pages.map(({ spec, niveau }, idxSpec) => {
         const enseignants = lignes
-          .filter((l) => l.specialiteIds.includes(spec.id))
+          .filter((l) =>
+            niveau === null
+              ? l.specialiteIds.includes(spec.id)
+              : l.niveaux.get(niveau)?.specialiteIds.includes(spec.id)
+          )
           .sort((a, b) => a.nom.localeCompare(b.nom));
         const couleur = new Map(
           enseignants.map((e, i) => [e.enseignantId, PALETTE[i % PALETTE.length]])
@@ -63,7 +85,7 @@ export default function DisponibilitesParSpecialitePdf({
 
         return (
           <section
-            key={spec.id}
+            key={`${spec.id}-${niveau ?? 'x'}`}
             style={{
               width: '297mm',
               height: '209mm',
@@ -72,8 +94,8 @@ export default function DisponibilitesParSpecialitePdf({
               background: '#fff',
               display: 'flex',
               flexDirection: 'column',
-              breakAfter: idxSpec < specialites.length - 1 ? 'page' : 'auto',
-              pageBreakAfter: idxSpec < specialites.length - 1 ? 'always' : 'auto',
+              breakAfter: idxSpec < pages.length - 1 ? 'page' : 'auto',
+              pageBreakAfter: idxSpec < pages.length - 1 ? 'always' : 'auto',
               overflow: 'hidden',
             }}
           >
@@ -110,7 +132,14 @@ export default function DisponibilitesParSpecialitePdf({
                 <div style={{ fontSize: '8.5px', letterSpacing: '1.2px', opacity: 0.85, fontWeight: 700 }}>
                   DISPONIBILITÉS DES ENSEIGNANTS · {cycleLabel.toUpperCase()}
                 </div>
-                <div style={{ fontSize: '19px', fontWeight: 800, marginTop: '0.5mm' }}>{spec.nom}</div>
+                <div style={{ fontSize: '19px', fontWeight: 800, marginTop: '0.5mm' }}>
+                  {spec.nom}
+                  {niveau !== null && (
+                    <span style={{ marginLeft: '3mm', background: '#fff', color: '#dc2626', borderRadius: '99px', padding: '0.4mm 3mm', fontSize: '13px' }}>
+                      {libelleNiveau(cycle, niveau)}
+                    </span>
+                  )}
+                </div>
                 <div style={{ fontSize: '9.5px', opacity: 0.9 }}>
                   {[spec.ecoleNom, spec.filiereNom].filter(Boolean).join(' · ')}
                 </div>

@@ -13,7 +13,7 @@ import {
   listCyclesDisponibles,
   type CycleOption,
 } from '@/features/emploi-du-temps/api';
-import DisponibilitesParSpecialitePdf from '../components/DisponibilitesParSpecialitePdf';
+import DisponibilitesParSpecialitePdf, { libelleNiveau } from '../components/DisponibilitesParSpecialitePdf';
 import {
   listSpecialitesDuCycle,
   getDisponibilitesParSpecialites,
@@ -127,6 +127,10 @@ export default function DisponibilitesPdfPage() {
     window.print();
   }
 
+  const groupesNiveau: (number | null)[] = (() => {
+    const ns = Array.from(new Set((lignes ?? []).flatMap((l) => Array.from(l.niveaux.keys())))).sort((a, b) => a - b);
+    return ns.length ? ns : [null];
+  })();
   const creneaux = tousLesCreneaux();
   const nbCases = JOURS.length * creneaux.length;
   const champ =
@@ -232,8 +236,8 @@ export default function DisponibilitesPdfPage() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-4">
             {([
-              ['specialite', 'Par spécialité', 'Une page par spécialité : grille Jour × Créneau, chaque enseignant dans sa couleur'],
-              ['enseignant', 'Par enseignant', 'Un tableau : une ligne par enseignant avec ses disponibilités'],
+              ['specialite', 'Par spécialité', 'Une page par spécialité et par niveau : grille Jour × Créneau, chaque enseignant dans sa couleur'],
+              ['enseignant', 'Par enseignant', 'Un tableau par niveau (niveau 1, niveau 2…) : une ligne par enseignant avec ses disponibilités'],
             ] as const).map(([id, titre, desc]) => (
               <button
                 key={id}
@@ -289,6 +293,7 @@ export default function DisponibilitesPdfPage() {
               lignes={lignes}
               specialites={documentInfos.specialitesChoisies}
               cycleLabel={documentInfos.cycleLabel}
+              cycle={cycleKey.split('::')[0]}
               genereLe={documentInfos.genereLe}
             />
           </div>
@@ -298,9 +303,15 @@ export default function DisponibilitesPdfPage() {
       {lignes && documentInfos && mode === 'enseignant' && (
         <div className="overflow-x-auto print:overflow-visible px-4 pb-10 print:p-0">
           <div className="dispo-apercu">
+            {groupesNiveau.map((niv, gi) => {
+              const lignesNiv = niv === null ? lignes : lignes.filter((l) => l.niveaux.has(niv));
+              return (
             <div
+              key={String(niv)}
               className="dispo-pdf"
               style={{
+                breakAfter: gi < groupesNiveau.length - 1 ? 'page' : 'auto',
+                pageBreakAfter: gi < groupesNiveau.length - 1 ? 'always' : 'auto',
                 width: '297mm',
                 boxSizing: 'border-box',
                 padding: '8mm',
@@ -326,6 +337,7 @@ export default function DisponibilitesPdfPage() {
               <div style={{ textAlign: 'center', marginBottom: '3mm' }}>
                 <div style={{ fontSize: '14px', fontWeight: 800 }}>
                   DISPONIBILITÉS DES ENSEIGNANTS — {documentInfos.cycleLabel}
+                  {niv !== null && ` · ${libelleNiveau(cycleKey.split('::')[0], niv)}`}
                 </div>
                 <div style={{ fontSize: '9.5px', marginTop: '1mm' }}>
                   {documentInfos.specialites.join(' · ')}
@@ -359,20 +371,20 @@ export default function DisponibilitesPdfPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {lignes.length === 0 && (
+                  {lignesNiv.length === 0 && (
                     <tr>
                       <td colSpan={3 + nbCases} style={{ ...cellule, textAlign: 'center', padding: '8mm' }}>
                         Aucun enseignant attribué aux spécialités sélectionnées.
                       </td>
                     </tr>
                   )}
-                  {lignes.map((l, i) => (
+                  {lignesNiv.map((l, i) => (
                     <tr key={l.enseignantId}>
                       <td style={{ ...cellule, textAlign: 'center' }}>{i + 1}</td>
                       <td style={cellule}>
                         <b>{l.nom}</b>
                         <div style={{ fontSize: '7.5px', color: '#444' }}>
-                          {l.matricule} · {l.specialites.join(', ')}
+                          {l.matricule} · {(niv === null ? l.specialites : l.niveaux.get(niv)?.specialites ?? l.specialites).join(', ')}
                         </div>
                       </td>
                       {l.aRepondu ? (
@@ -411,6 +423,8 @@ export default function DisponibilitesPdfPage() {
                 </tbody>
               </table>
             </div>
+              );
+            })}
           </div>
         </div>
       )}

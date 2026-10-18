@@ -613,6 +613,8 @@ export interface LigneDisponibilitesEnseignant {
   matricule: string;
   specialites: string[];
   specialiteIds: string[];
+  // niveau (1, 2…; 0 = non précisé) → spécialités où il enseigne à ce niveau
+  niveaux: Map<number, { specialiteIds: string[]; specialites: string[] }>;
   aRepondu: boolean;
   // clés "jour|creneau" cochées par l'enseignant
   cases: Set<string>;
@@ -642,12 +644,20 @@ export async function getDisponibilitesParSpecialites(
 
   const { data: offres, error: offresError } = await supabase
     .from('offres')
-    .select('id, specialite_id')
+    .select('id, specialite_id, semestre')
     .in('specialite_id', specialiteIds);
   if (offresError) throw offresError;
   const specialiteParOffre = new Map(
     (offres ?? []).map((o: any) => [o.id, o.specialite_id as string])
   );
+  // Niveau d'une offre = ceil(semestre / 2) : S1-S2 → 1, S3-S4 → 2…
+  const niveauParOffre = new Map<string, number>(
+    (offres ?? []).map((o: any) => {
+      const n = Number(String(o.semestre ?? '').replace(/[^0-9]/g, ''));
+      return [o.id, n > 0 ? Math.ceil(n / 2) : 0];
+    })
+  );
+  const niveauxParEnseignant = new Map<string, Map<number, Set<string>>>();
   const offreIds = Array.from(specialiteParOffre.keys());
   if (offreIds.length === 0) return [];
 
@@ -667,6 +677,12 @@ export async function getDisponibilitesParSpecialites(
       if (!specialiteIdsParEnseignant.has(a.enseignant_id))
         specialiteIdsParEnseignant.set(a.enseignant_id, new Set());
       specialiteIdsParEnseignant.get(a.enseignant_id)!.add(specId);
+      if (!niveauxParEnseignant.has(a.enseignant_id))
+        niveauxParEnseignant.set(a.enseignant_id, new Map());
+      const parNiv = niveauxParEnseignant.get(a.enseignant_id)!;
+      const niv = niveauParOffre.get(a.offre_id) ?? 0;
+      if (!parNiv.has(niv)) parNiv.set(niv, new Set());
+      parNiv.get(niv)!.add(specId);
       if (!specialitesParEnseignant.has(a.enseignant_id))
         specialitesParEnseignant.set(a.enseignant_id, new Set());
       specialitesParEnseignant.get(a.enseignant_id)!.add(nom);
@@ -728,6 +744,15 @@ export async function getDisponibilitesParSpecialites(
       matricule: infos.get(id)?.matricule ?? '',
       specialites: Array.from(specialitesParEnseignant.get(id) ?? []).sort(),
       specialiteIds: Array.from(specialiteIdsParEnseignant.get(id) ?? []),
+      niveaux: new Map(
+        Array.from(niveauxParEnseignant.get(id) ?? []).map(([niv, specs]) => [
+          niv,
+          {
+            specialiteIds: Array.from(specs),
+            specialites: Array.from(specs).map((sid) => nomSpecialite.get(sid) ?? '').filter(Boolean).sort(),
+          },
+        ])
+      ),
       aRepondu: aReponduIds.has(id),
       cases: casesParEnseignant.get(id) ?? new Set<string>(),
     }))

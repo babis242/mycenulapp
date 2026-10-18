@@ -1,5 +1,5 @@
 // src/features/seances/pages/SaisieManuellePage.tsx
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Loader2,
   Search,
@@ -117,7 +117,20 @@ function validerHeureContreCreneau(
 export default function SaisieManuellePage() {
   const enLigne = useOnlineStatus();
   const [recherche, setRecherche] = useState('');
-  const [resultats, setResultats] = useState<SeanceRecherche[]>([]);
+  // Toutes les séances du filtre semaine/jour/créneau courant : chargées une
+  // seule fois ; la frappe dans la barre de recherche filtre ensuite en
+  // mémoire, donc instantanément (aucun aller-retour réseau).
+  const [toutes, setToutes] = useState<SeanceRecherche[]>([]);
+  const numeroRequete = useRef(0);
+  const resultats = useMemo(() => {
+    const norm = (t: string) =>
+      t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+    const q = norm(recherche.trim());
+    if (!q) return toutes;
+    return toutes.filter((s) =>
+      norm(`${s.ueNom} ${s.enseignantNom} ${s.jour} ${s.specialiteNom ?? ''}`).includes(q)
+    );
+  }, [toutes, recherche]);
   const [chargement, setChargement] = useState(false);
   const [aRecherche, setARecherche] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
@@ -158,6 +171,7 @@ export default function SaisieManuellePage() {
     }
   ) {
     e?.preventDefault();
+    const numero = ++numeroRequete.current;
     setChargement(true);
     setErreur(null);
     setARecherche(true);
@@ -168,15 +182,22 @@ export default function SaisieManuellePage() {
         creneau: filtres.creneau || undefined,
       };
       const data = navigator.onLine
-        ? await rechercherSeancesPourSaisieManuelle(recherche, f)
-        : await lireSeancesPourSaisieManuelleDepuisCache(recherche, f);
-      setResultats(data);
+        ? await rechercherSeancesPourSaisieManuelle('', f)
+        : await lireSeancesPourSaisieManuelleDepuisCache('', f);
+      if (numero === numeroRequete.current) setToutes(data);
     } catch (err) {
-      setErreur(err instanceof Error ? err.message : 'Erreur de recherche.');
+      if (numero === numeroRequete.current)
+        setErreur(err instanceof Error ? err.message : 'Erreur de recherche.');
     } finally {
-      setChargement(false);
+      if (numero === numeroRequete.current) setChargement(false);
     }
   }
+
+  // Chargement automatique à l'ouverture de la page.
+  useEffect(() => {
+    lancerRecherche();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Options de filtre dérivées des résultats actuels uniquement (pas de
   // valeur qui n'existerait dans aucune séance retournée) — semaines
@@ -302,7 +323,7 @@ export default function SaisieManuellePage() {
         echecs.push(`${s.ueNom} : ${err instanceof Error ? err.message : 'échec'}`);
       }
     }
-    setResultats((prev) =>
+    setToutes((prev) =>
       prev.map((s) => {
         const r = reussies.get(s.id);
         return r
@@ -423,7 +444,7 @@ export default function SaisieManuellePage() {
       setEnregistreHorsLigne(horsLigne);
 
       setSucces(true);
-      setResultats((prev) =>
+      setToutes((prev) =>
         prev.map((s) =>
           s.id === selection.id
             ? {
@@ -504,12 +525,6 @@ export default function SaisieManuellePage() {
           placeholder="Enseignant, UE ou jour..."
           className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
         />
-        <button
-          type="submit"
-          className="shrink-0 bg-red-600 rounded-full px-4 py-1.5 text-xs font-bold text-white hover:bg-red-700"
-        >
-          Rechercher
-        </button>
       </form>
 
       {true && (

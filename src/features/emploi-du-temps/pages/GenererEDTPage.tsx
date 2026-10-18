@@ -11,6 +11,7 @@ import {
   Check,
   Save,
   Wand2,
+  Repeat,
   RotateCcw,
   DoorOpen,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { JOURS, tousLesCreneaux, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import { synchroniserCreneaux } from '@/lib/creneaux';
+import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
 import {
   listCyclesDisponibles,
   listSpecialitesDuCycleSemestre,
@@ -27,11 +29,17 @@ import {
   enregistrerChangementsEnLot,
   listOffresDeSpecialite,
   getEnseignantsDisponibles,
+  getOccupationsSemaine,
+  getHeuresPasseesOffres,
+  ueAchevee,
+  type OccupationSeance,
   getSalleParDefautSpecialite,
   getSallesLibresPourCreneau,
   definirSpecialitesEnAttenteValidation,
   genererEmploiDuTempsAutomatique,
   reinitialiserEmploiDuTempsGroupe,
+  reconduireEmploiDuTemps,
+  ajusterQuotaHoraire,
   attribuerSallesPourSemaine,
   type ResultatAttributionSalles,
   type CycleOption,
@@ -300,6 +308,7 @@ export default function GenererEDTPage() {
 
   const [generationEnCours, setGenerationEnCours] = useState(false);
   const [reinitialisationEnCours, setReinitialisationEnCours] = useState(false);
+  const [reconductionEnCours, setReconductionEnCours] = useState(false);
   const [resultatGeneration, setResultatGeneration] =
     useState<ResultatGenerationAuto | null>(null);
 
@@ -573,6 +582,61 @@ export default function GenererEDTPage() {
     }
   }
 
+  // Quota dépassé : aligne le volume horaire de la matière sur les heures
+  // réellement programmées (cumul de sa dernière séance affichée).
+  const [quotaEnCours, setQuotaEnCours] = useState<string | null>(null);
+  async function ajusterQuota(s: { id: string; offreId: string | null; troncCommunId: string | null; ueNom: string; volumeHoraire: number | null }) {
+    const memeCours = seancesAffichees.filter((x) =>
+      s.troncCommunId ? x.troncCommunId === s.troncCommunId : x.offreId === s.offreId
+    );
+    const cumul = Math.max(...memeCours.map((x) => heuresEffectuees.get(x.id) ?? 0));
+    const nouveau = Math.round(cumul * 100) / 100;
+    if (!window.confirm(`Passer le quota horaire de « ${s.ueNom} » de ${s.volumeHoraire}h à ${nouveau}h ?${s.troncCommunId ? ' (valable pour toutes les spécialités du tronc commun)' : ''}`)) return;
+    setQuotaEnCours(s.id);
+    try {
+      await ajusterQuotaHoraire({ offreId: s.offreId, troncCommunId: s.troncCommunId }, nouveau);
+      await chargerGroupe({ ignorerLocal: true });
+    } catch (err) {
+      setErreurChargement(err instanceof Error ? err.message : "Erreur pendant l'ajustement du quota.");
+    } finally {
+      setQuotaEnCours(null);
+    }
+  }
+
+  // Reconduit sur la semaine affichée l'emploi du temps VALIDÉ de la
+  // semaine précédente (même cycle + semestre).
+  async function lancerReconduction() {
+    if (specialites.length === 0) return;
+    if (
+      !window.confirm(
+        "Reconduire l'emploi du temps validé de la semaine précédente sur cette semaine ? Les cases déjà remplies ne sont pas modifiées ; les séances sont recopiées à l'identique."
+      )
+    ) {
+      return;
+    }
+    if (cycleKey && semestre && semaine) {
+      localStorage.removeItem(`edt-groupe-brouillon:${cycleKey}:${semestre}:${semaine}`);
+    }
+    setChangements([]);
+    setReconductionEnCours(true);
+    setResultatGeneration(null);
+    try {
+      const resultat = await reconduireEmploiDuTemps(
+        specialites.map((s) => s.id),
+        semestre,
+        semaine
+      );
+      await chargerGroupe({ ignorerLocal: true });
+      setResultatGeneration(resultat);
+    } catch (err) {
+      setErreurChargement(
+        err instanceof Error ? err.message : 'Erreur pendant la reconduction.'
+      );
+    } finally {
+      setReconductionEnCours(false);
+    }
+  }
+
   // Attribution automatique des salles — pour TOUS les groupes : toutes
   // les séances de la semaine, tous cycles/écoles confondus, sont
   // réparties ensemble créneau par créneau (attribuer cycle par cycle
@@ -659,6 +723,7 @@ export default function GenererEDTPage() {
     seanceExistante?: SeanceGroupee
   ) {
     if (!specialiteAffichee) return;
+    setCreneauMarque({ jour, creneau });
     setModal({
       specialiteId: specialiteAffichee,
       jour,
@@ -1006,8 +1071,175 @@ export default function GenererEDTPage() {
         seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres))
   );
 
+  // Cours choisi dans le panneau de droite + dernier créneau cliqué dans la
+  // grille : servent à afficher les disponibilités de l'enseignant.
+  const [coursSelectionne, setCoursSelectionne] = useState<string | null>(null);
+  const [creneauMarque, setCreneauMarque] = useState<{ jour: string; creneau: string } | null>(null);
+
+  // ── Où un enseignant / une salle est déjà programmé(e) ──
+  // Chargé seulement quand c'est utile : une séance en conflit est affichée,
+  // ou la fenêtre de programmation est ouverte.
+  const [occupations, setOccupations] = useState<OccupationSeance[]>([]);
+  const aConflitAffiche = seancesAffichees.some((s) => s.statut === 'conflit');
+  const modalOuverte = !!modal;
+  useEffect(() => {
+    if (!enLigne || !semaine || (!aConflitAffiche && !modalOuverte && !coursSelectionne)) return;
+    let actif = true;
+    getOccupationsSemaine(semaine)
+      .then((o) => actif && setOccupations(o))
+      .catch(() => undefined);
+    return () => {
+      actif = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [semaine, enLigne, aConflitAffiche, modalOuverte, coursSelectionne, seances]);
+
+  const decrire = (o: OccupationSeance) =>
+    `${o.ueNom || 'Cours'} — ${o.specialiteNom || 'spécialité inconnue'}${
+      o.salleCode ? ` (salle ${o.salleCode})` : ''
+    }`;
+  const autresProgrammations = (
+    enseignantId: string | null,
+    jour: string,
+    creneau: string,
+    exclureId: string | null,
+    troncId: string | null
+  ) =>
+    !enseignantId
+      ? []
+      : occupations.filter(
+          (o) =>
+            o.enseignantId === enseignantId &&
+            o.jour === jour &&
+            o.creneau === creneau &&
+            o.id !== exclureId &&
+            !(troncId && o.troncCommunId === troncId)
+        );
+  function messagesConflit(s: SeanceGroupee): string[] {
+    const msgs: string[] = [];
+    for (const o of autresProgrammations(s.enseignantId, s.jour, s.creneau, s.id, s.troncCommunId)) {
+      msgs.push(`${s.enseignantNom} est déjà programmé(e) sur ce créneau : ${decrire(o)}`);
+    }
+    if (s.salleId) {
+      for (const o of occupations) {
+        if (
+          o.salleId === s.salleId &&
+          o.jour === s.jour &&
+          o.creneau === s.creneau &&
+          o.id !== s.id &&
+          !(s.troncCommunId && o.troncCommunId === s.troncCommunId)
+        ) {
+          msgs.push(`Salle ${s.salleCode ?? ''} déjà occupée : ${decrire(o)}${o.enseignantNom ? ` · ${o.enseignantNom}` : ''}`);
+        }
+      }
+    } else {
+      msgs.push('Aucune salle attribuée');
+    }
+    if (msgs.length === 0) msgs.push(enLigne ? 'Conflit détecté (vérification en cours…)' : 'Conflit détecté (connexion requise pour le détail)');
+    return msgs;
+  }
+
+  // ── Panneau « cours de la spécialité » (à droite de la grille) ──
+  const [heuresPassees, setHeuresPassees] = useState<Map<string, number> | null>(null);
+  const offresPanneau = (offresParSpecialite.get(specialiteAffichee) ?? []).filter(
+    (o) => !o.semestre || o.semestre === semestre
+  );
+  const cleOffresPanneau = offresPanneau.map((o) => o.offreId).join(',');
+  useEffect(() => {
+    setHeuresPassees(null);
+    if (!enLigne || !semaine || offresPanneau.length === 0) return;
+    let actif = true;
+    getHeuresPasseesOffres(
+      offresPanneau.map((o) => ({
+        offreId: o.offreId,
+        troncCommunId: ueVersTronc.get(o.ueId)?.troncCommunId ?? null,
+      })),
+      semaine
+    )
+      .then((m) => actif && setHeuresPassees(m))
+      .catch(() => undefined);
+    return () => {
+      actif = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cleOffresPanneau, semaine, enLigne, ueVersTronc]);
+
+  const coursPanneau = offresPanneau
+    .map((o) => {
+      const troncId = ueVersTronc.get(o.ueId)?.troncCommunId ?? null;
+      const deCetteSemaine = new Map<string, SeanceGroupee>();
+      for (const s of seances) {
+        if (troncId) {
+          if (
+            s.troncCommunId === troncId &&
+            seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres)
+          )
+            deCetteSemaine.set(s.id, s);
+        } else if (s.offreId === o.offreId) {
+          deCetteSemaine.set(s.id, s);
+        }
+      }
+      const heuresSemaine = Array.from(deCetteSemaine.values()).reduce(
+        (n, s) => n + heuresEffectueesPourSeance(semaine, s.jour, s.creneau, null),
+        0
+      );
+      const passees = heuresPassees?.get(o.offreId) ?? null;
+      const volume = o.volumeHoraire;
+      const restant =
+        volume != null && passees !== null ? Math.max(0, volume - passees - heuresSemaine) : null;
+      const termine = passees !== null && ueAchevee(passees, volume);
+      const statut: 'termine' | 'programme' | 'non_programme' = termine
+        ? 'termine'
+        : heuresSemaine > 0
+          ? 'programme'
+          : 'non_programme';
+      const seTermineCetteSemaine =
+        statut === 'programme' && passees !== null && ueAchevee(passees + heuresSemaine, volume);
+      return { o, statut, heuresSemaine, passees, restant, volume, seTermineCetteSemaine, nbSeances: deCetteSemaine.size };
+    })
+    .sort(
+      (a, b) =>
+        ({ non_programme: 0, programme: 1, termine: 2 })[a.statut] -
+          ({ non_programme: 0, programme: 1, termine: 2 })[b.statut] ||
+        a.o.ueNom.localeCompare(b.o.ueNom, 'fr')
+    );
+  const decompte = {
+    non_programme: coursPanneau.filter((c) => c.statut === 'non_programme').length,
+    programme: coursPanneau.filter((c) => c.statut === 'programme').length,
+    termine: coursPanneau.filter((c) => c.statut === 'termine').length,
+  };
+  const STYLE_STATUT = {
+    programme: { label: 'Programmé', fond: '#dcfce7', texte: '#15803d', barre: '#16a34a' },
+    non_programme: { label: 'Non programmé', fond: '#fee2e2', texte: '#b91c1c', barre: '#dc2626' },
+    termine: { label: 'Terminé', fond: '#e0e7ff', texte: '#4338ca', barre: '#6366f1' },
+  } as const;
+
+  // Disponibilités de l'enseignant du cours actif (celui de la fenêtre de
+  // programmation si elle est ouverte, sinon celui choisi dans le panneau).
+  const offreActive = modal?.offreId || coursSelectionne || '';
+  const coursActif = coursPanneau.find((c) => c.o.offreId === offreActive) ?? null;
+  const enseignantActifId = coursActif?.o.enseignantAttribueId ?? null;
+  const marque = modal ? { jour: modal.jour, creneau: modal.creneau } : creneauMarque;
+  const dispoEnseignant = new Set<string>();
+  if (enseignantActifId && snapshotRef.current) {
+    for (const [cle, liste] of Object.entries(snapshotRef.current.dispoParCreneau)) {
+      if (liste.some((e) => e.id === enseignantActifId)) dispoEnseignant.add(cle);
+    }
+  }
+  const prisEnseignant = new Map<string, string>();
+  if (enseignantActifId) {
+    for (const o of occupations) {
+      if (o.enseignantId === enseignantActifId) prisEnseignant.set(`${o.jour}|${o.creneau}`, decrire(o));
+    }
+    for (const s of seances) {
+      if (s.enseignantId === enseignantActifId) {
+        prisEnseignant.set(`${s.jour}|${s.creneau}`, prisEnseignant.get(`${s.jour}|${s.creneau}`) ?? `${s.ueNom}`);
+      }
+    }
+  }
+
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-6xl mx-auto">
       <p className="font-extrabold text-2xl text-gray-900 mb-1">
         Emploi du temps
       </p>
@@ -1150,6 +1382,19 @@ export default function GenererEDTPage() {
                 Réinitialiser la semaine
               </button>
               <button
+                onClick={lancerReconduction}
+                disabled={!enLigne || reconductionEnCours || generationEnCours || envoiEnCours}
+                title="Recopie sur cette semaine l'emploi du temps validé de la semaine précédente (même cycle et semestre)"
+                className="flex items-center gap-2 bg-white border border-gray-200 rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+              >
+                {reconductionEnCours ? (
+                  <Loader2 size={15} className="animate-spin" />
+                ) : (
+                  <Repeat size={15} />
+                )}
+                Reconduire la semaine validée
+              </button>
+              <button
                 onClick={lancerGenerationAutomatique}
                 disabled={!enLigne || generationEnCours || envoiEnCours}
                 title="Programme automatiquement toutes les UE/troncs communs pas encore achevés de ce groupe"
@@ -1215,7 +1460,7 @@ export default function GenererEDTPage() {
             <div className="bg-white rounded-xl px-4 py-3.5 mb-4 flex items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-bold text-gray-900">
-                  Génération automatique : {resultatGeneration.nbSeancesTroncPlacees}{' '}
+                  {resultatGeneration.libelle ?? 'Génération automatique'} : {resultatGeneration.nbSeancesTroncPlacees}{' '}
                   séance{resultatGeneration.nbSeancesTroncPlacees > 1 ? 's' : ''} de tronc commun,{' '}
                   {resultatGeneration.nbSeancesSpecialitesPlacees} séance
                   {resultatGeneration.nbSeancesSpecialitesPlacees > 1 ? 's' : ''} de spécialité placée
@@ -1278,6 +1523,8 @@ export default function GenererEDTPage() {
             </p>
           )}
 
+          <div className="flex flex-col xl:flex-row gap-4 items-start">
+          <div className="flex-1 min-w-0 w-full">
           <div className="bg-white rounded-[20px] overflow-x-auto mb-6">
             <table className="w-full text-sm border-collapse">
               <thead>
@@ -1329,13 +1576,20 @@ export default function GenererEDTPage() {
                             </button>
                           ) : (
                             <div className="flex flex-col gap-1.5">
-                              {cellules.map((s) => (
+                              {cellules.map((s) => {
+                                const depasse =
+                                  s.volumeHoraire != null &&
+                                  (heuresEffectuees.get(s.id) ?? 0) > s.volumeHoraire + 0.001;
+                                return (
                                 <div
                                   key={s.id}
+                                  style={depasse && s.statut !== 'conflit' ? { background: '#fef9c3', border: '1px solid #facc15' } : undefined}
                                   className={`rounded-xl px-3 py-2 ${
                                     s.statut === 'conflit'
                                       ? 'bg-red-50 border border-red-200'
-                                      : 'bg-gray-50'
+                                      : depasse
+                                        ? ''
+                                        : 'bg-gray-50'
                                   }`}
                                 >
                                   <p className="font-bold text-xs text-gray-900 truncate">
@@ -1351,11 +1605,30 @@ export default function GenererEDTPage() {
                                       {s.volumeHoraire}h
                                     </p>
                                   )}
-                                  {s.statut === 'conflit' && (
-                                    <p className="text-[10px] text-red-600 font-bold mb-1.5">
-                                      ⚠ Conflit de salle
-                                    </p>
+                                  {depasse && (
+                                    <div style={{ marginBottom: 6 }}>
+                                      <p style={{ fontSize: 10, fontWeight: 800, color: '#a16207', marginBottom: 4 }}>
+                                        ⚠ Dépasse le quota horaire
+                                      </p>
+                                      <button
+                                        type="button"
+                                        disabled={!enLigne || quotaEnCours === s.id}
+                                        onClick={() => ajusterQuota(s)}
+                                        style={{ background: '#facc15', color: '#713f12', border: 'none', borderRadius: 999, padding: '3px 10px', fontSize: 10, fontWeight: 800, cursor: 'pointer', opacity: !enLigne ? 0.5 : 1 }}
+                                      >
+                                        {quotaEnCours === s.id ? 'Ajustement…' : 'Ajuster le quota'}
+                                      </button>
+                                    </div>
                                   )}
+                                  {s.statut === 'conflit' &&
+                                    messagesConflit(s).map((m, i) => (
+                                      <p
+                                        key={i}
+                                        className="text-[10px] text-red-600 font-bold mb-1.5 leading-snug"
+                                      >
+                                        ⚠ {m}
+                                      </p>
+                                    ))}
                                   <button
                                     onClick={() =>
                                       ouvrirModal(jour, creneau, s)
@@ -1365,7 +1638,8 @@ export default function GenererEDTPage() {
                                     <Pencil size={11} /> Modifier
                                   </button>
                                 </div>
-                              ))}
+                                );
+                              })}
                             </div>
                           )}
                         </td>
@@ -1375,6 +1649,190 @@ export default function GenererEDTPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+          </div>
+
+          <aside className="w-full xl:w-80 shrink-0 xl:sticky xl:top-4 mb-6">
+            <div className="bg-white rounded-[20px] p-4">
+              <p className="font-extrabold text-sm text-gray-900">Cours de la spécialité</p>
+              <p className="text-[11px] text-gray-400 mb-3 truncate">
+                {specialiteCourante?.nom} · {semestre}
+              </p>
+              <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 12 }}>
+                {(['non_programme', 'programme', 'termine'] as const).map((k) => (
+                  <span
+                    key={k}
+                    style={{
+                      background: STYLE_STATUT[k].fond,
+                      color: STYLE_STATUT[k].texte,
+                      borderRadius: 999,
+                      padding: '3px 9px',
+                      fontSize: 11,
+                      fontWeight: 800,
+                    }}
+                  >
+                    {decompte[k]} {STYLE_STATUT[k].label.toLowerCase()}
+                  </span>
+                ))}
+              </div>
+              {coursPanneau.length === 0 ? (
+                <p className="text-xs text-gray-400">Aucun cours pour cette spécialité à ce semestre.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, maxHeight: '42vh', overflowY: 'auto' }}>
+                  {coursPanneau.map(({ o, statut, restant, volume, passees, heuresSemaine, seTermineCetteSemaine }) => {
+                    const st = STYLE_STATUT[statut];
+                    const fait = volume != null && passees !== null ? Math.min(volume, passees + heuresSemaine) : null;
+                    const pct = volume && fait !== null ? Math.round((fait / volume) * 100) : 0;
+                    return (
+                      <div
+                        key={o.offreId}
+                        onClick={() => setCoursSelectionne((c) => (c === o.offreId ? null : o.offreId))}
+                        style={{
+                          border: offreActive === o.offreId ? '2px solid #dc2626' : '1px solid #f1f1f1',
+                          borderRadius: 14,
+                          padding: offreActive === o.offreId ? '8px 10px' : '9px 11px',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'flex-start' }}>
+                          <p className="text-xs font-bold text-gray-900" style={{ lineHeight: 1.3 }}>
+                            {o.ueNom}
+                          </p>
+                          <span
+                            style={{
+                              background: st.fond,
+                              color: st.texte,
+                              borderRadius: 999,
+                              padding: '2px 8px',
+                              fontSize: 10,
+                              fontWeight: 800,
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {st.label}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-gray-400 truncate">
+                          {o.enseignantAttribueNom ?? 'Sans enseignant'}
+                        </p>
+                        {volume != null ? (
+                          <>
+                            <div style={{ height: 5, background: '#f1f1f1', borderRadius: 9, overflow: 'hidden', marginTop: 6 }}>
+                              <div style={{ width: `${pct}%`, height: '100%', background: st.barre, borderRadius: 9 }} />
+                            </div>
+                            <p className="text-[11px] font-bold mt-1" style={{ color: st.texte }}>
+                              {restant !== null ? `${restant}h restantes` : 'Heures restantes : —'}
+                              <span style={{ color: '#9ca3af', fontWeight: 600 }}> / {volume}h</span>
+                              {heuresSemaine > 0 && (
+                                <span style={{ color: '#9ca3af', fontWeight: 600 }}> · {heuresSemaine}h cette semaine</span>
+                              )}
+                            </p>
+                            {seTermineCetteSemaine && (
+                              <p className="text-[10px] font-bold" style={{ color: '#4338ca' }}>
+                                Dernière séance : le cours sera terminé
+                              </p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-[11px] text-gray-400 mt-1">Volume horaire non défini</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div style={{ borderTop: '1px solid #f1f1f1', marginTop: 12, paddingTop: 10 }}>
+                <p className="text-xs font-extrabold text-gray-900">Disponibilités souhaitées</p>
+                {!coursActif || !enseignantActifId ? (
+                  <p className="text-[11px] text-gray-400 mt-1">
+                    Clique sur un cours (ou sur un créneau) pour voir les disponibilités de son enseignant.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[11px] text-gray-500 mt-0.5 truncate">
+                      {coursActif.o.enseignantAttribueNom} · {coursActif.o.ueNom}
+                    </p>
+                    {dispoEnseignant.size === 0 && (
+                      <p className="text-[11px] font-bold text-amber-600 mt-1">
+                        Aucune disponibilité renseignée par cet enseignant.
+                      </p>
+                    )}
+                    <table style={{ width: '100%', borderCollapse: 'separate', borderSpacing: 3, marginTop: 6 }}>
+                      <thead>
+                        <tr>
+                          <th />
+                          {tousLesCreneaux().map((c) => (
+                            <th key={c} style={{ fontSize: 9, color: '#9ca3af', fontWeight: 700 }}>{c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {JOURS.map((jour) => (
+                          <tr key={jour}>
+                            <td style={{ fontSize: 10, fontWeight: 800, color: '#374151', paddingRight: 4 }}>{jour.slice(0, 3)}</td>
+                            {tousLesCreneaux().map((c) => {
+                              const cle = `${jour}|${c}`;
+                              const dispo = dispoEnseignant.has(cle);
+                              const pris = prisEnseignant.get(cle);
+                              const estMarque = marque?.jour === jour && marque?.creneau === c;
+                              return (
+                                <td
+                                  key={c}
+                                  title={pris ? `Déjà programmé : ${pris}` : dispo ? 'Disponible' : 'Non disponible'}
+                                  style={{
+                                    textAlign: 'center',
+                                    height: 26,
+                                    borderRadius: 8,
+                                    fontSize: 12,
+                                    fontWeight: 800,
+                                    background: pris ? '#fef3c7' : dispo ? '#dcfce7' : '#f3f4f6',
+                                    color: pris ? '#b45309' : dispo ? '#15803d' : '#d1d5db',
+                                    outline: estMarque ? '2px solid #dc2626' : 'none',
+                                    outlineOffset: 0,
+                                  }}
+                                >
+                                  {pris ? '●' : dispo ? '✓' : '·'}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 6, fontSize: 10, color: '#6b7280', fontWeight: 600 }}>
+                      <span><b style={{ color: '#15803d' }}>✓</b> disponible</span>
+                      <span><b style={{ color: '#b45309' }}>●</b> déjà programmé</span>
+                      <span><b style={{ color: '#d1d5db' }}>·</b> non dispo</span>
+                    </div>
+                    {marque && (
+                      <p
+                        className="text-[11px] font-bold mt-2"
+                        style={{
+                          color: prisEnseignant.has(`${marque.jour}|${marque.creneau}`)
+                            ? '#b45309'
+                            : dispoEnseignant.has(`${marque.jour}|${marque.creneau}`)
+                              ? '#15803d'
+                              : '#b91c1c',
+                        }}
+                      >
+                        {marque.jour} · {marque.creneau} :{' '}
+                        {prisEnseignant.has(`${marque.jour}|${marque.creneau}`)
+                          ? `déjà programmé (${prisEnseignant.get(`${marque.jour}|${marque.creneau}`)})`
+                          : dispoEnseignant.has(`${marque.jour}|${marque.creneau}`)
+                            ? 'disponible ✓'
+                            : "n'a pas souhaité ce créneau"}
+                      </p>
+                    )}
+                  </>
+                )}
+              </div>
+              {!enLigne && (
+                <p className="text-[10px] text-amber-600 font-semibold mt-2">
+                  Hors ligne : heures restantes indisponibles.
+                </p>
+              )}
+            </div>
+          </aside>
           </div>
         </>
       )}
@@ -1482,6 +1940,30 @@ export default function GenererEDTPage() {
                   L'enseignant est celui déjà attribué à cette UE
                   (Répartition).
                 </p>
+                {(() => {
+                  const offre = (offresParSpecialite.get(modal.specialiteId) ?? []).find(
+                    (o) => o.offreId === modal.offreId
+                  );
+                  if (!offre?.enseignantAttribueId) return null;
+                  const pris = autresProgrammations(
+                    offre.enseignantAttribueId,
+                    modal.jour,
+                    modal.creneau,
+                    modal.seanceIdExistante,
+                    ueVersTronc.get(offre.ueId)?.troncCommunId ?? null
+                  );
+                  if (pris.length === 0) return null;
+                  return (
+                    <div className="mt-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2">
+                      {pris.map((o) => (
+                        <p key={o.id} className="text-[11px] font-bold text-red-600 leading-snug">
+                          ⚠ {offre.enseignantAttribueNom} est déjà programmé(e) sur {modal.jour} · {modal.creneau} :{' '}
+                          {decrire(o)}
+                        </p>
+                      ))}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>

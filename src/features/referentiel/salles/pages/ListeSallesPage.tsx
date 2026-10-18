@@ -20,6 +20,7 @@ async function lireSallesDepuisCache(): Promise<SalleAvecSpecialite[]> {
     code_salle: s.code_salle,
     capacite: s.capacite,
     specialite_par_defaut_id: s.specialite_par_defaut_id,
+    niveau: s.niveau ?? null,
     specialite: s.specialite_par_defaut_id
       ? (() => {
           const sp = specialiteParId.get(s.specialite_par_defaut_id);
@@ -224,7 +225,7 @@ export default function ListeSallesPage() {
                     )}
                   </td>
                   <td className="px-5 py-3.5 text-gray-500">
-                    {s.specialite?.nom ?? '—'}
+                    {s.specialite?.nom ?? '—'}{s.niveau ? ` · Niveau ${s.niveau}` : ''}
                   </td>
                   <td className="px-5 py-3.5 text-right">
                     {enEdition === s.id ? (

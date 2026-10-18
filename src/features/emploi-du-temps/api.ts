@@ -1,4 +1,5 @@
 // src/features/emploi-du-temps/api.ts
+import { niveauDeSemestre } from '@/lib/niveau';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import {
@@ -113,6 +114,59 @@ export interface EnseignantDisponible {
   matricule: string;
 }
 
+// Toutes les séances d'une semaine (toutes spécialités confondues), avec de
+// quoi dire OÙ un enseignant ou une salle est déjà pris sur un créneau.
+export interface OccupationSeance {
+  id: string;
+  jour: string;
+  creneau: string;
+  enseignantId: string | null;
+  enseignantNom: string;
+  salleId: string | null;
+  salleCode: string | null;
+  ueNom: string;
+  specialiteNom: string; // « Tronc commun » pour une séance partagée
+  troncCommunId: string | null;
+}
+
+export async function getOccupationsSemaine(semaine: string): Promise<OccupationSeance[]> {
+  const PAGE = 1000;
+  const out: OccupationSeance[] = [];
+  for (let debut = 0; ; debut += PAGE) {
+    const { data, error } = await supabase
+      .from('seances_edt')
+      .select(
+        `
+        id, jour, creneau, salle_id, enseignant_id, tronc_commun_id,
+        offre:offres(specialite:specialites(nom), ue:ues(nom)),
+        tronc_commun:troncs_communs(nom),
+        enseignant:enseignants(nom),
+        salle:salles(code_salle)
+      `
+      )
+      .eq('semaine', semaine)
+      .order('id', { ascending: true })
+      .range(debut, debut + PAGE - 1);
+    if (error) throw error;
+    for (const s of (data ?? []) as any[]) {
+      out.push({
+        id: s.id,
+        jour: s.jour,
+        creneau: s.creneau,
+        enseignantId: s.enseignant_id ?? null,
+        enseignantNom: s.enseignant?.nom ?? '',
+        salleId: s.salle_id ?? null,
+        salleCode: s.salle?.code_salle ?? null,
+        ueNom: s.tronc_commun_id ? s.tronc_commun?.nom ?? '' : s.offre?.ue?.nom ?? '',
+        specialiteNom: s.tronc_commun_id ? 'Tronc commun' : s.offre?.specialite?.nom ?? '',
+        troncCommunId: s.tronc_commun_id ?? null,
+      });
+    }
+    if ((data ?? []).length < PAGE) break;
+  }
+  return out;
+}
+
 export async function getEnseignantsDisponibles(
   jour: string,
   creneau: string
@@ -155,13 +209,18 @@ export async function listTousLesEnseignants(): Promise<
   return data ?? [];
 }
 
-export async function getSalleParDefautSpecialite(specialiteId: string) {
+export async function getSalleParDefautSpecialite(specialiteId: string, niveau?: number | null) {
   const { data } = await supabase
     .from('salles')
-    .select('id, code_salle, capacite')
+    .select('id, code_salle, capacite, niveau')
     .eq('specialite_par_defaut_id', specialiteId)
-    .maybeSingle();
-  return data;
+    .order('code_salle');
+  const liste = (data ?? []) as any[];
+  const choisie =
+    (niveau != null ? liste.find((r) => r.niveau === niveau) : undefined) ??
+    liste.find((r) => r.niveau == null) ??
+    liste[0];
+  return choisie ? { id: choisie.id, code_salle: choisie.code_salle, capacite: choisie.capacite } : null;
 }
 
 export async function listToutesLesSalles() {
@@ -473,6 +532,81 @@ export async function getHeuresEffectueesTronc(
     }
   }
   return resultat;
+}
+
+// Heures déjà faites AVANT la semaine donnée, par offre (semaines passées
+// validées pour une UE simple ; semaines passées pour un tronc commun) —
+// base du « reste à faire » affiché à côté de la grille.
+export async function getHeuresPasseesOffres(
+  offres: { offreId: string; troncCommunId: string | null }[],
+  semaine: string
+): Promise<Map<string, number>> {
+  const resultat = new Map<string, number>(offres.map((o) => [o.offreId, 0]));
+  const simples = offres.filter((o) => !o.troncCommunId).map((o) => o.offreId);
+  const parTronc = new Map<string, string[]>();
+  for (const o of offres) {
+    if (!o.troncCommunId) continue;
+    if (!parTronc.has(o.troncCommunId)) parTronc.set(o.troncCommunId, []);
+    parTronc.get(o.troncCommunId)!.push(o.offreId);
+  }
+  const PAGE = 1000;
+
+  if (simples.length > 0) {
+    for (let debut = 0; ; debut += PAGE) {
+      const { data, error } = await supabase
+        .from('seances_edt')
+        .select(
+          'offre_id, jour, creneau, heure_ouverture, heure_fermeture, emploi_du_temps:emplois_du_temps(statut, semaine)'
+        )
+        .in('offre_id', simples)
+        .order('id', { ascending: true })
+        .range(debut, debut + PAGE - 1);
+      if (error) throw error;
+      for (const s of (data ?? []) as any[]) {
+        const e = s.emploi_du_temps;
+        if (!e || e.statut !== 'valide' || !(e.semaine < semaine)) continue;
+        resultat.set(
+          s.offre_id,
+          (resultat.get(s.offre_id) ?? 0) +
+            heuresEffectueesPourSeance(e.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+        );
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
+  }
+
+  const troncIds = Array.from(parTronc.keys());
+  if (troncIds.length > 0) {
+    const parTroncHeures = new Map<string, number>();
+    for (let debut = 0; ; debut += PAGE) {
+      const { data, error } = await supabase
+        .from('seances_edt')
+        .select('tronc_commun_id, semaine, jour, creneau, heure_ouverture, heure_fermeture')
+        .in('tronc_commun_id', troncIds)
+        .lt('semaine', semaine)
+        .order('id', { ascending: true })
+        .range(debut, debut + PAGE - 1);
+      if (error) throw error;
+      for (const s of (data ?? []) as any[]) {
+        parTroncHeures.set(
+          s.tronc_commun_id,
+          (parTroncHeures.get(s.tronc_commun_id) ?? 0) +
+            heuresEffectueesPourSeance(s.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+        );
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
+    for (const [troncId, ids] of parTronc) {
+      for (const id of ids) resultat.set(id, parTroncHeures.get(troncId) ?? 0);
+    }
+  }
+  return resultat;
+}
+
+// Vrai quand le solde d'heures est inférieur au plus petit créneau : plus
+// rien à programmer (même règle que la génération automatique).
+export function ueAchevee(heuresEffectuees: number, volumeHoraire: number | null): boolean {
+  return estAcheve(heuresEffectuees, volumeHoraire);
 }
 
 // Durée nominale d'un créneau (heures), depuis la table "creneaux" —
@@ -879,11 +1013,15 @@ export async function lireEnseignantsDisponiblesDepuisCache(
     .map((e: any) => ({ id: e.id, nom: e.nom, matricule: e.matricule }));
 }
 
-export async function lireSalleParDefautDepuisCache(specialiteId: string) {
-  const salle = await db.salles
+export async function lireSalleParDefautDepuisCache(specialiteId: string, niveau?: number | null) {
+  const liste = (await db.salles
     .where('specialite_par_defaut_id')
     .equals(specialiteId)
-    .first();
+    .toArray()) as any[];
+  const salle =
+    (niveau != null ? liste.find((r) => r.niveau === niveau) : undefined) ??
+    liste.find((r) => r.niveau == null) ??
+    liste[0];
   return salle
     ? {
         id: (salle as any).id,
@@ -1311,7 +1449,7 @@ export async function enregistrerChangementsEnLot(
 
       const cleTronc = `${troncId}|${k}`;
       lignesTroncParCle.set(cleTronc, {
-        ...(existante?.id ? { id: existante.id } : {}),
+        id: existante?.id ?? crypto.randomUUID(),
         tronc_commun_id: troncId,
         semaine,
         jour: a.jour,
@@ -1354,7 +1492,7 @@ export async function enregistrerChangementsEnLot(
       a.seanceIdExistante ??
       `nouvelle|${a.specialiteId}|${k}|${a.offreId}`;
     lignesSimplesParCle.set(cleSimple, {
-      ...(a.seanceIdExistante ? { id: a.seanceIdExistante } : {}),
+      id: a.seanceIdExistante ?? crypto.randomUUID(),
       emploi_du_temps_id: emploiParSpecialite.get(a.specialiteId) ?? null,
       offre_id: a.offreId,
       tronc_commun_id: null,
@@ -1441,6 +1579,8 @@ export interface ItemNonPlace {
 }
 
 export interface ResultatGenerationAuto {
+  // Titre du bilan (« Génération automatique », « Reconduction »…).
+  libelle?: string;
   nbSeancesTroncPlacees: number;
   nbSeancesSpecialitesPlacees: number;
   nonPlacees: ItemNonPlace[];
@@ -2000,12 +2140,13 @@ export async function genererEmploiDuTempsAutomatique(
   // juste une valeur à renseigner (contrainte de schéma).
   const { data: sallesData, error: sallesError } = await supabase
     .from('salles')
-    .select('id, specialite_par_defaut_id')
+    .select('id, specialite_par_defaut_id, niveau')
     .order('code_salle');
   if (sallesError) throw sallesError;
   const salles = (sallesData ?? []) as {
     id: string;
     specialite_par_defaut_id: string | null;
+    niveau: number | null;
   }[];
   if (salles.length === 0) {
     return {
@@ -2016,15 +2157,27 @@ export async function genererEmploiDuTempsAutomatique(
       ],
     };
   }
-  const salleParDefautDeSpecialite = new Map<string, string>();
+  // Salle attribuée par (spécialité, niveau) ; une salle sans niveau
+  // vaut pour tous les niveaux de la spécialité.
+  const salleParSpecialiteNiveau = new Map<string, string>();
+  const salleParSpecialiteSeule = new Map<string, string>();
   for (const s of salles) {
-    if (s.specialite_par_defaut_id) {
-      salleParDefautDeSpecialite.set(s.specialite_par_defaut_id, s.id);
+    if (!s.specialite_par_defaut_id) continue;
+    const spId = s.specialite_par_defaut_id;
+    if (s.niveau != null) {
+      if (!salleParSpecialiteNiveau.has(`${spId}|${s.niveau}`)) salleParSpecialiteNiveau.set(`${spId}|${s.niveau}`, s.id);
+    } else if (!salleParSpecialiteSeule.has(spId)) {
+      salleParSpecialiteSeule.set(spId, s.id);
     }
   }
+  const niveauDuGroupe = niveauDeSemestre(semestre);
   const salleDeSecours = salles[0].id;
   function salleDeLItem(specialiteId: string): string {
-    return salleParDefautDeSpecialite.get(specialiteId) ?? salleDeSecours;
+    return (
+      (niveauDuGroupe != null ? salleParSpecialiteNiveau.get(`${specialiteId}|${niveauDuGroupe}`) : undefined) ??
+      salleParSpecialiteSeule.get(specialiteId) ??
+      salleDeSecours
+    );
   }
 
   // 9) Grille des créneaux (samedi après-midi toujours exclu).
@@ -3451,7 +3604,7 @@ export async function attribuerSallesPourSemaine(
   );
   const [offres, liensTronc, troncs] = await Promise.all([
     lireParLotsApi<any>(offreIds, (lot) =>
-      supabase.from('offres').select('id, ue_id, specialite_id').in('id', lot)
+      supabase.from('offres').select('id, ue_id, specialite_id, semestre').in('id', lot)
     ),
     lireParLotsApi<any>(troncIds, (lot) =>
       supabase
@@ -3515,20 +3668,27 @@ export async function attribuerSallesPourSemaine(
   // 3) Salles.
   const { data: sallesData, error: sallesError } = await supabase
     .from('salles')
-    .select('id, capacite, specialite_par_defaut_id')
+    .select('id, capacite, specialite_par_defaut_id, niveau')
     .order('code_salle');
   if (sallesError) throw sallesError;
   const salles = (sallesData ?? []) as {
     id: string;
     capacite: number;
     specialite_par_defaut_id: string | null;
+    niveau: number | null;
   }[];
   if (salles.length === 0) throw new Error('Aucune salle enregistrée.');
   const sallesParCapaciteDesc = [...salles].sort((a, b) => b.capacite - a.capacite);
   const amphiId = sallesParCapaciteDesc[0].id;
+  // Salle par défaut par (spécialité, niveau) ; sans niveau = tous niveaux.
+  const salleParDefautNiveau = new Map<string, string>();
   const salleParDefaut = new Map<string, string>();
   for (const s of salles) {
-    if (s.specialite_par_defaut_id && !salleParDefaut.has(s.specialite_par_defaut_id)) {
+    if (!s.specialite_par_defaut_id) continue;
+    if (s.niveau != null) {
+      const k = `${s.specialite_par_defaut_id}|${s.niveau}`;
+      if (!salleParDefautNiveau.has(k)) salleParDefautNiveau.set(k, s.id);
+    } else if (!salleParDefaut.has(s.specialite_par_defaut_id)) {
       salleParDefaut.set(s.specialite_par_defaut_id, s.id);
     }
   }
@@ -3551,7 +3711,33 @@ export async function attribuerSallesPourSemaine(
   const sansSalle: { nom: string; jour: string; creneau: string }[] = [];
   let nbTraitees = 0;
 
-  for (const liste of parCreneau.values()) {
+  // Une classe (spécialité + niveau) garde la MÊME salle d'un créneau à
+  // l'autre : le matin et l'après-midi d'une même journée d'abord, puis sur
+  // la semaine. On traite donc les créneaux dans l'ordre chronologique, et
+  // la salle prise par une classe devient sa salle préférée pour la suite.
+  const classeDeSeance = (s: any): string | null => {
+    if (s.tronc_commun_id) return null;
+    const o = offreParId.get(s.offre_id) as any;
+    if (!o?.specialite_id) return null;
+    return `${o.specialite_id}|${niveauDeSemestre(o.semestre) ?? 0}`;
+  };
+  const salleDuJour = new Map<string, string>(); // classe|jour → salle
+  const salleDeLaSemaine = new Map<string, string>(); // classe → salle
+  // Salles des séances déjà ouvertes (figées) : elles amorcent la préférence.
+  for (const s of seances) {
+    const c = classeDeSeance(s);
+    if (c && s.heure_ouverture && s.salle_id) {
+      if (!salleDuJour.has(`${c}|${s.jour}`)) salleDuJour.set(`${c}|${s.jour}`, s.salle_id);
+      if (!salleDeLaSemaine.has(c)) salleDeLaSemaine.set(c, s.salle_id);
+    }
+  }
+  const creneauxOrdonnes = Array.from(parCreneau.values()).sort((a, b) => {
+    const diffJour = (JOUR_ORDRE[a[0].jour] ?? 0) - (JOUR_ORDRE[b[0].jour] ?? 0);
+    if (diffJour !== 0) return diffJour;
+    return (bornesCreneau(a[0].creneau)?.debut ?? CRENEAU_ORDRE[a[0].creneau] ?? 0) - (bornesCreneau(b[0].creneau)?.debut ?? CRENEAU_ORDRE[b[0].creneau] ?? 0);
+  });
+
+  for (const liste of creneauxOrdonnes) {
     // Séances déjà ouvertes : figées, leur salle reste prise.
     const figees = liste.filter((s) => !!s.heure_ouverture);
     const aTraiter = liste.filter((s) => !s.heure_ouverture);
@@ -3585,13 +3771,51 @@ export async function attribuerSallesPourSemaine(
     for (const s of troncsAmphi) {
       poser(s, sallesParCapaciteDesc.find((x) => !prises.has(x.id))?.id ?? null);
     }
-    // 1) Salle par défaut de la spécialité.
+    // 1) Salle de la classe : d'abord la salle par défaut du niveau ; si elle
+    // est prise, celle déjà utilisée le même jour, puis dans la semaine.
     const sansDefaut: any[] = [];
-    for (const s of parSpecialite) {
-      const specId = offreParId.get(s.offre_id)?.specialite_id as string | undefined;
-      const defaut = specId ? salleParDefaut.get(specId) : undefined;
-      if (defaut && !prises.has(defaut)) poser(s, defaut);
-      else sansDefaut.push(s);
+    const defautDe = (s: any): string | undefined => {
+      const o = offreParId.get(s.offre_id) as any;
+      const sp = o?.specialite_id as string | undefined;
+      if (!sp) return undefined;
+      const n = niveauDeSemestre(o?.semestre);
+      return (n != null ? salleParDefautNiveau.get(`${sp}|${n}`) : undefined) ?? salleParDefaut.get(sp);
+    };
+    // Les classes qui ont une salle par défaut passent en premier (elles ne
+    // doivent pas se la faire prendre), puis celles qui ont déjà une salle ce jour.
+    const parSpecialiteOrdonnees = [...parSpecialite].sort((a, b) => {
+      const ca = classeDeSeance(a);
+      const cb = classeDeSeance(b);
+      const da = defautDe(a) ? 0 : 1;
+      const db_ = defautDe(b) ? 0 : 1;
+      if (da !== db_) return da - db_;
+      const pa = ca && salleDuJour.has(`${ca}|${a.jour}`) ? 0 : 1;
+      const pb = cb && salleDuJour.has(`${cb}|${b.jour}`) ? 0 : 1;
+      return pa - pb;
+    });
+    for (const s of parSpecialiteOrdonnees) {
+      const offreS = offreParId.get(s.offre_id) as any;
+      const specId = offreS?.specialite_id as string | undefined;
+      const nivS = niveauDeSemestre(offreS?.semestre);
+      const classe = classeDeSeance(s);
+      const defaut = specId
+        ? (nivS != null ? salleParDefautNiveau.get(`${specId}|${nivS}`) : undefined) ??
+          salleParDefaut.get(specId)
+        : undefined;
+      // La salle par défaut est TOUJOURS la première choisie.
+      const candidates = [
+        defaut,
+        classe ? salleDuJour.get(`${classe}|${s.jour}`) : undefined,
+        classe ? salleDeLaSemaine.get(classe) : undefined,
+      ];
+      const choisie = candidates.find((c) => c && !prises.has(c));
+      if (choisie) {
+        poser(s, choisie);
+        if (classe) {
+          if (!salleDuJour.has(`${classe}|${s.jour}`)) salleDuJour.set(`${classe}|${s.jour}`, choisie);
+          if (!salleDeLaSemaine.has(classe)) salleDeLaSemaine.set(classe, choisie);
+        }
+      } else sansDefaut.push(s);
     }
     // 2) Autres troncs : plus grande salle libre hors amphi.
     for (const s of troncsNormaux) {
@@ -3600,14 +3824,19 @@ export async function attribuerSallesPourSemaine(
         sallesParCapaciteDesc.find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null
       );
     }
-    // 3) UE de spécialité sans défaut libre : plus petite salle libre.
+    // 3) UE de spécialité sans salle préférée libre : plus petite salle libre,
+    // qui devient la salle de la classe pour la suite de la journée.
     for (const s of sansDefaut) {
-      poser(
-        s,
+      const choisie =
         [...sallesParCapaciteDesc]
           .reverse()
-          .find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null
-      );
+          .find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null;
+      poser(s, choisie);
+      const classe = classeDeSeance(s);
+      if (classe && choisie) {
+        if (!salleDuJour.has(`${classe}|${s.jour}`)) salleDuJour.set(`${classe}|${s.jour}`, choisie);
+        if (!salleDeLaSemaine.has(classe)) salleDeLaSemaine.set(classe, choisie);
+      }
     }
 
     // Statut : même règle qu'à l'enregistrement (pas de salle, ou
@@ -3651,4 +3880,213 @@ export async function attribuerSallesPourSemaine(
   cacheSeancesGroupees.clear();
 
   return { nbSeancesTraitees: nbTraitees, nbModifiees, sansSalle };
+}
+
+
+// ── Reconduction de l'emploi du temps validé de la semaine précédente ──
+// Pour un groupe (cycle + semestre), recopie sur la semaine choisie les
+// séances (spécialité ET tronc commun) de la semaine d'avant, à condition
+// que l'emploi du temps de la spécialité y ait été VALIDÉ. Règles :
+// - les UE / troncs dont le quota d'heures est achevé ne sont pas reconduits ;
+// - une case déjà remplie cette semaine n'est jamais modifiée ;
+// - un enseignant déjà programmé ailleurs au même créneau → séance non
+//   reconduite (signalée) ; une salle déjà prise → séance reconduite sans salle.
+export async function reconduireEmploiDuTemps(
+  specialiteIds: string[],
+  semestre: string,
+  semaine: string
+): Promise<ResultatGenerationAuto> {
+  const resultat: ResultatGenerationAuto = {
+    libelle: 'Reconduction',
+    nbSeancesTroncPlacees: 0,
+    nbSeancesSpecialitesPlacees: 0,
+    nonPlacees: [],
+  };
+  if (specialiteIds.length === 0) return resultat;
+  const precedente = decalerSemaineDe(semaine, -1);
+
+  // 1) Spécialités dont l'emploi de la semaine précédente est validé.
+  const { data: emploisPrec, error: ePrecErr } = await supabase
+    .from('emplois_du_temps')
+    .select('specialite_id')
+    .in('specialite_id', specialiteIds)
+    .eq('semaine', precedente)
+    .eq('statut', 'valide');
+  if (ePrecErr) throw ePrecErr;
+  const validees = new Set(((emploisPrec ?? []) as any[]).map((e) => e.specialite_id as string));
+  if (validees.size === 0) {
+    const [y, m, d] = precedente.split('-');
+    throw new Error(
+      `Aucun emploi du temps validé la semaine précédente (${d}/${m}/${y}) pour ce groupe.`
+    );
+  }
+
+  // 2) Séances de la semaine précédente, restreintes au semestre.
+  const precDonnees = await getSeancesGroupees(specialiteIds, precedente, { forcerRafraichissement: true });
+  const sources = filtrerSeancesDuSemestre(precDonnees, specialiteIds, semestre).filter((s) =>
+    s.specialiteId
+      ? validees.has(s.specialiteId)
+      : specialiteIds.some(
+          (id) => validees.has(id) && precDonnees.specialitesParTronc.get(s.troncCommunId ?? '')?.has(id)
+        )
+  );
+
+  if (sources.length === 0) {
+    throw new Error(
+      "L'emploi du temps validé de la semaine précédente ne contient aucune séance pour ce semestre."
+    );
+  }
+
+  // 3) Offres du groupe (pour retrouver une offre représentante des troncs).
+  const { data: offresData, error: offresErr } = await supabase
+    .from('offres')
+    .select('id, ue_id, specialite_id')
+    .in('specialite_id', specialiteIds)
+    .eq('semestre', semestre);
+  if (offresErr) throw offresErr;
+  const offres = (offresData ?? []) as any[];
+  const ueIds = Array.from(new Set(offres.map((o) => o.ue_id as string)));
+  const troncParUe = new Map<string, string>();
+  if (ueIds.length > 0) {
+    const { data: liens, error: liensErr } = await supabase
+      .from('troncs_communs_ues')
+      .select('ue_id, tronc_commun_id')
+      .in('ue_id', ueIds);
+    if (liensErr) throw liensErr;
+    for (const l of (liens ?? []) as any[]) troncParUe.set(l.ue_id, l.tronc_commun_id);
+  }
+  const representantTronc = new Map<string, { offreId: string; specialiteId: string }>();
+  for (const o of offres) {
+    const t = troncParUe.get(o.ue_id);
+    if (t && !representantTronc.has(t)) representantTronc.set(t, { offreId: o.id, specialiteId: o.specialite_id });
+  }
+
+  // 5) État de la semaine cible.
+  const cibleDonnees = await getSeancesGroupees(specialiteIds, semaine, { forcerRafraichissement: true });
+  const occupeSpec = new Set<string>();
+  for (const s of cibleDonnees.seances) {
+    if (s.specialiteId) occupeSpec.add(`${s.specialiteId}|${s.jour}|${s.creneau}`);
+    else
+      for (const id of cibleDonnees.specialitesParTronc.get(s.troncCommunId ?? '') ?? [])
+        occupeSpec.add(`${id}|${s.jour}|${s.creneau}`);
+  }
+  const occupations = await getOccupationsSemaine(semaine);
+  const ensOccupes = new Set(occupations.filter((o) => o.enseignantId).map((o) => `${o.enseignantId}|${o.jour}|${o.creneau}`));
+  const sallesOccupees = new Set(occupations.filter((o) => o.salleId).map((o) => `${o.salleId}|${o.jour}|${o.creneau}`));
+  const troncsPresents = new Set(occupations.filter((o) => o.troncCommunId).map((o) => `${o.troncCommunId}|${o.jour}|${o.creneau}`));
+
+  // 6) Construction des assignations.
+  const assignations: AssignationLot[] = [];
+  const dejaVues = new Set<string>();
+  let dejaEnPlace = 0;
+  for (const s of sources) {
+    const cleSource = `${s.specialiteId ?? s.troncCommunId}|${s.offreId ?? ''}|${s.jour}|${s.creneau}`;
+    if (dejaVues.has(cleSource)) continue;
+    dejaVues.add(cleSource);
+
+    let offreId: string | null = s.offreId;
+    let specialiteId: string | null = s.specialiteId;
+    let specsConcernees: string[];
+    if (s.troncCommunId) {
+      const rep = representantTronc.get(s.troncCommunId);
+      if (!rep) {
+        resultat.nonPlacees.push({
+          nom: s.ueNom,
+          raison: "Tronc commun sans UE dans ce semestre pour ce groupe.",
+          specialiteIds: [],
+        });
+        continue;
+      }
+      offreId = rep.offreId;
+      specialiteId = rep.specialiteId;
+      specsConcernees = specialiteIds.filter((id) => cibleDonnees.specialitesParTronc.get(s.troncCommunId!)?.has(id));
+      if (specsConcernees.length === 0) specsConcernees = [rep.specialiteId];
+    } else {
+      specsConcernees = specialiteId ? [specialiteId] : [];
+    }
+    if (!offreId || !specialiteId || !s.enseignantId) {
+      resultat.nonPlacees.push({ nom: s.ueNom, raison: 'Aucun enseignant ou offre pour cette séance.', specialiteIds: specsConcernees });
+      continue;
+    }
+
+    const creneauCle = `${s.jour}|${s.creneau}`;
+    if (
+      (s.troncCommunId && troncsPresents.has(`${s.troncCommunId}|${creneauCle}`)) ||
+      specsConcernees.some((id) => occupeSpec.has(`${id}|${creneauCle}`))
+    ) {
+      dejaEnPlace++; // case déjà remplie : on n'y touche pas
+      continue;
+    }
+    if (ensOccupes.has(`${s.enseignantId}|${creneauCle}`)) {
+      resultat.nonPlacees.push({
+        nom: s.ueNom,
+        raison: `${s.enseignantNom} est déjà programmé(e) ${s.jour} ${s.creneau} cette semaine.`,
+        specialiteIds: specsConcernees,
+      });
+      continue;
+    }
+
+    let salleId = s.salleId;
+    if (salleId && sallesOccupees.has(`${salleId}|${creneauCle}`)) salleId = null;
+
+    assignations.push({
+      specialiteId,
+      offreId,
+      enseignantId: s.enseignantId,
+      salleId,
+      jour: s.jour,
+      creneau: s.creneau,
+      seanceIdExistante: null,
+    });
+    ensOccupes.add(`${s.enseignantId}|${creneauCle}`);
+    if (salleId) sallesOccupees.add(`${salleId}|${creneauCle}`);
+    for (const id of specsConcernees) occupeSpec.add(`${id}|${creneauCle}`);
+    if (s.troncCommunId) {
+      troncsPresents.add(`${s.troncCommunId}|${creneauCle}`);
+      resultat.nbSeancesTroncPlacees++;
+    } else resultat.nbSeancesSpecialitesPlacees++;
+  }
+
+  if (assignations.length > 0) {
+    const emploiParSpecialite = await garantirEmploisPourGroupe(specialiteIds, semaine);
+    await enregistrerChangementsEnLot(assignations, [], emploiParSpecialite, semaine);
+  }
+  invaliderCacheSeancesGroupees(specialiteIds, semaine);
+  resultat.libelle = `Reconduction (${sources.length} séance${sources.length > 1 ? 's' : ''} validée${
+    sources.length > 1 ? 's' : ''
+  } trouvée${sources.length > 1 ? 's' : ''} la semaine précédente${
+    dejaEnPlace > 0 ? `, ${dejaEnPlace} case${dejaEnPlace > 1 ? 's' : ''} déjà remplie${dejaEnPlace > 1 ? 's' : ''} conservée${dejaEnPlace > 1 ? 's' : ''}` : ''
+  })`;
+  return resultat;
+}
+
+
+// Ajuste le quota horaire (volume_horaire) d'une matière pour qu'il
+// coïncide avec les heures programmées. Pour un tronc commun, toutes les
+// UE du groupe partagent le même quota : elles sont toutes mises à jour.
+export async function ajusterQuotaHoraire(
+  cible: { offreId: string | null; troncCommunId: string | null },
+  volumeHoraire: number
+): Promise<void> {
+  let ueIds: string[] = [];
+  if (cible.troncCommunId) {
+    const { data, error } = await supabase
+      .from('troncs_communs_ues')
+      .select('ue_id')
+      .eq('tronc_commun_id', cible.troncCommunId);
+    if (error) throw error;
+    ueIds = ((data ?? []) as any[]).map((l) => l.ue_id as string);
+  } else if (cible.offreId) {
+    const { data, error } = await supabase
+      .from('offres')
+      .select('ue_id')
+      .eq('id', cible.offreId)
+      .single();
+    if (error) throw error;
+    ueIds = [(data as any).ue_id as string];
+  }
+  if (ueIds.length === 0) return;
+  const { error } = await supabase.from('ues').update({ volume_horaire: volumeHoraire }).in('id', ueIds);
+  if (error) throw error;
+  cacheSeancesGroupees.clear();
 }
