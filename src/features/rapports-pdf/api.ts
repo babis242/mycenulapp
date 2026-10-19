@@ -117,6 +117,7 @@ interface LigneSeanceBrute {
   annulee: boolean | null;
   heure_ouverture: string | null;
   heure_fermeture: string | null;
+  emploi_du_temps_id?: string | null;
 }
 
 // Séances dont la DATE RÉELLE (lundi de la semaine + jour) tombe dans
@@ -124,23 +125,73 @@ interface LigneSeanceBrute {
 // correctement coupée entre les deux.
 async function lireSeancesPeriode(
   debut: string,
-  finExclu: string
+  finExclu: string,
+  seulementValides = false
 ): Promise<LigneSeanceBrute[]> {
   const brutes = await recupererToutesLesLignes<LigneSeanceBrute>((d, f) =>
     supabase
       .from('seances_edt')
       .select(
-        'id, semaine, jour, creneau, offre_id, tronc_commun_id, salle_id, enseignant_id, annulee, heure_ouverture, heure_fermeture'
+        'id, semaine, jour, creneau, offre_id, tronc_commun_id, salle_id, enseignant_id, annulee, heure_ouverture, heure_fermeture, emploi_du_temps_id'
       )
       .gte('semaine', ajouterJours(debut, -6))
       .lt('semaine', finExclu)
       .order('id')
       .range(d, f)
   );
-  return brutes.filter((s) => {
+  let lignes = brutes.filter((s) => {
     const date = dateDeSeance(s.semaine, s.jour);
     return date >= debut && date < finExclu;
   });
+  if (!seulementValides) return lignes;
+
+  // Seuls les emplois du temps VALIDÉS comptent : une séance de spécialité
+  // doit appartenir à un emploi validé ; une séance de tronc commun compte
+  // si au moins une des spécialités du tronc a validé son emploi cette semaine.
+  const semaines = Array.from(new Set(lignes.map((s) => s.semaine)));
+  if (semaines.length === 0) return [];
+  const emplois = await recupererToutesLesLignes<any>((d, f) =>
+    supabase
+      .from('emplois_du_temps')
+      .select('id, specialite_id, semaine')
+      .in('semaine', semaines)
+      .eq('statut', 'valide')
+      .order('id')
+      .range(d, f)
+  );
+  const emploiIdsValides = new Set(emplois.map((e) => e.id as string));
+  const specValidees = new Set(emplois.map((e) => `${e.specialite_id}|${e.semaine}`));
+
+  const troncIds = Array.from(
+    new Set(lignes.map((s) => s.tronc_commun_id).filter((v): v is string => !!v))
+  );
+  const specsParTronc = new Map<string, Set<string>>();
+  if (troncIds.length > 0) {
+    const liens = await lireParLots<any>(troncIds, (lot) =>
+      supabase.from('troncs_communs_ues').select('tronc_commun_id, ue_id').in('tronc_commun_id', lot)
+    );
+    const ueIds = Array.from(new Set(liens.map((l) => l.ue_id as string)));
+    const offres = await lireParLots<any>(ueIds, (lot) =>
+      supabase.from('offres').select('ue_id, specialite_id').in('ue_id', lot)
+    );
+    const specsParUe = new Map<string, Set<string>>();
+    for (const o of offres) {
+      if (!specsParUe.has(o.ue_id)) specsParUe.set(o.ue_id, new Set());
+      specsParUe.get(o.ue_id)!.add(o.specialite_id);
+    }
+    for (const l of liens) {
+      if (!specsParTronc.has(l.tronc_commun_id)) specsParTronc.set(l.tronc_commun_id, new Set());
+      for (const sp of specsParUe.get(l.ue_id) ?? []) specsParTronc.get(l.tronc_commun_id)!.add(sp);
+    }
+  }
+  lignes = lignes.filter((s) => {
+    if (s.tronc_commun_id) {
+      const specs = specsParTronc.get(s.tronc_commun_id);
+      return !!specs && Array.from(specs).some((sp) => specValidees.has(`${sp}|${s.semaine}`));
+    }
+    return !!s.emploi_du_temps_id && emploiIdsValides.has(s.emploi_du_temps_id);
+  });
+  return lignes;
 }
 
 interface Referentiels {
@@ -342,7 +393,7 @@ export async function genererRapportPeriode(
     libellePeriode = `Mois de ${brut}`;
   }
 
-  const lignes = await lireSeancesPeriode(debut, finExclu);
+  const lignes = await lireSeancesPeriode(debut, finExclu, true);
   const ref = await lireReferentiels(lignes, false);
   const maintenant = new Date();
 
