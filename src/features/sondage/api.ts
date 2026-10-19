@@ -261,3 +261,50 @@ export async function listReponses(semaine: string): Promise<LigneReponse[]> {
   }
   return out;
 }
+
+// ───────── Retours aux enseignants (WhatsApp) ─────────
+
+export const cleNom = (nom: string): string => nom.trim().replace(/\s+/g, ' ').toLowerCase();
+
+/** Numéro WhatsApp (à défaut, cellulaire) de chaque enseignant, par nom normalisé. */
+export async function getContactsEnseignants(noms: string[]): Promise<Map<string, string | null>> {
+  const out = new Map<string, string | null>();
+  const uniques = Array.from(new Set(noms.map((n) => n.trim()).filter(Boolean)));
+  for (let i = 0; i < uniques.length; i += 80) {
+    const { data, error } = await supabase
+      .from('enseignants')
+      .select('nom, numero_whatsapp, numero_cellulaire')
+      .in('nom', uniques.slice(i, i + 80));
+    if (error) throw error;
+    for (const e of (data ?? []) as any[]) {
+      out.set(cleNom(e.nom), e.numero_whatsapp || e.numero_cellulaire || null);
+    }
+  }
+  return out;
+}
+
+/** Enseignants dont le retour a déjà été envoyé pour cette semaine. `suivi` = false si la table n'existe pas encore. */
+export async function listRetoursEnvoyes(semaine: string): Promise<{ suivi: boolean; envoyes: Set<string> }> {
+  const { data, error } = await supabase
+    .from('sondages_retours')
+    .select('enseignant_nom')
+    .eq('semaine', semaine)
+    .range(0, PAGE - 1);
+  if (error) return { suivi: false, envoyes: new Set() };
+  return { suivi: true, envoyes: new Set(((data ?? []) as any[]).map((d) => cleNom(d.enseignant_nom))) };
+}
+
+export async function marquerRetour(semaine: string, enseignantNom: string, envoye: boolean): Promise<boolean> {
+  if (envoye) {
+    const { error } = await supabase
+      .from('sondages_retours')
+      .upsert({ semaine, enseignant_nom: cleNom(enseignantNom), envoye_le: new Date().toISOString() }, { onConflict: 'semaine,enseignant_nom' });
+    return !error;
+  }
+  const { error } = await supabase
+    .from('sondages_retours')
+    .delete()
+    .eq('semaine', semaine)
+    .eq('enseignant_nom', cleNom(enseignantNom));
+  return !error;
+}

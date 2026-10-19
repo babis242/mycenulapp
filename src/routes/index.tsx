@@ -25,6 +25,8 @@ import RapportsPdfPage from '@/features/rapports-pdf/pages/RapportsPdfPage';
 import FichesPresencePage from '@/features/fiches-presence/pages/FichesPresencePage';
 import FichesArriveePage from '@/features/fiches-presence/pages/FichesArriveePage';
 import SondageAdminPage from '@/features/sondage/pages/SondageAdminPage';
+import RapportSondagePage from '@/features/sondage/pages/RapportSondagePage';
+import RetoursEnseignantsPage from '@/features/sondage/pages/RetoursEnseignantsPage';
 import SondagePublicPage from '@/features/sondage/pages/SondagePublicPage';
 import FichesControlePage from '@/features/fiches-presence/pages/FichesControlePage';
 import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
@@ -197,6 +199,8 @@ export default function AppRoutes() {
               element={<DisponibilitesPdfPage />}
             />
             <Route path="/sondage-etudiants" element={<SondageAdminPage />} />
+            <Route path="/sondage-etudiants/rapport" element={<RapportSondagePage />} />
+            <Route path="/sondage-etudiants/retours" element={<RetoursEnseignantsPage />} />
           </Route>
 
           <Route element={<RoleRoute allowedRoles={['enseignant']} />}>

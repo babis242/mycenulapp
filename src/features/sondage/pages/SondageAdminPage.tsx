@@ -4,7 +4,8 @@
 // semaine (cours et enseignants pris de l'emploi du temps) et résultats.
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import QRCode from 'qrcode';
-import { Check, ChevronDown, ChevronUp, Copy, Loader2, Send, Trash2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Check, ChevronDown, ChevronUp, Copy, FileText, Loader2, MessageCircle, Send, Trash2 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { lundiCourant } from '@/features/fiches-presence/components/SelecteurGroupe';
 import {
@@ -247,6 +248,18 @@ export default function SondageAdminPage() {
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+              <Link
+                to={`/sondage-etudiants/rapport?semaine=${semaineRes}${filtre ? `&filtre=${encodeURIComponent(filtre)}` : ''}`}
+                style={{ ...bouton('#dc2626'), textDecoration: 'none' }}
+              >
+                <FileText size={15} /> Rapport PDF
+              </Link>
+              <Link to="/sondage-etudiants/retours" style={{ ...bouton('#111827'), textDecoration: 'none' }}>
+                <MessageCircle size={15} /> Envoyer les retours aux enseignants
+              </Link>
             </div>
 
             {chargement ? (

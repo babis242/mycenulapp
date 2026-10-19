@@ -29,18 +29,18 @@ export function libelleDate(iso: string): string {
 const SERIF = "'Times New Roman', Times, serif";
 const bord = '0.25mm solid #1f1f1f';
 const HAUTEUR_UTILE_MM = 190; // zone des lignes du tableau
-const LARGEUR_NOM_CAR = 62; // caractères par ligne dans la colonne du nom (≈78 mm à 9 px)
+// Colonne du nom : 88 mm. Caractères par ligne, selon la taille de police.
+const CAR_NOM = 34; // nom en gras 14 px
+const CAR_COURS = 42; // intitulé du cours en italique 12 px
 
-// Hauteur estimée d'une ligne : nom + (cours, puis salle/spécialités) par cours.
+// Hauteur estimée d'une ligne : nom + (intitulé du cours, puis salle) par cours.
 function hauteurLigneMm(e: EnseignantControle | null): number {
-  if (!e) return 9;
-  let lignes = 1; // nom
+  if (!e) return 11;
+  let h = 3.5 + Math.max(1, Math.ceil(e.nom.length / CAR_NOM)) * 6.2;
   for (const c of e.cours) {
-    lignes += 1; // intitulé du cours
-    const detail = `Salle ${c.salle ?? '—'} · Spécialités : ${c.specialites.join(', ')}`;
-    lignes += Math.max(1, Math.ceil(detail.length / LARGEUR_NOM_CAR));
+    h += Math.max(1, Math.ceil(c.ue.length / CAR_COURS)) * 5 + 4.4;
   }
-  return Math.max(9, 3 + lignes * 3.3);
+  return Math.max(11, h);
 }
 
 function Case() {
@@ -48,8 +48,8 @@ function Case() {
     <span
       style={{
         display: 'inline-block',
-        width: '4.2mm',
-        height: '4.2mm',
+        width: '5.4mm',
+        height: '5.4mm',
         border: '0.35mm solid #1f1f1f',
         borderRadius: '0.6mm',
         verticalAlign: 'middle',
@@ -132,14 +132,14 @@ export default function FichesControlePdf({ fiches, semaine, lignesSupplementair
 
             {/* Titre */}
             <div style={{ textAlign: 'center', marginTop: '3mm' }}>
-              <div style={{ fontWeight: 700, fontSize: '15px', letterSpacing: '0.2px' }}>
+              <div style={{ fontWeight: 700, fontSize: '16px', letterSpacing: '0.2px' }}>
                 FICHE DE CONTRÔLE DES ENSEIGNANTS / TEACHERS CONTROL SHEET
               </div>
               <div style={{ width: '22mm', height: '0.7mm', background: '#dc2626', margin: '1.2mm auto 0', borderRadius: '1mm' }} />
             </div>
 
             {/* Infos du créneau */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4mm', marginBottom: '3mm', fontSize: '12px', lineHeight: 1.8 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '4mm', marginBottom: '3mm', fontSize: '14px', lineHeight: 1.8 }}>
               <div>
                 <div>
                   <u style={{ fontStyle: 'italic' }}>Jour</u> :{' '}
@@ -161,20 +161,20 @@ export default function FichesControlePdf({ fiches, semaine, lignesSupplementair
             </div>
 
             {/* Tableau */}
-            <table style={{ width: '186mm', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: '11px' }}>
+            <table style={{ width: '186mm', borderCollapse: 'collapse', tableLayout: 'fixed', fontSize: '13px' }}>
               <colgroup>
-                <col style={{ width: '12mm' }} />
-                <col style={{ width: '78mm' }} />
+                <col style={{ width: '11mm' }} />
+                <col style={{ width: '88mm' }} />
                 <col style={{ width: '20mm' }} />
                 <col style={{ width: '20mm' }} />
-                <col style={{ width: '56mm' }} />
+                <col style={{ width: '47mm' }} />
               </colgroup>
               <thead>
-                <tr style={{ height: '9mm' }}>
+                <tr style={{ height: '10mm' }}>
                   {['N°', 'Nom complet de l\'enseignant', 'Présent', 'Absent', 'Observation'].map((h) => (
                     <th
                       key={h}
-                      style={{ border: bord, background: '#f1f1f1', fontFamily: SERIF, fontStyle: 'italic', fontSize: '11.5px' }}
+                      style={{ border: bord, background: '#f1f1f1', fontFamily: SERIF, fontStyle: 'italic', fontSize: '13px' }}
                     >
                       {h}
                     </th>
@@ -187,26 +187,25 @@ export default function FichesControlePdf({ fiches, semaine, lignesSupplementair
                     key={i}
                     style={{ height: `${hauteurLigneMm(ens)}mm`, background: i % 2 === 1 ? '#fafafa' : '#fff' }}
                   >
-                    <td style={{ border: bord, textAlign: 'center', fontSize: '10px' }}>{ens ? pg.debut + i + 1 : ''}</td>
+                    <td style={{ border: bord, textAlign: 'center', fontSize: '13px', fontWeight: 700 }}>{ens ? pg.debut + i + 1 : ''}</td>
                     <td style={{ border: bord, padding: '1mm 2.5mm', verticalAlign: 'middle', lineHeight: 1.3 }}>
                       {ens && (
                         <>
-                          <div style={{ fontWeight: 700, fontSize: '11px' }}>{ens.nom}</div>
+                          <div style={{ fontWeight: 700, fontSize: '14px' }}>{ens.nom}</div>
                           {ens.cours.map((c, k) => (
-                            <div key={k} style={{ marginTop: '0.6mm' }}>
-                              <div style={{ fontStyle: 'italic', fontSize: '9.5px', color: '#374151' }}>{c.ue}</div>
-                              <div style={{ fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '8px', color: '#6b7280' }}>
-                                <span
-                                  style={{
-                                    fontWeight: 700,
-                                    color: '#b91c1c',
-                                    textTransform: 'uppercase',
-                                    letterSpacing: '0.3px',
-                                  }}
-                                >
-                                  Salle {c.salle ?? '—'}
-                                </span>
-                                {c.specialites.length > 0 && <span> · {c.specialites.join(', ')}</span>}
+                            <div key={k} style={{ marginTop: '1mm' }}>
+                              <div style={{ fontStyle: 'italic', fontSize: '12px', color: '#1f2937' }}>{c.ue}</div>
+                              <div
+                                style={{
+                                  fontFamily: 'Arial, Helvetica, sans-serif',
+                                  fontSize: '11px',
+                                  fontWeight: 700,
+                                  color: '#b91c1c',
+                                  textTransform: 'uppercase',
+                                  letterSpacing: '0.3px',
+                                }}
+                              >
+                                Salle {c.salle ?? '—'}
                               </div>
                             </div>
                           ))}
@@ -223,7 +222,7 @@ export default function FichesControlePdf({ fiches, semaine, lignesSupplementair
 
             {/* Contrôleur — dernière page de la fiche */}
             {derniere && (
-              <div style={{ position: 'absolute', left: '12mm', right: '12mm', bottom: '14mm', display: 'flex', justifyContent: 'space-between', fontSize: '11px' }}>
+              <div style={{ position: 'absolute', left: '12mm', right: '12mm', bottom: '14mm', display: 'flex', justifyContent: 'space-between', fontSize: '13px' }}>
                 <div>
                   <u style={{ fontStyle: 'italic' }}>Contrôleur</u> (nom et signature) : ______________________________
                 </div>

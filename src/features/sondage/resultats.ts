@@ -20,6 +20,8 @@ export interface StatEnseignant {
   commentaires: { ue: string; texte: string }[];
   voteMeilleur: number;
   voteAmeliorer: number;
+  /** Détail par matière enseignée : avis reçus et « pas compris ». */
+  parCours: Map<string, { avis: number; pasCompris: number }>;
 }
 
 export interface StatCours {
@@ -64,6 +66,7 @@ export function agreger(lignes: LigneReponse[]): Resume {
         nom, avis: 0, bien: 0, mal: 0, comprisOui: 0, comprisMoyen: 0, comprisNon: 0,
         supportOui: 0, supportPartiel: 0, supportNon: 0, retards: 0, grosRetards: 0, nonTenus: 0,
         negatifs: new Map(), positifs: new Map(), commentaires: [], voteMeilleur: 0, voteAmeliorer: 0,
+        parCours: new Map(),
       });
     }
     return ens.get(nom)!;
@@ -82,6 +85,10 @@ export function agreger(lignes: LigneReponse[]): Resume {
       e.avis++;
       const sc = getCours(c.ue);
       sc.avis++;
+      const pc = e.parCours.get(c.ue) ?? { avis: 0, pasCompris: 0 };
+      pc.avis++;
+      if (c.compris === 'non') pc.pasCompris++;
+      e.parCours.set(c.ue, pc);
       if (c.qualite === 'bien') e.bien++;
       if (c.qualite === 'mal') e.mal++;
       if (c.compris) {
