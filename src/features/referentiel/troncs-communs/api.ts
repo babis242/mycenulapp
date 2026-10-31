@@ -3,7 +3,7 @@ import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import type { TypeCursus } from '@/types';
 import { createUE } from '@/features/referentiel/ues/api';
-import { getHeuresTotalesValideesParOffre } from '@/features/emploi-du-temps/api';
+import { getHeuresReellesParOffre } from '@/features/emploi-du-temps/api';
 
 export interface UEDeTroncCommunResume {
   id: string;
@@ -233,7 +233,7 @@ export async function migrerHeuresVersTronc(
   const offreIds = (offres ?? []).map((o: any) => o.id as string);
   if (offreIds.length === 0) return vide;
 
-  const heuresParOffre = await getHeuresTotalesValideesParOffre(offreIds);
+  const heuresParOffre = await getHeuresReellesParOffre(offreIds);
   const { data: seances, error: seancesError } = await supabase
     .from('seances_edt')
     .select('id, offre_id, semaine, jour, creneau, heure_ouverture')
@@ -659,7 +659,7 @@ export async function infosUePourTronc(ueId: string): Promise<InfosUeTronc> {
   let enseignantId: string | null = null;
   let enseignantNom: string | null = null;
   if (offre) {
-    const h = await getHeuresTotalesValideesParOffre((u.offres as any[]).map((o) => o.id));
+    const h = await getHeuresReellesParOffre((u.offres as any[]).map((o) => o.id));
     for (const v of h.values()) heures = Math.max(heures, v);
     const { data: att } = await supabase
       .from('attributions')

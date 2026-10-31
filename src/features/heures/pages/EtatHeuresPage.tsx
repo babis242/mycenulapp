@@ -5,9 +5,13 @@ import * as XLSX from 'xlsx';
 import { Loader2, FileSpreadsheet, WifiOff, Search } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { filtrerParPerimetreParChamp } from '@/lib/perimetre';
+import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { formatHeureCameroun } from '@/lib/formatHeureCameroun';
 import {
   listHeuresDetailMois,
+  listAbsencesMois,
+  lireAbsencesDepuisCache,
+  type LigneAbsence,
   lireHeuresDepuisCache,
   totauxDepuisDetail,
   moisEnCours,
@@ -107,21 +111,93 @@ export default function EtatHeuresPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mois]);
 
-  function exporterDetail() {
-    const feuille = XLSX.utils.aoa_to_sheet([
-      ['Enseignant', 'Date', 'Jour', 'Créneau', 'UE', "Heure d'ouverture", 'Heure de fermeture', 'Heures', 'Retard'],
-      ...detail.map((d) => [
-        d.enseignantNom,
-        formatDate(d.heureOuverture),
-        d.jour,
-        d.creneau,
-        d.ueNom,
-        formatHeure(d.heureOuverture),
-        formatHeure(d.heureFermeture),
-        d.heures,
-        d.enRetard ? 'Oui' : 'Non',
-      ]),
-    ]);
+  // Export « détail » : jour par jour, créneau par créneau ; dans chaque
+  // créneau, les enseignants dans l'ordre d'arrivée (du plus tôt au plus en
+  // retard). Les absents (séances programmées jamais ouvertes) sont listés
+  // à la fin.
+  async function exporterDetail() {
+    const ordreCreneau = tousLesCreneaux() as string[];
+    const rangCreneau = (c: string) => {
+      const i = ordreCreneau.indexOf(c);
+      return i === -1 ? 99 : i;
+    };
+    const dateLongue = (iso: string) => {
+      const [y, m, d] = iso.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString('fr-FR', {
+        weekday: 'long', day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'UTC',
+      });
+    };
+
+    const lignes: (string | number)[][] = [
+      ['Ordre', 'Enseignant', 'UE', "Heure d'arrivée", 'Heure de départ', 'Heures', 'Retard'],
+    ];
+    const jours = Array.from(new Set(detail.map((d) => d.date))).sort();
+    for (const date of jours) {
+      const duJour = detail.filter((d) => d.date === date);
+      const creneaux = Array.from(new Set(duJour.map((d) => d.creneau))).sort(
+        (a, b) => rangCreneau(a) - rangCreneau(b) || a.localeCompare(b)
+      );
+      for (const creneau of creneaux) {
+        const groupe = duJour
+          .filter((d) => d.creneau === creneau)
+          .sort(
+            (a, b) =>
+              a.heureOuverture.localeCompare(b.heureOuverture) ||
+              a.enseignantNom.localeCompare(b.enseignantNom)
+          );
+        lignes.push([`${dateLongue(date).toUpperCase()} — ${creneau}`]);
+        groupe.forEach((s, i) =>
+          lignes.push([
+            i + 1,
+            s.enseignantNom,
+            s.ueNom,
+            formatHeure(s.heureOuverture),
+            formatHeure(s.heureFermeture),
+            s.heures,
+            s.enRetard ? `Oui (+${s.retardMinutes} min)` : 'Non',
+          ])
+        );
+        lignes.push([]);
+      }
+    }
+
+    // Absents du mois (même périmètre que le tableau).
+    let absences: LigneAbsence[] = [];
+    try {
+      absences = navigator.onLine ? await listAbsencesMois(mois) : await lireAbsencesDepuisCache(mois);
+    } catch {
+      try {
+        absences = await lireAbsencesDepuisCache(mois);
+      } catch {
+        absences = [];
+      }
+    }
+    absences = filtrerParPerimetreParChamp(absences, user, (a) => a.specialiteId);
+    const dateDe = (semaine: string, jour: string) => {
+      const i = (JOURS as string[]).indexOf(jour);
+      const [y, m, d] = semaine.split('-').map(Number);
+      return new Date(Date.UTC(y, m - 1, d + (i < 0 ? 0 : i))).toISOString().slice(0, 10);
+    };
+    lignes.push([`ABSENTS (${absences.length})`]);
+    if (absences.length === 0) {
+      lignes.push(['', 'Aucune absence.']);
+    } else {
+      lignes.push(['', 'Enseignant', 'UE', 'Date', 'Créneau']);
+      absences
+        .map((a) => ({ a, date: dateDe(a.semaine, a.jour) }))
+        .sort(
+          (x, y) =>
+            x.date.localeCompare(y.date) ||
+            rangCreneau(x.a.creneau) - rangCreneau(y.a.creneau) ||
+            x.a.enseignantNom.localeCompare(y.a.enseignantNom)
+        )
+        .forEach(({ a, date }) =>
+          lignes.push(['', a.enseignantNom, a.ueNom, dateLongue(date), a.creneau])
+        );
+    }
+
+    const feuille = XLSX.utils.aoa_to_sheet(lignes);
+    feuille['!cols'] = [{ wch: 8 }, { wch: 32 }, { wch: 38 }, { wch: 16 }, { wch: 16 }, { wch: 8 }, { wch: 16 }];
     const classeur = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(classeur, feuille, 'Détail');
     XLSX.writeFile(classeur, `heures_detail_${mois}.xlsx`);

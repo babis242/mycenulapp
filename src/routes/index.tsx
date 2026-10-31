@@ -30,6 +30,7 @@ import RetoursEnseignantsPage from '@/features/sondage/pages/RetoursEnseignantsP
 import SondagePublicPage from '@/features/sondage/pages/SondagePublicPage';
 import FichesControlePage from '@/features/fiches-presence/pages/FichesControlePage';
 import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
+import SaisiePresencesPage from '@/features/fiches-presence/pages/SaisiePresencesPage';
 import ConsulterPresencesPage from '@/features/fiches-presence/pages/ConsulterPresencesPage';
 import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
 import DetailRapportPage from '@/features/rapports/pages/DetailRapportPage';
@@ -41,6 +42,7 @@ import DisponibilitesPdfPage from '@/features/disponibilites/pages/Disponibilite
 import SaisieDisponibilitesPage from '@/features/disponibilites/pages/SaisieDisponibilitesPage';
 import EtatDisponibilitesPage from '@/features/disponibilites/pages/EtatDisponibilitesPage';
 import GenererEDTPage from '@/features/emploi-du-temps/pages/GenererEDTPage';
+import EvenementsEDTPage from '@/features/evenements-edt/pages/EvenementsEDTPage';
 import ProgrammationVoleePage from '@/features/seances-ponctuelles/pages/ProgrammationVoleePage';
 import ValidationEDTPage from '@/features/emploi-du-temps/pages/ValidationEDTPage';
 import InformerEnseignantsWhatsAppPage from '@/features/emploi-du-temps/pages/InformerEnseignantsWhatsAppPage';
@@ -215,6 +217,7 @@ export default function AppRoutes() {
             }
           >
             <Route path="/emploi-du-temps" element={<GenererEDTPage />} />
+            <Route path="/emploi-du-temps/evenements" element={<EvenementsEDTPage />} />
             <Route
               path="/emploi-du-temps/validation"
               element={<ValidationEDTPage />}
@@ -256,6 +259,7 @@ export default function AppRoutes() {
             <Route path="/fiches-arrivee" element={<FichesArriveePage />} />
             <Route path="/lecture-fiches" element={<LecturePresencesPage />} />
             <Route path="/presences" element={<ConsulterPresencesPage />} />
+            <Route path="/presences/saisie" element={<SaisiePresencesPage />} />
             <Route path="/codes-journaliers" element={<ListeCodesPage />} />
             <Route path="/qr-ouverture" element={<EcranQrPage />} />
             <Route

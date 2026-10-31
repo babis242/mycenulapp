@@ -1,5 +1,6 @@
 // src/features/emploi-du-temps/api.ts
 import { niveauDeSemestre } from '@/lib/niveau';
+import { creneauxBloquesParEvenement } from '@/features/evenements-edt/api';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import {
@@ -379,6 +380,22 @@ export async function getSeances(
   });
 }
 
+// Heures RÉELLEMENT effectuées par une séance : uniquement si l'enseignant
+// l'a ouverte (heure d'ouverture enregistrée) ; règle de retard / fermeture
+// anticipée appliquée. Une séance jamais ouverte vaut 0 — qu'elle soit une
+// absence ou simplement à venir. (heuresEffectueesPourSeance, elle, renvoie
+// la durée NOMINALE sans heure d'ouverture : à réserver aux projections.)
+export function heuresRealiseesSeance(
+  semaineISO: string,
+  jour: string,
+  creneau: string,
+  heureOuvertureISO: string | null | undefined,
+  heureFermetureISO?: string | null
+): number {
+  if (!heureOuvertureISO) return 0;
+  return heuresEffectueesPourSeance(semaineISO, jour, creneau, heureOuvertureISO, heureFermetureISO ?? null);
+}
+
 // Heures déjà effectuées AVANT la semaine donnée (semaines validées
 // antérieures) pour chaque offre — sert à afficher "XX/YYh (-ZZh)" dans le
 // PDF, comme dans le modèle Cenulape. Une séance = 4h.
@@ -439,7 +456,7 @@ export async function getHeuresEffectuees(
       // heures réelles d'ouverture et de fermeture — plus juste que la
       // durée nominale plate.
       else
-        cumulPasse += heuresEffectueesPourSeance(
+        cumulPasse += heuresRealiseesSeance(
           s.semaine,
           s.jour,
           s.creneau,
@@ -506,7 +523,7 @@ export async function getHeuresEffectueesTronc(
     for (const s of liste) {
       if (s.semaine === semaineActuelle) seancesActuelles.push(s);
       else
-        cumulPasse += heuresEffectueesPourSeance(
+        cumulPasse += heuresRealiseesSeance(
           s.semaine,
           s.jour,
           s.creneau,
@@ -564,11 +581,13 @@ export async function getHeuresPasseesOffres(
       if (error) throw error;
       for (const s of (data ?? []) as any[]) {
         const e = s.emploi_du_temps;
-        if (!e || e.statut !== 'valide' || !(e.semaine < semaine)) continue;
+        // Seules comptent les séances réellement tenues (ouvertes) des
+        // semaines passées ; une absence ne compte pas, validée ou non.
+        if (!e || !(e.semaine < semaine)) continue;
         resultat.set(
           s.offre_id,
           (resultat.get(s.offre_id) ?? 0) +
-            heuresEffectueesPourSeance(e.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+            heuresRealiseesSeance(e.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
         );
       }
       if ((data ?? []).length < PAGE) break;
@@ -591,7 +610,7 @@ export async function getHeuresPasseesOffres(
         parTroncHeures.set(
           s.tronc_commun_id,
           (parTroncHeures.get(s.tronc_commun_id) ?? 0) +
-            heuresEffectueesPourSeance(s.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+            heuresRealiseesSeance(s.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
         );
       }
       if ((data ?? []).length < PAGE) break;
@@ -752,6 +771,72 @@ export async function getHeuresTotalesValideesParOffre(
       cumul += contributionSeance(s, maintenant);
     }
     resultat.set(offreId, cumul);
+  }
+  return resultat;
+}
+
+// Total d'heures RÉELLEMENT effectuées par offre (séances ouvertes
+// uniquement, toutes semaines confondues) : ni absences, ni séances à venir.
+// Sert à décider si une UE est achevée côté campagne de disponibilités et
+// dans les écrans du référentiel — contrairement à la génération
+// automatique, qui garde les heures programmées pour ne pas dépasser le quota.
+export async function getHeuresReellesParOffre(
+  offreIds: string[]
+): Promise<Map<string, number>> {
+  const resultat = new Map<string, number>(offreIds.map((id) => [id, 0]));
+  if (offreIds.length === 0) return resultat;
+  const PAGE = 1000;
+  for (let i = 0; i < offreIds.length; i += 100) {
+    const lot = offreIds.slice(i, i + 100);
+    for (let debut = 0; ; debut += PAGE) {
+      const { data, error } = await supabase
+        .from('seances_edt')
+        .select('offre_id, jour, creneau, semaine, heure_ouverture, heure_fermeture')
+        .in('offre_id', lot)
+        .not('heure_ouverture', 'is', null)
+        .order('id', { ascending: true })
+        .range(debut, debut + PAGE - 1);
+      if (error) throw error;
+      for (const s of (data ?? []) as any[]) {
+        resultat.set(
+          s.offre_id,
+          (resultat.get(s.offre_id) ?? 0) +
+            heuresRealiseesSeance(s.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+        );
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
+  }
+  return resultat;
+}
+
+// Idem pour un tronc commun (clé = tronc_commun_id).
+export async function getHeuresReellesParTronc(
+  troncCommunIds: string[]
+): Promise<Map<string, number>> {
+  const resultat = new Map<string, number>(troncCommunIds.map((id) => [id, 0]));
+  if (troncCommunIds.length === 0) return resultat;
+  const PAGE = 1000;
+  for (let i = 0; i < troncCommunIds.length; i += 100) {
+    const lot = troncCommunIds.slice(i, i + 100);
+    for (let debut = 0; ; debut += PAGE) {
+      const { data, error } = await supabase
+        .from('seances_edt')
+        .select('tronc_commun_id, jour, creneau, semaine, heure_ouverture, heure_fermeture')
+        .in('tronc_commun_id', lot)
+        .not('heure_ouverture', 'is', null)
+        .order('id', { ascending: true })
+        .range(debut, debut + PAGE - 1);
+      if (error) throw error;
+      for (const s of (data ?? []) as any[]) {
+        resultat.set(
+          s.tronc_commun_id,
+          (resultat.get(s.tronc_commun_id) ?? 0) +
+            heuresRealiseesSeance(s.semaine, s.jour, s.creneau, s.heure_ouverture, s.heure_fermeture)
+        );
+      }
+      if ((data ?? []).length < PAGE) break;
+    }
   }
   return resultat;
 }
@@ -2134,6 +2219,11 @@ export async function genererEmploiDuTempsAutomatique(
   const specialitesCouvertes = new Set<string>();
   for (const cle of specialiteSlotOccupied) {
     specialitesCouvertes.add(cle.split('|')[0]);
+  }
+
+  // Événements : ces créneaux sont fermés pour les classes concernées.
+  for (const cle of await creneauxBloquesParEvenement(semaine, specialiteIds, semestre)) {
+    specialiteSlotOccupied.add(cle);
   }
 
   // 8) Une salle "par défaut" par item — jamais un critère de blocage,
@@ -3970,6 +4060,8 @@ export async function reconduireEmploiDuTemps(
       for (const id of cibleDonnees.specialitesParTronc.get(s.troncCommunId ?? '') ?? [])
         occupeSpec.add(`${id}|${s.jour}|${s.creneau}`);
   }
+  // Événements : créneaux fermés pour les classes concernées.
+  const bloquesParEvenement = await creneauxBloquesParEvenement(semaine, specialiteIds, semestre);
   const occupations = await getOccupationsSemaine(semaine);
   const ensOccupes = new Set(occupations.filter((o) => o.enseignantId).map((o) => `${o.enseignantId}|${o.jour}|${o.creneau}`));
   const sallesOccupees = new Set(occupations.filter((o) => o.salleId).map((o) => `${o.salleId}|${o.jour}|${o.creneau}`));
@@ -4015,6 +4107,14 @@ export async function reconduireEmploiDuTemps(
       specsConcernees.some((id) => occupeSpec.has(`${id}|${creneauCle}`))
     ) {
       dejaEnPlace++; // case déjà remplie : on n'y touche pas
+      continue;
+    }
+    if (specsConcernees.some((id) => bloquesParEvenement.has(`${id}|${creneauCle}`))) {
+      resultat.nonPlacees.push({
+        nom: s.ueNom,
+        raison: `Un événement bloque ce créneau (${s.jour} ${s.creneau}) pour cette classe.`,
+        specialiteIds: specsConcernees,
+      });
       continue;
     }
     if (ensOccupes.has(`${s.enseignantId}|${creneauCle}`)) {

@@ -19,6 +19,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { JOURS, tousLesCreneaux, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import { synchroniserCreneaux } from '@/lib/creneaux';
+import { niveauDeSemestre } from '@/lib/niveau';
+import { getBlocsSemaine, type BlocEvenement } from '@/features/evenements-edt/api';
 import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
 import {
   listCyclesDisponibles,
@@ -1080,6 +1082,26 @@ export default function GenererEDTPage() {
   // Chargé seulement quand c'est utile : une séance en conflit est affichée,
   // ou la fenêtre de programmation est ouverte.
   const [occupations, setOccupations] = useState<OccupationSeance[]>([]);
+
+  // Événements (réunion, examen, férié…) qui bloquent des créneaux pour
+  // certaines classes (spécialité + niveau) cette semaine.
+  const [blocsEvenements, setBlocsEvenements] = useState<BlocEvenement[]>([]);
+  useEffect(() => {
+    if (!semaine) return;
+    let actif = true;
+    getBlocsSemaine(semaine).then((b) => actif && setBlocsEvenements(b));
+    return () => {
+      actif = false;
+    };
+  }, [semaine, seances]);
+  const niveauAffiche = niveauDeSemestre(semestre);
+  const evenementsDuCreneau = (jour: string, creneau: string) =>
+    blocsEvenements.filter(
+      (b) =>
+        b.jour === jour &&
+        b.creneau === creneau &&
+        b.cibles.some((c) => c.specialiteId === specialiteAffichee && (niveauAffiche == null || c.niveau === niveauAffiche))
+    );
   const aConflitAffiche = seancesAffichees.some((s) => s.statut === 'conflit');
   const modalOuverte = !!modal;
   useEffect(() => {
@@ -1552,6 +1574,7 @@ export default function GenererEDTPage() {
                       const cellules = seancesAffichees.filter(
                         (s) => s.jour === jour && s.creneau === creneau
                       );
+                      const evenements = evenementsDuCreneau(jour, creneau);
                       const modifieeEnAttente = changements.some(
                         (c) => c.jour === jour && c.creneau === creneau
                       );
@@ -1566,7 +1589,23 @@ export default function GenererEDTPage() {
                               className="absolute top-1.5 right-1.5 w-2 h-2 rounded-full bg-amber-400"
                             />
                           )}
+                          {evenements.length > 0 && (
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: cellules.length > 0 ? 6 : 0 }}>
+                              {evenements.map((ev) => (
+                                <div
+                                  key={ev.evenementId}
+                                  style={{ background: '#111827', color: '#fff', borderRadius: 12, padding: '8px 12px' }}
+                                >
+                                  <p style={{ fontSize: 10, fontWeight: 800, opacity: 0.7, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                                    Événement
+                                  </p>
+                                  <p style={{ fontSize: 12, fontWeight: 800, lineHeight: 1.3 }}>{ev.titre}</p>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                           {cellules.length === 0 ? (
+                            evenements.length > 0 ? null : (
                             <button
                               onClick={() => ouvrirModal(jour, creneau)}
                               title="Programmer ce créneau"
@@ -1574,6 +1613,7 @@ export default function GenererEDTPage() {
                             >
                               <Plus size={14} />
                             </button>
+                            )
                           ) : (
                             <div className="flex flex-col gap-1.5">
                               {cellules.map((s) => {

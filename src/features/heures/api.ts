@@ -72,6 +72,7 @@ export interface LigneAbsence {
   jour: string;
   semaine: string;
   creneau: string;
+  specialiteId?: string | null; // pour filtrer par périmètre (null : tronc commun)
 }
 
 export interface LigneHeureTotal {
@@ -316,7 +317,7 @@ export async function listAbsencesMois(
       `
       id, jour, creneau, semaine, enseignant_id,
       enseignant:enseignants(nom),
-      offre:offres(ue:ues(nom)),
+      offre:offres(specialite_id, ue:ues(nom)),
       tronc_commun:troncs_communs(nom)
     `
     )
@@ -341,6 +342,7 @@ export async function listAbsencesMois(
       jour: s.jour,
       semaine: s.semaine,
       creneau: s.creneau,
+      specialiteId: s.offre?.specialite_id ?? null,
     }));
 }
 
@@ -385,6 +387,7 @@ export async function lireAbsencesDepuisCache(
         jour: s.jour,
         semaine: s.semaine,
         creneau: s.creneau,
+        specialiteId: offre?.specialite_id ?? null,
       } as LigneAbsence;
     });
 }

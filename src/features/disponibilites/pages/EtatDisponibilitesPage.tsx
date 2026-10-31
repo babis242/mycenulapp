@@ -5,6 +5,7 @@ import {
   MessageCircle,
   Loader2,
   StopCircle,
+  Trash2,
   Plus,
   Printer,
   FileText,
@@ -19,6 +20,8 @@ import {
   getDerniereCampagne,
   listSuiviCampagne,
   arreterCampagne,
+  annulerCampagne,
+  resumerCampagne,
   enregistrerDisponibiliteManuelle,
   getDisponibilitesEnseignant,
   dateLimiteCampagne,
@@ -62,6 +65,8 @@ export default function EtatDisponibilitesPage() {
   const [recherche, setRecherche] = useState('');
   const [loading, setLoading] = useState(true);
   const [arret, setArret] = useState(false);
+  const [annulation, setAnnulation] = useState(false);
+  const [erreurAnnulation, setErreurAnnulation] = useState<string | null>(null);
 
   const [modalAjout, setModalAjout] = useState<EnseignantSuivi | null>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
@@ -99,6 +104,27 @@ export default function EtatDisponibilitesPage() {
       await charger();
     } finally {
       setArret(false);
+    }
+  }
+
+  async function handleAnnuler() {
+    if (!campagne) return;
+    setErreurAnnulation(null);
+    setAnnulation(true);
+    try {
+      const r = await resumerCampagne(campagne.id);
+      const ok = window.confirm(
+        `Annuler cette campagne ?\n\n` +
+          `${r.nbReponses} enseignant(s) sur ${r.nbEnseignants} ont déjà répondu : leurs disponibilités seront SUPPRIMÉES définitivement.\n` +
+          `Les enseignants sollicités seront prévenus. Tu pourras ensuite relancer une nouvelle campagne.`
+      );
+      if (!ok) return;
+      await annulerCampagne(campagne.id);
+      navigate('/disponibilites');
+    } catch (e: any) {
+      setErreurAnnulation(e?.message || "Annulation impossible.");
+    } finally {
+      setAnnulation(false);
     }
   }
 
@@ -237,8 +263,29 @@ export default function EtatDisponibilitesPage() {
               Arrêter
             </button>
           )}
+          {user?.role === 'administrateur' && (
+            <button
+              onClick={handleAnnuler}
+              disabled={annulation}
+              className="flex items-center gap-2 bg-white border border-red-200 rounded-full px-4 py-2 text-sm font-bold text-red-600 hover:bg-red-50 disabled:opacity-50"
+            >
+              {annulation ? <Loader2 size={16} className="animate-spin" /> : <Trash2 size={16} />}
+              Annuler la campagne
+            </button>
+          )}
+          {campagne.statut !== 'active' && (
+            <button
+            onClick={() => navigate('/disponibilites')}
+            className="flex items-center gap-2 bg-red-600 rounded-full px-4 py-2 text-sm font-bold text-white hover:bg-red-700"
+          >
+            <Plus size={16} /> Relancer
+            </button>
+          )}
         </div>
       </div>
+      {erreurAnnulation && (
+        <p className="text-xs font-semibold text-red-600 mb-3">{erreurAnnulation}</p>
+      )}
 
       <div className="flex mb-4">
         <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">

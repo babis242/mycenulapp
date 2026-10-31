@@ -1,5 +1,5 @@
 // src/features/codes-journaliers/pages/ListeCodesPage.tsx
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Loader2, Search, Printer, ChevronLeft, ChevronRight, WifiOff, Undo2 } from 'lucide-react';
 import { JOURS, tousLesCreneaux } from '@/constants/enums';
 import { useAuthStore } from '@/stores/authStore';
@@ -12,6 +12,7 @@ import {
   jourDAujourdhuiDansSemaine,
   type CodeSeanceDetail,
 } from '../api';
+import CouponsCodesPdf from '../components/CouponsCodesPdf';
 
 const MOIS_FR = [
   'janvier', 'février', 'mars', 'avril', 'mai', 'juin',
@@ -174,15 +175,6 @@ export default function ListeCodesPage() {
     }
     return true;
   });
-
-  // Regroupement jour → créneau pour la vue imprimable.
-  const groupes = JOURS.map((jour) => ({
-    jour,
-    creneaux: tousLesCreneaux().map((creneau) => ({
-      creneau,
-      lignes: filtres.filter((c) => c.jour === jour && c.creneau === creneau),
-    })).filter((c) => c.lignes.length > 0),
-  })).filter((g) => g.creneaux.length > 0);
 
   async function handleAnnuler(
     c: CodeSeanceDetail,
@@ -446,92 +438,16 @@ export default function ListeCodesPage() {
         </div>
       </div>
 
-      {/* Vue imprimable — un créneau = 2 pages (ouverture, puis fermeture),
-          groupées par jour, comme demandé dans journal.md Scénario 7. */}
-      {groupes.length > 0 && (
+      {/* Vue imprimable — planche de coupons à découper (ouverture et
+          fermeture), en grille serrée pour économiser le papier. */}
+      {filtres.length > 0 && (
         <>
-          <style>{'@page { size: portrait; margin: 12mm; }'}</style>
+          <style>{'@page { size: A4 portrait; margin: 6mm; } @media print { html, body { background: #fff !important; } .coupons-doc, .coupons-doc * { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }'}</style>
           <div className="hidden print:block text-black">
-            {groupes.map((g) => (
-              <Fragment key={g.jour}>
-                {g.creneaux.map((c) => (
-                  <Fragment key={`${g.jour}-${c.creneau}`}>
-                    <PageCodes
-                      jour={g.jour}
-                      creneau={c.creneau}
-                      lignes={c.lignes}
-                      type="ouverture"
-                    />
-                    <PageCodes
-                      jour={g.jour}
-                      creneau={c.creneau}
-                      lignes={c.lignes}
-                      type="fermeture"
-                    />
-                  </Fragment>
-                ))}
-              </Fragment>
-            ))}
+            <CouponsCodesPdf codes={filtres} semaine={semaine} />
           </div>
         </>
       )}
-    </div>
-  );
-}
-
-function PageCodes({
-  jour,
-  creneau,
-  lignes,
-  type,
-}: {
-  jour: string;
-  creneau: string;
-  lignes: CodeSeanceDetail[];
-  type: 'ouverture' | 'fermeture';
-}) {
-  return (
-    <div style={{ breakAfter: 'page', pageBreakAfter: 'always' }}>
-      <p className="text-center text-red-600 font-extrabold text-lg">
-        CODES DE {type === 'ouverture' ? "OUVERTURE" : 'FERMETURE'}
-      </p>
-      <p className="text-center font-bold text-sm mb-4">
-        {jour.toUpperCase()} — {creneau}
-      </p>
-      <table className="w-full border-collapse border border-black text-sm">
-        <thead>
-          <tr>
-            <th className="border border-black px-2 py-1.5">Spécialité</th>
-            <th className="border border-black px-2 py-1.5">UE</th>
-            <th className="border border-black px-2 py-1.5">Enseignant</th>
-            <th className="border border-black px-2 py-1.5">Salle</th>
-            <th className="border border-black px-2 py-1.5">
-              Code {type === 'ouverture' ? "d'ouverture" : 'de fermeture'}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {lignes.map((l) => (
-            <tr key={l.id}>
-              <td className="border border-black px-2 py-2">
-                {l.specialiteNom}
-              </td>
-              <td className="border border-black px-2 py-2 font-bold">
-                {l.ueNom}
-              </td>
-              <td className="border border-black px-2 py-2">
-                {l.enseignantNom}
-              </td>
-              <td className="border border-black px-2 py-2">
-                {l.salleCode ?? '—'}
-              </td>
-              <td className="border border-black px-2 py-2 text-center font-mono font-extrabold text-lg">
-                {type === 'ouverture' ? l.codeOuverture : l.codeFermeture}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

@@ -26,8 +26,27 @@ export const DEGRADE_MARQUE =
   'linear-gradient(120deg, #121a5a 0%, #1e2a78 38%, #5b2bd6 78%, #a23bd8 100%)';
 export const DEGRADE_OR = 'linear-gradient(90deg, #f2a900, #ffd36a, #f2a900)';
 
-export function formaterDateHeure(iso: string): string {
-  return new Date(iso).toLocaleString('fr-FR', {
+export type LangueMarque = 'fr' | 'en';
+
+const MARQUE = {
+  fr: {
+    centre: 'CENTRE UNIVERSITAIRE LA PERLE · CENULAPE',
+    service: 'SERVICE DE LA SCOLARITÉ',
+    devise: 'Une formation, un métier',
+    pied: 'Service de la scolarité — CENULAPE · BP 760 Yassa, Douala · Tél : 658 09 34 70 · info@laperle-sup.com',
+    edite: 'Édité le',
+  },
+  en: {
+    centre: 'THE PEARL UNIVERSITY CENTER · CENULAPE',
+    service: 'ACADEMIC AFFAIRS OFFICE',
+    devise: 'A training, a career',
+    pied: 'Academic Affairs Office — CENULAPE · PO Box 760 Yassa, Douala · Tel: 658 09 34 70 · info@laperle-sup.com',
+    edite: 'Issued on',
+  },
+} as const;
+
+export function formaterDateHeure(iso: string, langue: LangueMarque = 'fr'): string {
+  return new Date(iso).toLocaleString(langue === 'en' ? 'en-GB' : 'fr-FR', {
     timeZone: 'Africa/Douala',
     day: '2-digit',
     month: '2-digit',
@@ -40,7 +59,8 @@ export function formaterDateHeure(iso: string): string {
 const ETOILE = 'M30 4 L35 25 L56 30 L35 35 L30 56 L25 35 L4 30 L25 25 Z';
 
 // Grand en-tête (première page) : logo + SERVICE DE LA SCOLARITÉ.
-export function EnteteHero({ titre, periode }: { titre: string; periode: string }) {
+export function EnteteHero({ titre, periode, langue = 'fr' }: { titre: string; periode: string; langue?: LangueMarque }) {
+  const m = MARQUE[langue];
   return (
     <>
       <div
@@ -113,7 +133,7 @@ export function EnteteHero({ titre, periode }: { titre: string; periode: string 
                 color: COULEURS.orClair,
               }}
             >
-              CENTRE UNIVERSITAIRE LA PERLE · CENULAPE
+              {m.centre}
             </div>
             <div
               style={{
@@ -124,7 +144,7 @@ export function EnteteHero({ titre, periode }: { titre: string; periode: string 
                 marginTop: '1.5mm',
               }}
             >
-              SERVICE DE LA SCOLARITÉ
+              {m.service}
             </div>
             <div
               style={{
@@ -136,7 +156,7 @@ export function EnteteHero({ titre, periode }: { titre: string; periode: string 
               }}
             />
             <div style={{ fontSize: '10px', fontStyle: 'italic', opacity: 0.85 }}>
-              Une formation, un métier
+              {m.devise}
             </div>
           </div>
         </div>
@@ -173,7 +193,8 @@ export function EnteteHero({ titre, periode }: { titre: string; periode: string 
 }
 
 // En-tête compact (pages suivantes).
-export function EnteteCompact({ titre, periode }: { titre: string; periode: string }) {
+export function EnteteCompact({ titre, periode, langue = 'fr' }: { titre: string; periode: string; langue?: LangueMarque }) {
+  const m = MARQUE[langue];
   return (
     <>
       <div
@@ -219,10 +240,10 @@ export function EnteteCompact({ titre, periode }: { titre: string; periode: stri
         </div>
         <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: '17px', fontWeight: 900, letterSpacing: '0.05em' }}>
-            SERVICE DE LA SCOLARITÉ
+            {m.service}
           </div>
           <div style={{ fontSize: '9px', fontWeight: 700, color: COULEURS.orClair, letterSpacing: '0.12em' }}>
-            CENTRE UNIVERSITAIRE LA PERLE · CENULAPE
+            {m.centre}
           </div>
         </div>
         <div style={{ position: 'relative', textAlign: 'right' }}>
@@ -235,7 +256,8 @@ export function EnteteCompact({ titre, periode }: { titre: string; periode: stri
   );
 }
 
-export function PiedDePage({ genereLe }: { genereLe: string }) {
+export function PiedDePage({ genereLe, langue = 'fr' }: { genereLe: string; langue?: LangueMarque }) {
+  const m = MARQUE[langue];
   return (
     <div
       style={{
@@ -255,11 +277,8 @@ export function PiedDePage({ genereLe }: { genereLe: string }) {
         color: COULEURS.discret,
       }}
     >
-      <span>
-        Service de la scolarité — CENULAPE · BP 760 Yassa, Douala · Tél : 658 09 34 70 ·
-        info@laperle-sup.com
-      </span>
-      <span style={{ color: COULEURS.marine }}>Édité le {formaterDateHeure(genereLe)}</span>
+      <span>{m.pied}</span>
+      <span style={{ color: COULEURS.marine }}>{m.edite} {formaterDateHeure(genereLe, langue)}</span>
     </div>
   );
 }

@@ -14,6 +14,8 @@ import { useAuthStore } from '@/stores/authStore';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { JOURS, tousLesCreneaux, niveauDeSemestre } from '@/constants/enums';
 import { synchroniserCreneaux } from '@/lib/creneaux';
+import { niveauDeSemestre as niveauNumeroDeSemestre } from '@/lib/niveau';
+import { getBlocsSemaine, type BlocEvenement } from '@/features/evenements-edt/api';
 import { supabase } from '@/lib/supabase';
 import {
   listCyclesDisponibles,
@@ -218,6 +220,31 @@ export default function ValidationEDTPage() {
     charger();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specialites, semaine, enLigne]);
+
+  // Événements de la semaine (réunion, examen…) : affichés dans les créneaux
+  // concernés, à l'écran et sur le PDF.
+  const [blocsEvenements, setBlocsEvenements] = useState<BlocEvenement[]>([]);
+  useEffect(() => {
+    if (!semaine || !enLigne) {
+      setBlocsEvenements([]);
+      return;
+    }
+    let actif = true;
+    getBlocsSemaine(semaine).then((b) => actif && setBlocsEvenements(b));
+    return () => {
+      actif = false;
+    };
+  }, [semaine, enLigne]);
+  const evenementsPour = (specId: string, jour: string, creneau: string) =>
+    blocsEvenements.filter(
+      (b) =>
+        b.jour === jour &&
+        b.creneau === creneau &&
+        b.cibles.some((c) => {
+          const n = niveauNumeroDeSemestre(semestre);
+          return c.specialiteId === specId && (n == null || c.niveau === n);
+        })
+    );
 
   async function charger() {
     setChargement(true);
@@ -578,8 +605,16 @@ export default function ValidationEDTPage() {
                             key={creneau}
                             className="px-2 py-2 border-b border-gray-50 align-top"
                           >
+                            {evenementsPour(specialiteAffichee, jour, creneau).map((ev) => (
+                              <div key={ev.evenementId} style={{ background: '#111827', color: '#fff', borderRadius: 12, padding: '8px 12px', marginBottom: 6 }}>
+                                <p style={{ fontSize: 10, fontWeight: 800, opacity: 0.7, textTransform: 'uppercase' }}>Événement</p>
+                                <p style={{ fontSize: 12, fontWeight: 800 }}>{ev.titre}</p>
+                              </div>
+                            ))}
                             {cellules.length === 0 ? (
+                              evenementsPour(specialiteAffichee, jour, creneau).length > 0 ? null : (
                               <span className="text-gray-200 text-xs px-2">—</span>
+                              )
                             ) : (
                               <div className="flex flex-col gap-1.5">
                                 {cellules.map((s) => (
@@ -776,6 +811,15 @@ export default function ValidationEDTPage() {
                                 const s = seancesSpe.find(
                                   (x) => x.jour === jour && x.creneau === creneau
                                 );
+                                const evs = evenementsPour(sp.id, jour, creneau);
+                                if (!s && evs.length > 0)
+                                  return (
+                                    <td key={jour} className="border border-black px-2 py-2 text-center align-middle" style={{ background: '#e5e7eb' }}>
+                                      {evs.map((ev) => (
+                                        <p key={ev.evenementId} className="font-bold uppercase">{ev.titre}</p>
+                                      ))}
+                                    </td>
+                                  );
                                 if (!s)
                                   return <td key={jour} className="border border-black px-2 py-2" />;
                                 const total = s.volumeHoraire ?? 0;

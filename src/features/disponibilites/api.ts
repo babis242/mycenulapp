@@ -1,6 +1,7 @@
 // src/features/disponibilites/api.ts
 import { supabase } from '@/lib/supabase';
-import { getHeuresTotalesValideesParOffre } from '@/features/emploi-du-temps/api';
+import { db } from '@/lib/db';
+import { getHeuresReellesParOffre, getHeuresReellesParTronc } from '@/features/emploi-du-temps/api';
 
 // ── Date limite de la collecte : mercredi 17h (heure du Cameroun, UTC+1) ──
 // Calculée à partir de la date de lancement (aucune colonne en base) : le
@@ -272,11 +273,24 @@ export async function listUEsPourCampagne(
   // qu'une UE soit considérée "achevée" ici de la même façon que sur
   // le PDF (pas de double définition qui pourrait diverger).
   const tousLesOffreIds = Array.from(vues.values()).map((v) => v.offreId);
-  const heuresParOffre = await getHeuresTotalesValideesParOffre(
-    tousLesOffreIds
+  // Heures RÉELLEMENT effectuées (séances ouvertes) : ni absences ni séances
+  // simplement programmées. Une UE de tronc commun compte aussi les séances
+  // du tronc.
+  const heuresParOffre = await getHeuresReellesParOffre(tousLesOffreIds);
+  const troncIdsCampagne = Array.from(
+    new Set(
+      Array.from(vues.values())
+        .map((v) => troncParUe.get(v.ueId)?.tronc_commun_id)
+        .filter((id): id is string => !!id)
+    )
   );
+  const heuresParTronc = await getHeuresReellesParTronc(troncIdsCampagne);
   for (const v of vues.values()) {
-    const heures = heuresParOffre.get(v.offreId) ?? 0;
+    const troncId = troncParUe.get(v.ueId)?.tronc_commun_id;
+    const heures = Math.max(
+      heuresParOffre.get(v.offreId) ?? 0,
+      troncId ? heuresParTronc.get(troncId) ?? 0 : 0
+    );
     v.heuresEffectuees = heures;
     v.estTerminee = v.volumeHoraire != null && heures >= v.volumeHoraire;
   }
@@ -532,6 +546,118 @@ export async function arreterCampagne(campagneId: string) {
     .update({ statut: 'arretee' })
     .eq('id', campagneId);
   if (error) throw error;
+}
+
+// ── Annulation d'une campagne ─────────────────────────────────────
+// « Arrêter » ferme la collecte mais garde les réponses reçues. « Annuler »
+// supprime la campagne ET ses réponses (demande lancée par erreur, mauvaises
+// UEs…) : on peut ensuite relancer une nouvelle campagne de zéro. Les
+// enseignants sollicités sont prévenus.
+
+export interface ResumeCampagne {
+  nbEnseignants: number;
+  nbReponses: number; // enseignants ayant déjà répondu
+}
+
+const PAGE = 1000;
+
+export async function resumerCampagne(campagneId: string): Promise<ResumeCampagne> {
+  const { count, error } = await supabase
+    .from('campagne_enseignants')
+    .select('enseignant_id', { count: 'exact', head: true })
+    .eq('campagne_id', campagneId);
+  if (error) throw error;
+  const ayantRepondu = new Set<string>();
+  for (let debut = 0; ; debut += PAGE) {
+    const { data, error: e2 } = await supabase
+      .from('disponibilites')
+      .select('enseignant_id')
+      .eq('campagne_id', campagneId)
+      .range(debut, debut + PAGE - 1);
+    if (e2) throw e2;
+    (data ?? []).forEach((d: any) => ayantRepondu.add(d.enseignant_id));
+    if ((data ?? []).length < PAGE) break;
+  }
+  return { nbEnseignants: count ?? 0, nbReponses: ayantRepondu.size };
+}
+
+const MSG_RLS =
+  "La base a refusé la suppression (droits insuffisants). Exécute une fois le fichier sql/annuler_campagne_disponibilites.sql dans Supabase, puis réessaie.";
+
+async function supprimerLignes(table: string, colonne: string, valeur: string): Promise<void> {
+  const { count: avant, error: e0 } = await supabase
+    .from(table)
+    .select('*', { count: 'exact', head: true })
+    .eq(colonne, valeur);
+  if (e0) throw e0;
+  if (!avant) return;
+  const { count: supprimees, error } = await supabase
+    .from(table)
+    .delete({ count: 'exact' })
+    .eq(colonne, valeur);
+  if (error) throw error;
+  if ((supprimees ?? 0) < avant) throw new Error(MSG_RLS);
+}
+
+export async function annulerCampagne(campagneId: string): Promise<ResumeCampagne> {
+  const resume = await resumerCampagne(campagneId);
+  const { data: liaisons, error: e0 } = await supabase
+    .from('campagne_enseignants')
+    .select('enseignant_id')
+    .eq('campagne_id', campagneId);
+  if (e0) throw e0;
+  const enseignantIds = ((liaisons ?? []) as any[]).map((l) => l.enseignant_id as string);
+
+  // Réponses d'abord, puis liaisons, puis la campagne. Chaque étape vérifie
+  // que la base a bien supprimé les lignes (sinon : message clair, et rien
+  // n'est perdu à moitié, car la première étape échoue avant toute perte).
+  await supprimerLignes('disponibilites', 'campagne_id', campagneId);
+  await supprimerLignes('campagne_enseignants', 'campagne_id', campagneId);
+  await supprimerLignes('campagnes_disponibilite', 'id', campagneId);
+
+  // Cache local : retire la campagne et ses données de l'appareil.
+  try {
+    await db.disponibilites.where('campagne_id').equals(campagneId).delete();
+    await db.campagneEnseignants.filter((l: any) => l.campagne_id === campagneId).delete();
+    await db.campagnesDisponibilite.delete(campagneId);
+  } catch {
+    // le cache se réalignera à la prochaine synchronisation
+  }
+
+  // Prévient les enseignants (au mieux : une erreur ici n'annule pas l'annulation).
+  try {
+    if (enseignantIds.length > 0) {
+      const { data: enseignantsData } = await supabase
+        .from('enseignants')
+        .select('id, matricule')
+        .in('id', enseignantIds);
+      const matricules = (enseignantsData ?? []).map((e: any) => e.matricule);
+      const idParMatricule = new Map((enseignantsData ?? []).map((e: any) => [e.matricule, e.id]));
+      const hndIds = await getEnseignantsHND(enseignantIds);
+      const { data: comptes } = await supabase
+        .from('comptes_utilisateurs')
+        .select('id, matricule')
+        .in('matricule', matricules);
+      if (comptes && comptes.length > 0) {
+        await supabase.from('notifications').insert(
+          comptes.map((c: any) => {
+            const estHND = hndIds.has(idParMatricule.get(c.matricule) ?? '');
+            return {
+              compte_id: c.id,
+              titre: estHND ? 'Availability request cancelled' : 'Demande de disponibilités annulée',
+              message: estHND
+                ? 'The previous availability request has been cancelled. Please disregard it: a new request will be sent to you shortly.'
+                : "La précédente demande de disponibilités est annulée, ne tiens pas compte de ce message : une nouvelle demande te sera envoyée prochainement.",
+              lien: '/',
+            };
+          })
+        );
+      }
+    }
+  } catch {
+    // notifications facultatives
+  }
+  return resume;
 }
 
 // Ajout manuel d'une disponibilité pour un enseignant (journal.md, Étape 4)

@@ -23,6 +23,7 @@ import {
   ClipboardCheck,
   AlarmClock,
   MessageSquare,
+  CalendarX2,
   ScanLine,
   UserCheck,
   LogOut,
@@ -104,6 +105,12 @@ const NAV_ITEMS: {
     roles: ['administrateur', 'responsable'],
   },
   {
+    to: '/emploi-du-temps/evenements',
+    label: 'Événements',
+    icon: CalendarX2,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
     to: '/emploi-du-temps/programmation-volee',
     label: 'Programmation à la volée',
     icon: Zap,
@@ -137,6 +144,12 @@ const NAV_ITEMS: {
     to: '/lecture-fiches',
     label: 'Lecture des fiches',
     icon: ScanLine,
+    roles: ['administrateur', 'responsable', 'secretaire'],
+  },
+  {
+    to: '/presences/saisie',
+    label: 'Saisie des présences',
+    icon: ClipboardCheck,
     roles: ['administrateur', 'responsable', 'secretaire'],
   },
   {
