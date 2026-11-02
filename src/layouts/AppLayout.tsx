@@ -221,6 +221,12 @@ const NAV_ITEMS: {
     roles: ['administrateur', 'responsable'],
   },
   {
+    to: '/etat-matieres',
+    label: 'État des matières',
+    icon: FileBarChart,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
     to: '/mes-heures',
     label: 'Mes heures',
     icon: Clock,

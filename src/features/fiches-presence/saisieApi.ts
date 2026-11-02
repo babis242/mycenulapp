@@ -82,10 +82,26 @@ export async function enregistrerSaisieManuelle(params: {
     }
   }
   for (let i = 0; i < lignes.length; i += 500) {
-    const { error } = await supabase
+    const lot = lignes.slice(i, i + 500);
+    const { data, error } = await supabase
       .from('presences_etudiants')
-      .upsert(lignes.slice(i, i + 500), { onConflict: 'etudiant_id,semaine,jour,creneau' });
-    if (error) throw error;
+      .upsert(lot, { onConflict: 'etudiant_id,semaine,jour,creneau' })
+      .select('etudiant_id');
+    if (error) {
+      if (/row-level security|permission denied/i.test(error.message)) {
+        throw new Error(
+          "Enregistrement refusé : ce compte n'a pas les droits d'écriture sur les présences. Exécutez sql/acces_secretaire_presences.sql dans Supabase."
+        );
+      }
+      throw error;
+    }
+    // Une base qui refuse silencieusement (droits de lecture/écriture
+    // incomplets) renvoie moins de lignes que celles envoyées.
+    if ((data?.length ?? 0) < lot.length) {
+      throw new Error(
+        `Enregistrement incomplet : ${data?.length ?? 0} ligne(s) confirmée(s) sur ${lot.length}. Le compte n'a probablement pas tous les droits sur les présences — exécutez sql/acces_secretaire_presences.sql dans Supabase.`
+      );
+    }
   }
   return lignes.length;
 }

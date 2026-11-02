@@ -141,7 +141,7 @@ export default function SaisiePresencesPage() {
         <div style={carte}><p className="text-sm text-gray-500">Aucun créneau programmé pour cette classe cette semaine.</p></div>
       )}
       {prete && creneaux.length > 0 && etudiants.length === 0 && (
-        <div style={carte}><p className="text-sm text-gray-500">Aucun étudiant inscrit dans cette classe pour ce semestre.</p></div>
+        <div style={carte}><p className="text-sm text-gray-500">Aucun étudiant inscrit dans cette classe pour ce semestre. (Si la classe a bien des étudiants, ce compte n'a peut-être pas le droit de les lire : exécutez sql/acces_secretaire_presences.sql dans Supabase.)</p></div>
       )}
 
       {prete && creneaux.length > 0 && etudiants.length > 0 && (
