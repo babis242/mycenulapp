@@ -79,19 +79,13 @@ export default function QrEnseignantsAdminPage() {
     return [
       `Bonjour Monsieur/Madame ${q.nom},`,
       '',
-      'Veuillez trouver ci-joint votre QR personnel CENULAPP.',
+      'Voici votre QR personnel CENULAPP (procédure d\'utilisation sur l\'image).',
       '',
-      "⚠️ Ce QR est à utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école (réseau, application ou téléphone qui ne fonctionne pas). Dans les autres cas, continuez à ouvrir votre cours normalement depuis « Ma séance ».",
+      "⚠️ À utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école. Sinon, ouvrez votre cours normalement depuis « Ma séance ».",
       '',
-      'Procédure :',
-      "1. Avant votre cours, présentez-vous à l'administration ou au secrétariat.",
-      '2. Montrez ce QR (sur votre téléphone ou imprimé).',
-      "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre immédiatement à l'heure du scan. À la fin du cours, faites de même pour la fermeture.",
-      "4. Si le QR n'est pas reconnu, l'administration est automatiquement alertée.",
+      "Procédure : présentez ce QR à l'administration ou au secrétariat avant votre cours ; ils le scannent et votre cours s'ouvre (idem pour la fermeture). QR strictement personnel, ne le partagez pas.",
       '',
-      `Vous retrouvez aussi ce QR à tout moment dans l'application, menu « Mon QR » : ${window.location.origin}/mon-qr`,
-      '',
-      "Ce QR est strictement personnel : ne le partagez avec personne. En cas de perte ou de doute, informez-nous pour qu'il soit remplacé.",
+      `Vous le retrouvez aussi dans l'application, menu « Mon QR » : ${window.location.origin}/mon-qr`,
       '',
       'Merci.',
     ].join('\n');
@@ -117,7 +111,7 @@ export default function QrEnseignantsAdminPage() {
     const imagePromise = genererImageQr(q); // lancée avant la navigation
     window.location.href = `whatsapp://send?phone=${chiffres}&text=${texte}`;
     setLienWeb(`https://web.whatsapp.com/send?phone=${chiffres}&text=${texte}`);
-    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom}. Joignez l'image du QR (téléchargée) à la conversation.`);
+    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom}. Joignez l'image du QR (téléchargée, elle contient aussi la procédure) à la conversation.`);
     imagePromise.then((blob) => telecharger(blob, nomFichierQr(q.nom))).catch(() => {});
   }
 

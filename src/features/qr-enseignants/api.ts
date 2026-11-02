@@ -57,29 +57,85 @@ export async function regenererQr(enseignantId: string): Promise<string> {
   return data as string;
 }
 
-/** Image PNG (carte) : QR + nom de l'enseignant, prête à partager. */
+const TEXTE_CARTE: { titre?: string; texte: string; fort?: boolean }[] = [
+  { texte: "À utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école (réseau, application ou téléphone en panne). Sinon, ouvrez votre cours normalement depuis « Ma séance ».", fort: true },
+  { titre: 'Procédure', texte: "1. Avant votre cours, présentez-vous à l'administration ou au secrétariat." },
+  { texte: '2. Montrez ce QR (sur votre téléphone ou imprimé).' },
+  { texte: "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre à l'heure du scan. À la fin du cours, même chose pour la fermeture." },
+  { texte: "4. Si le QR n'est pas reconnu, l'administration est alertée." },
+  { texte: 'QR strictement personnel : ne le partagez avec personne. En cas de perte, prévenez-nous pour le remplacer.' },
+];
+
+function decouper(ctx: CanvasRenderingContext2D, texte: string, largeur: number): string[] {
+  const mots = texte.split(' ');
+  const lignes: string[] = [];
+  let courante = '';
+  for (const m of mots) {
+    const essai = courante ? `${courante} ${m}` : m;
+    if (ctx.measureText(essai).width > largeur && courante) {
+      lignes.push(courante);
+      courante = m;
+    } else courante = essai;
+  }
+  if (courante) lignes.push(courante);
+  return lignes;
+}
+
+/** Image PNG (carte) : QR + nom + procédure d'utilisation, prête à partager. */
 export async function genererImageQr(q: { nom: string; matricule: string; token: string }): Promise<Blob> {
   const taille = 640;
+  const marge = 28;
   const qrCanvas = document.createElement('canvas');
   await QRCode.toCanvas(qrCanvas, payloadQr(q.token), { width: taille, margin: 2, errorCorrectionLevel: 'M' });
-  const hauteurTexte = 150;
+
+  // Mesure du texte pour calculer la hauteur nécessaire.
+  const mesure = document.createElement('canvas').getContext('2d')!;
+  const interligne = 29;
+  mesure.font = '21px sans-serif';
+  let hauteurTexte = 0;
+  for (const bloc of TEXTE_CARTE) {
+    if (bloc.titre) hauteurTexte += 36;
+    mesure.font = bloc.fort ? 'bold 21px sans-serif' : '21px sans-serif';
+    hauteurTexte += decouper(mesure, bloc.texte, taille - 2 * marge).length * interligne + 10;
+  }
+  const hauteurEntete = 130;
+
   const canvas = document.createElement('canvas');
   canvas.width = taille;
-  canvas.height = taille + hauteurTexte;
+  canvas.height = taille + hauteurEntete + hauteurTexte + 30;
   const ctx = canvas.getContext('2d')!;
   ctx.fillStyle = '#ffffff';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.drawImage(qrCanvas, 0, 0);
-  ctx.fillStyle = '#111827';
+
   ctx.textAlign = 'center';
+  ctx.fillStyle = '#111827';
   ctx.font = 'bold 34px sans-serif';
-  ctx.fillText(q.nom, taille / 2, taille + 52, taille - 40);
+  ctx.fillText(q.nom, taille / 2, taille + 46, taille - 40);
   ctx.fillStyle = '#6b7280';
-  ctx.font = '24px sans-serif';
-  ctx.fillText(`${q.matricule} — QR personnel, ne pas partager`, taille / 2, taille + 92, taille - 40);
+  ctx.font = '22px sans-serif';
+  ctx.fillText(`${q.matricule} — QR personnel`, taille / 2, taille + 80, taille - 40);
   ctx.fillStyle = '#dc2626';
   ctx.font = 'bold 22px sans-serif';
-  ctx.fillText('CENULAPP · Ouverture des cours', taille / 2, taille + 128);
+  ctx.fillText('CENULAPP · Ouverture des cours', taille / 2, taille + 112);
+
+  ctx.textAlign = 'left';
+  let y = taille + hauteurEntete + 14;
+  for (const bloc of TEXTE_CARTE) {
+    if (bloc.titre) {
+      ctx.fillStyle = '#111827';
+      ctx.font = 'bold 24px sans-serif';
+      ctx.fillText(bloc.titre, marge, y);
+      y += 36;
+    }
+    ctx.fillStyle = bloc.fort ? '#b91c1c' : '#374151';
+    ctx.font = bloc.fort ? 'bold 21px sans-serif' : '21px sans-serif';
+    for (const l of decouper(ctx, bloc.texte, taille - 2 * marge)) {
+      ctx.fillText(l, marge, y);
+      y += interligne;
+    }
+    y += 10;
+  }
   return await new Promise<Blob>((res, rej) =>
     canvas.toBlob((b) => (b ? res(b) : rej(new Error('Image impossible à générer.'))), 'image/png')
   );
