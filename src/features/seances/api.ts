@@ -174,26 +174,27 @@ export interface SeanceDuMoment {
 export async function getSeanceDuMoment(
   matricule: string
 ): Promise<SeanceDuMoment | null> {
-  // Garantit des bornes de créneaux à jour AVANT de déterminer "quel
-  // créneau est-ce maintenant" — sans ça, un créneau ajouté par un admin
-  // pendant que cette app était déjà ouverte ne serait jamais reconnu,
-  // même en rafraîchissant la page en boucle (voir lib/creneaux.ts).
-  await synchroniserCreneaux();
-
-  // Heure RÉELLE du serveur, pas celle de l'appareil (qui peut dériver,
-  // surtout dans un environnement de test/sandbox) — voir
-  // maintenantCamerounServeur() ci-dessus.
-  const maintenant = await maintenantCamerounServeur();
-
-  const jour = jourDAujourdhui(maintenant);
-  if (!jour) return null;
-
   const { data: enseignant } = await supabase
     .from('enseignants')
     .select('id')
     .eq('matricule', matricule)
     .maybeSingle();
   if (!enseignant) return null;
+  return getSeanceDuMomentPourEnseignantId(enseignant.id);
+}
+
+// Même recherche, à partir de l'id de l'enseignant (scan de son QR personnel
+// par l'administration).
+export async function getSeanceDuMomentPourEnseignantId(
+  enseignantId: string
+): Promise<SeanceDuMoment | null> {
+  await synchroniserCreneaux();
+  const maintenant = await maintenantCamerounServeur();
+
+  const jour = jourDAujourdhui(maintenant);
+  if (!jour) return null;
+
+  const enseignant = { id: enseignantId };
 
   const semaine = lundiDeLaSemaine(maintenant);
   const creneau = creneauActuel(maintenant);
@@ -1313,4 +1314,61 @@ export async function getDetailCoursEnseignant(
     points,
     seances,
   };
+}
+
+// ── Suppression d'une séance programmée (page « Saisie manuelle ») ────
+
+export interface ApercuSuppressionSeance {
+  nbRapports: number;
+  aCodes: boolean;
+}
+
+export async function apercuSuppressionSeance(seanceId: string): Promise<ApercuSuppressionSeance> {
+  const [{ count: nbRapports }, { count: nbCodes }] = await Promise.all([
+    supabase.from('rapports_seances').select('id', { count: 'exact', head: true }).eq('seance_edt_id', seanceId),
+    supabase.from('codes_seances').select('id', { count: 'exact', head: true }).eq('seance_edt_id', seanceId),
+  ]);
+  return { nbRapports: nbRapports ?? 0, aCodes: (nbCodes ?? 0) > 0 };
+}
+
+// Supprime définitivement une séance (renseignée ou non) avec ce qui en
+// dépend : codes d'ouverture/fermeture, rapport, appel et points abordés.
+// Une séance de tronc commun est partagée : elle disparaît pour tout le groupe.
+export async function supprimerSeanceProgrammee(seanceId: string): Promise<void> {
+  const { data: rapports } = await supabase
+    .from('rapports_seances')
+    .select('id')
+    .eq('seance_edt_id', seanceId);
+  const rapportIds = ((rapports ?? []) as any[]).map((r) => r.id as string);
+  if (rapportIds.length > 0) {
+    await supabase.from('appels_etudiants').delete().in('rapport_id', rapportIds);
+    await supabase.from('rapports_points_abordes').delete().in('rapport_id', rapportIds);
+    const { error: errRapports } = await supabase.from('rapports_seances').delete().in('id', rapportIds);
+    if (errRapports) {
+      throw new Error(
+        "Impossible de supprimer le rapport de cette séance (" + errRapports.message + "). La séance n'a pas été supprimée."
+      );
+    }
+  }
+  await supabase.from('codes_seances').delete().eq('seance_edt_id', seanceId);
+
+  const { count, error } = await supabase
+    .from('seances_edt')
+    .delete({ count: 'exact' })
+    .eq('id', seanceId);
+  if (error) {
+    throw new Error(
+      error.code === '23503'
+        ? "Cette séance est encore liée à d'autres données (présences, rapport…) : suppression refusée par la base."
+        : error.message
+    );
+  }
+  if ((count ?? 0) === 0) {
+    throw new Error("La base a refusé la suppression (droits insuffisants) ou la séance n'existe plus.");
+  }
+  try {
+    await db.seancesEDT.delete(seanceId);
+  } catch {
+    /* cache local : se réalignera à la synchronisation */
+  }
 }

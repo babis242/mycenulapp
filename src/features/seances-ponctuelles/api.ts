@@ -263,20 +263,34 @@ export async function programmerCoursVolant(
     seanceId = seance.id;
   }
 
-  // (Re)génère les codes — supprime d'abord un éventuel code existant
-  // (cas du remplacement d'une séance qui en avait déjà un).
-  await supabase.from('codes_seances').delete().eq('seance_edt_id', seanceId);
+  // (Re)génère les codes. On met à jour la ligne existante au lieu de
+  // « supprimer puis insérer » : la suppression pouvait être refusée
+  // (droits / lignes liées) sans erreur visible, et l'insertion échouait
+  // ensuite en 409 (doublon sur seance_edt_id).
   const codeOuverture = genererCode();
   const codeFermeture = genererCode();
-  const { error: codeError } = await supabase.from('codes_seances').insert({
-    seance_edt_id: seanceId,
+  const { data: codeExistant, error: lectureCodeError } = await supabase
+    .from('codes_seances')
+    .select('id')
+    .eq('seance_edt_id', seanceId)
+    .limit(1)
+    .maybeSingle();
+  if (lectureCodeError) throw lectureCodeError;
+  const donneesCode = {
     jour,
     creneau: input.creneau,
     code_ouverture: codeOuverture,
     code_fermeture: codeFermeture,
     statut: 'non_utilise',
-  });
-  if (codeError) throw codeError;
+  };
+  const { error: codeError } = codeExistant
+    ? await supabase.from('codes_seances').update(donneesCode).eq('id', codeExistant.id)
+    : await supabase.from('codes_seances').insert({ seance_edt_id: seanceId, ...donneesCode });
+  if (codeError) {
+    throw new Error(
+      `Séance enregistrée, mais impossible de créer ses codes : ${codeError.message}${codeError.code ? ` (code ${codeError.code})` : ''}${codeError.details ? ` — ${codeError.details}` : ''}`
+    );
+  }
 
   // Notification à l'enseignant assigné — non bloquant.
   try {

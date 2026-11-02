@@ -1448,12 +1448,14 @@ export async function enregistrerChangementsEnLot(
   const offreIds = Array.from(new Set(assignations.map((a) => a.offreId)));
   const { data: offresData, error: offresError } = await supabase
     .from('offres')
-    .select('id, ue_id')
+    .select('id, ue_id, semestre')
     .in('id', offreIds);
   if (offresError) throw offresError;
   const ueIdParOffre = new Map<string, string>();
+  const semestreParOffre = new Map<string, string | null>();
   for (const o of (offresData ?? []) as any[]) {
     ueIdParOffre.set(o.id, o.ue_id);
+    semestreParOffre.set(o.id, o.semestre ?? null);
   }
 
   const ueIds = Array.from(new Set(Array.from(ueIdParOffre.values())));
@@ -1612,19 +1614,89 @@ export async function enregistrerChangementsEnLot(
   }
 
   const lignesSimples = Array.from(lignesSimplesParCle.values());
+  const lignesTronc = Array.from(lignesTroncParCle.values());
+
+  // Garde-fou « un seul cours par créneau » (contrainte seances_edt_creneau_unique) :
+  // la page peut afficher un état un peu ancien (séances recréées ou modifiées
+  // ailleurs depuis). On relit ce qui occupe VRAIMENT chaque créneau visé :
+  //   - même UE / même tronc déjà présent : on réutilise cette ligne (mise à
+  //     jour au lieu d'une insertion en double) ;
+  //   - une AUTRE UE occupe le créneau : on s'arrête avec un message clair,
+  //     sans rien écraser.
+  const idsAEcrire = new Set<string>([...lignesSimples, ...lignesTronc].map((l) => l.id));
+  const idsSupprimes = new Set<string>([...suppressions, ...idsASupprimerEnPlus]);
+
+  const emploiIds = Array.from(new Set(lignesSimples.map((l) => l.emploi_du_temps_id).filter(Boolean)));
+  if (emploiIds.length > 0) {
+    const { data: occupants, error } = await supabase
+      .from('seances_edt')
+      .select('id, emploi_du_temps_id, offre_id, jour, creneau, offre:offres(semestre, ue:ues(nom))')
+      .in('emploi_du_temps_id', emploiIds);
+    if (error) throw error;
+    for (const l of lignesSimples) {
+      const occupant = ((occupants ?? []) as any[]).find(
+        (o) =>
+          o.emploi_du_temps_id === l.emploi_du_temps_id &&
+          o.jour === l.jour &&
+          o.creneau === l.creneau &&
+          o.id !== l.id &&
+          // Deux semestres d'une même spécialité (deux niveaux) peuvent avoir
+          // cours en même temps : seul un cours du MÊME semestre bloque.
+          (o.offre?.semestre ?? null) === (semestreParOffre.get(l.offre_id) ?? null) &&
+          !idsSupprimes.has(o.id) &&
+          !idsAEcrire.has(o.id)
+      );
+      if (!occupant) continue;
+      if (occupant.offre_id === l.offre_id) {
+        l.id = occupant.id; // même UE déjà là : on la met à jour
+      } else {
+        throw new Error(
+          `Le créneau ${l.jour} ${l.creneau} est déjà occupé, dans le même semestre, par « ${occupant.offre?.ue?.nom ?? 'un autre cours'} »${occupant.offre?.semestre ? ` (${occupant.offre.semestre})` : ''}. Recharge la page pour le voir, puis libère ce créneau ou choisis-en un autre.`
+        );
+      }
+    }
+  }
+
+  const troncIds = Array.from(new Set(lignesTronc.map((l) => l.tronc_commun_id)));
+  if (troncIds.length > 0) {
+    const { data: occupants, error } = await supabase
+      .from('seances_edt')
+      .select('id, tronc_commun_id, jour, creneau')
+      .eq('semaine', semaine)
+      .in('tronc_commun_id', troncIds);
+    if (error) throw error;
+    for (const l of lignesTronc) {
+      const occupant = ((occupants ?? []) as any[]).find(
+        (o) =>
+          o.tronc_commun_id === l.tronc_commun_id &&
+          o.jour === l.jour &&
+          o.creneau === l.creneau &&
+          o.id !== l.id &&
+          !idsSupprimes.has(o.id)
+      );
+      if (occupant) l.id = occupant.id; // même tronc déjà présent : mise à jour
+    }
+  }
+
+  const messageDoublon = (err: any) =>
+    err?.code === '23505'
+      ? new Error(
+          'La base refuse cette séance : un autre cours occupe déjà ce créneau pour cette spécialité. Si c’est un cours d’un AUTRE semestre, exécute une fois sql/seances_creneau_par_semestre.sql dans Supabase (il autorise deux semestres au même créneau). Sinon, recharge la page et libère le créneau.'
+        )
+      : err;
+
   if (lignesSimples.length > 0) {
     const { error } = await supabase
       .from('seances_edt')
       .upsert(lignesSimples, { onConflict: 'id' });
-    if (error) throw error;
+    if (error) throw messageDoublon(error);
   }
 
-  const lignesTronc = Array.from(lignesTroncParCle.values());
   if (lignesTronc.length > 0) {
     const { error } = await supabase
       .from('seances_edt')
       .upsert(lignesTronc, { onConflict: 'id' });
-    if (error) throw error;
+    if (error) throw messageDoublon(error);
   }
 }
 

@@ -7,9 +7,13 @@ import {
   CheckCircle2,
   WifiOff,
   MousePointerClick,
+  Trash2,
+  AlertTriangle,
+  Undo2,
 } from 'lucide-react';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { JOURS, tousLesCreneaux } from '@/constants/enums';
+import { heuresEffectueesPourSeance } from '@/lib/calculHeures';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import RapportSeanceForm from '../components/RapportSeanceForm';
 import {
@@ -17,6 +21,10 @@ import {
   dernieresSemaines,
   lireSeancesPourSaisieManuelleDepuisCache,
   saisirHeureManuelle,
+  annulerOuvertureFermetureSeance,
+  apercuSuppressionSeance,
+  supprimerSeanceProgrammee,
+  type ApercuSuppressionSeance,
   type SeanceRecherche,
 } from '../api';
 
@@ -114,6 +122,23 @@ function validerHeureContreCreneau(
 // Écran 6.3 (ecrans_ui.md) — Scénario 8, flux de secours : la secrétaire
 // (ou Responsable/Admin) enregistre manuellement l'heure notée sur le
 // cahier papier lorsque l'app n'était pas disponible.
+// État d'une séance dans la liste : « a_l_heure » (renseignée, aucune heure
+// perdue), « en_retard » (renseignée, au moins une heure perdue : arrivée
+// au-delà de 15 min ou fermeture anticipée) ou « non_renseignee ».
+function etatSeance(s: SeanceRecherche): { etat: 'a_l_heure' | 'en_retard' | 'non_renseignee'; perdues: number } {
+  if (!s.heureOuverture) return { etat: 'non_renseignee', perdues: 0 };
+  const nominal = heuresEffectueesPourSeance(s.semaine, s.jour, s.creneau, null);
+  const reel = heuresEffectueesPourSeance(s.semaine, s.jour, s.creneau, s.heureOuverture, s.heureFermeture);
+  const perdues = Math.max(0, nominal - reel);
+  return { etat: perdues > 0 ? 'en_retard' : 'a_l_heure', perdues };
+}
+
+const COULEURS_ETAT = {
+  a_l_heure: { fond: '#dcfce7', fondSel: '#bbf7d0', bord: '#16a34a', texte: '#15803d' },
+  en_retard: { fond: '#fee2e2', fondSel: '#fecaca', bord: '#dc2626', texte: '#b91c1c' },
+  non_renseignee: { fond: '#ffffff', fondSel: '#f3f4f6', bord: '#d1d5db', texte: '#9ca3af' },
+} as const;
+
 export default function SaisieManuellePage() {
   const enLigne = useOnlineStatus();
   const [recherche, setRecherche] = useState('');
@@ -159,6 +184,45 @@ export default function SaisieManuellePage() {
     ok: boolean;
     texte: string;
   } | null>(null);
+
+  // ── Suppression d'une séance programmée (avec confirmation) ──
+  const [aSupprimer, setASupprimer] = useState<SeanceRecherche | null>(null);
+  const [apercuSuppr, setApercuSuppr] = useState<ApercuSuppressionSeance | null>(null);
+  const [suppressionEnCours, setSuppressionEnCours] = useState(false);
+  const [erreurSuppr, setErreurSuppr] = useState<string | null>(null);
+
+  async function demanderSuppression(s: SeanceRecherche) {
+    setASupprimer(s);
+    setApercuSuppr(null);
+    setErreurSuppr(null);
+    try {
+      setApercuSuppr(await apercuSuppressionSeance(s.id));
+    } catch {
+      setApercuSuppr({ nbRapports: 0, aCodes: false });
+    }
+  }
+
+  async function confirmerSuppression() {
+    if (!aSupprimer) return;
+    setSuppressionEnCours(true);
+    setErreurSuppr(null);
+    try {
+      await supprimerSeanceProgrammee(aSupprimer.id);
+      const id = aSupprimer.id;
+      setToutes((prev) => prev.filter((x) => x.id !== id));
+      setCochees((prev) => {
+        const n = new Set(prev);
+        n.delete(id);
+        return n;
+      });
+      setSelection((prev) => (prev?.id === id ? null : prev));
+      setASupprimer(null);
+    } catch (e) {
+      setErreurSuppr(e instanceof Error ? e.message : 'Suppression impossible.');
+    } finally {
+      setSuppressionEnCours(false);
+    }
+  }
 
   // La recherche respecte toujours la semaine / le jour / le créneau
   // choisis : seuls les résultats de ce filtre sont retournés.
@@ -408,6 +472,59 @@ export default function SaisieManuellePage() {
     return true;
   }
 
+  // ── Annuler un enregistrement (ouverture + fermeture saisies) ──
+  // Remet la séance « non renseignée » : annuler l'ouverture annule aussi la
+  // fermeture, comme côté serveur. Nécessite d'être en ligne (vérification des
+  // droits par le serveur).
+  const [annulationEnCours, setAnnulationEnCours] = useState(false);
+  const [messageAnnulation, setMessageAnnulation] = useState<{ ok: boolean; texte: string } | null>(null);
+
+  async function annulerEnregistrements(liste: SeanceRecherche[]) {
+    const aAnnuler = liste.filter((x) => x.heureOuverture);
+    if (aAnnuler.length === 0) return;
+    const confirme = window.confirm(
+      aAnnuler.length === 1
+        ? `Annuler l'enregistrement de « ${aAnnuler[0].ueNom} » (${aAnnuler[0].jour} ${aAnnuler[0].creneau}) ?\n\nL'heure d'ouverture et de fermeture seront effacées : la séance redevient « non renseignée » et ses heures ne comptent plus.`
+        : `Annuler l'enregistrement de ${aAnnuler.length} séances ?\n\nLeurs heures d'ouverture et de fermeture seront effacées : elles redeviennent « non renseignées » et leurs heures ne comptent plus.`
+    );
+    if (!confirme) return;
+    setAnnulationEnCours(true);
+    setMessageAnnulation(null);
+    setSucces(false);
+    const reussies: string[] = [];
+    let echec: string | null = null;
+    for (const x of aAnnuler) {
+      try {
+        await annulerOuvertureFermetureSeance(x.id, 'ouverture');
+        reussies.push(x.id);
+        try {
+          const locale = await db.seancesEDT.get(x.id);
+          if (locale) await db.seancesEDT.put({ ...locale, heure_ouverture: null, heure_fermeture: null } as any);
+        } catch {
+          /* cache local : se réalignera à la synchronisation */
+        }
+      } catch (err) {
+        echec = err instanceof Error ? err.message : "Erreur lors de l'annulation.";
+        break;
+      }
+    }
+    if (reussies.length > 0) {
+      const ids = new Set(reussies);
+      setToutes((prev) => prev.map((x) => (ids.has(x.id) ? { ...x, heureOuverture: null, heureFermeture: null } : x)));
+      setSelection((prev) => (prev && ids.has(prev.id) ? { ...prev, heureOuverture: null, heureFermeture: null } : prev));
+      if (selection && ids.has(selection.id)) {
+        setHeureOuverture('');
+        setHeureFermeture('');
+      }
+    }
+    setMessageAnnulation(
+      echec
+        ? { ok: false, texte: `${reussies.length} annulée(s), puis erreur : ${echec}` }
+        : { ok: true, texte: `${reussies.length} enregistrement(s) annulé(s).` }
+    );
+    setAnnulationEnCours(false);
+  }
+
   async function handleEnregistrer() {
     if (!selection) return;
     setEnregistrement(true);
@@ -616,14 +733,31 @@ export default function SaisieManuellePage() {
             />
             Tout cocher ({resultatsFiltres.length}) — saisie en groupe
           </label>
-          {resultatsFiltres.map((s) => (
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', padding: '8px 20px', fontSize: 11, fontWeight: 700, color: '#6b7280', borderBottom: '1px solid #f3f4f6' }}>
+            {([
+              ['a_l_heure', "Renseignée à l'heure"],
+              ['en_retard', 'Renseignée en retard'],
+              ['non_renseignee', 'Non renseignée'],
+            ] as const).map(([k, libelle]) => (
+              <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ width: 12, height: 12, borderRadius: 4, background: COULEURS_ETAT[k].fond, border: `1.5px solid ${COULEURS_ETAT[k].bord}` }} />
+                {libelle}
+              </span>
+            ))}
+          </div>
+          {resultatsFiltres.map((s) => {
+            const { etat, perdues } = etatSeance(s);
+            const c = COULEURS_ETAT[etat];
+            const choisie = selection?.id === s.id;
+            return (
             <div
               key={s.id}
-              className={`flex items-stretch border-b border-gray-50 last:border-0 hover:bg-gray-50 ${
-                selection?.id === s.id
-                  ? 'bg-red-50 border-l-4 border-l-red-600'
-                  : ''
-              }`}
+              style={{
+                background: choisie ? c.fondSel : c.fond,
+                borderLeft: `5px solid ${choisie ? '#111827' : c.bord}`,
+                borderBottom: '1px solid #f3f4f6',
+              }}
+              className="flex items-stretch"
             >
               <label className="flex items-center pl-5 pr-1 cursor-pointer">
                 <input
@@ -648,15 +782,25 @@ export default function SaisieManuellePage() {
                     {s.jour} {formatDateCourte(dateAttendue(s.semaine, s.jour))}{' '}
                     · {s.creneau}
                   </p>
-                  {s.heureOuverture && s.heureFermeture && (
-                    <p className="text-[11px] font-semibold text-green-600">
-                      Déjà renseignée
-                    </p>
-                  )}
+                  <p style={{ fontSize: 11, fontWeight: 800, color: c.texte }}>
+                    {etat === 'a_l_heure' && "Renseignée · à l'heure"}
+                    {etat === 'en_retard' && `Renseignée · en retard (−${perdues}h)`}
+                    {etat === 'non_renseignee' && 'Non renseignée'}
+                  </p>
                 </div>
               </button>
+              <button
+                type="button"
+                onClick={() => demanderSuppression(s)}
+                disabled={!enLigne}
+                title={enLigne ? 'Supprimer ce cours programmé' : 'Connexion requise pour supprimer'}
+                style={{ border: 0, background: 'transparent', color: '#dc2626', padding: '0 14px', cursor: enLigne ? 'pointer' : 'not-allowed', opacity: enLigne ? 1 : 0.35, display: 'flex', alignItems: 'center' }}
+              >
+                <Trash2 size={17} />
+              </button>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : null}
 
@@ -765,7 +909,24 @@ export default function SaisieManuellePage() {
             >
               Tout décocher
             </button>
+            {seancesCochees.some((x) => x.heureOuverture) && (
+              <button
+                type="button"
+                onClick={() => annulerEnregistrements(seancesCochees)}
+                disabled={annulationEnCours || !enLigne}
+                title={enLigne ? undefined : 'Connexion requise pour annuler un enregistrement'}
+                style={{ border: '1.5px solid #dc2626', background: '#fff', color: '#dc2626', borderRadius: 999, padding: '6px 14px', fontSize: 13, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: annulationEnCours || !enLigne ? 0.5 : 1 }}
+              >
+                {annulationEnCours ? <Loader2 size={14} className="animate-spin" /> : <Undo2 size={14} />}
+                Annuler l'enregistrement ({seancesCochees.filter((x) => x.heureOuverture).length})
+              </button>
+            )}
           </div>
+          {messageAnnulation && (
+            <p className={`text-xs font-semibold mt-3 ${messageAnnulation.ok ? 'text-green-600' : 'text-red-600'}`}>
+              {messageAnnulation.texte}
+            </p>
+          )}
           {groupeMessage && (
             <p
               className={`text-xs font-semibold mt-3 ${
@@ -854,6 +1015,24 @@ export default function SaisieManuellePage() {
             Enregistrer
           </button>
 
+          {selection.heureOuverture && (
+            <button
+              type="button"
+              onClick={() => annulerEnregistrements([selection])}
+              disabled={annulationEnCours || !enLigne}
+              title={enLigne ? undefined : 'Connexion requise pour annuler un enregistrement'}
+              style={{ marginLeft: 10, border: '1.5px solid #dc2626', background: '#fff', color: '#dc2626', borderRadius: 999, padding: '7px 16px', fontSize: 14, fontWeight: 700, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 8, opacity: annulationEnCours || !enLigne ? 0.5 : 1 }}
+            >
+              {annulationEnCours ? <Loader2 size={15} className="animate-spin" /> : <Undo2 size={15} />}
+              Annuler l'enregistrement
+            </button>
+          )}
+          {messageAnnulation && (
+            <p className={`text-xs font-semibold mt-3 ${messageAnnulation.ok ? 'text-green-600' : 'text-red-600'}`}>
+              {messageAnnulation.texte}
+            </p>
+          )}
+
           {succes && (
             <p className="text-xs font-semibold text-green-600 mt-3 flex items-center gap-1.5">
               <CheckCircle2 size={14} />
@@ -888,6 +1067,59 @@ export default function SaisieManuellePage() {
       )}
       </div>
       </div>
+      {aSupprimer && (
+        <div
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 60, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}
+          onClick={() => !suppressionEnCours && setASupprimer(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: '#fff', borderRadius: 20, padding: 22, width: '100%', maxWidth: 440 }}
+          >
+            <p style={{ fontWeight: 900, fontSize: 17, color: '#111827', display: 'flex', alignItems: 'center', gap: 8 }}>
+              <AlertTriangle size={18} color="#dc2626" /> Supprimer ce cours programmé ?
+            </p>
+            <div style={{ background: '#f9fafb', borderRadius: 14, padding: '10px 14px', marginTop: 12 }}>
+              <p style={{ fontWeight: 800, fontSize: 14, color: '#111827' }}>{aSupprimer.ueNom}</p>
+              <p style={{ fontSize: 12, color: '#6b7280', fontWeight: 600 }}>
+                {aSupprimer.enseignantNom} · {aSupprimer.jour} {formatDateCourte(dateAttendue(aSupprimer.semaine, aSupprimer.jour))} · {aSupprimer.creneau}
+                {aSupprimer.specialiteNom ? ` · ${aSupprimer.specialiteNom}` : ''}
+              </p>
+            </div>
+            <ul style={{ margin: '12px 0 0', paddingLeft: 18, fontSize: 12, color: '#374151', lineHeight: 1.6 }}>
+              <li>La séance disparaît de l'emploi du temps ; cette action est définitive.</li>
+              {aSupprimer.heureOuverture && <li style={{ color: '#b91c1c', fontWeight: 700 }}>Elle est déjà renseignée : ses heures ne compteront plus.</li>}
+              {apercuSuppr && apercuSuppr.nbRapports > 0 && (
+                <li style={{ color: '#b91c1c', fontWeight: 700 }}>Son rapport de séance ({apercuSuppr.nbRapports}) sera supprimé avec l'appel et les points abordés.</li>
+              )}
+              {apercuSuppr?.aCodes && <li>Ses codes d'ouverture et de fermeture seront supprimés.</li>}
+              {aSupprimer.troncCommunId && (
+                <li style={{ color: '#b91c1c', fontWeight: 700 }}>Séance de tronc commun : elle sera supprimée pour toutes les spécialités du groupe.</li>
+              )}
+            </ul>
+            {erreurSuppr && <p style={{ color: '#dc2626', fontSize: 12, fontWeight: 700, marginTop: 10 }}>{erreurSuppr}</p>}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 18 }}>
+              <button
+                type="button"
+                disabled={suppressionEnCours}
+                onClick={() => setASupprimer(null)}
+                style={{ border: 0, background: '#f3f4f6', color: '#374151', borderRadius: 999, padding: '10px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer' }}
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                disabled={suppressionEnCours}
+                onClick={confirmerSuppression}
+                style={{ border: 0, background: '#dc2626', color: '#fff', borderRadius: 999, padding: '10px 18px', fontSize: 13, fontWeight: 800, cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 6, opacity: suppressionEnCours ? 0.6 : 1 }}
+              >
+                {suppressionEnCours ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                Supprimer définitivement
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -66,6 +66,9 @@ import CreneauxPage from '@/features/referentiel/creneaux/pages/CreneauxPage';
 import AjouterSallePage from '@/features/referentiel/salles/pages/AjouterSallePage';
 import ImporterSallesPage from '@/features/referentiel/salles/pages/ImporterSallesPage';
 import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
+import ScanEnseignantPage from '@/features/qr-enseignants/pages/ScanEnseignantPage';
+import QrEnseignantsAdminPage from '@/features/qr-enseignants/pages/QrEnseignantsAdminPage';
+import MonQrPage from '@/features/qr-enseignants/pages/MonQrPage';
 import EcranQrPage from '@/features/qr-ouverture/pages/EcranQrPage';
 import MaSeancePage from '@/features/seances/pages/MaSeancePage';
 import SaisieManuellePage from '@/features/seances/pages/SaisieManuellePage';
@@ -245,6 +248,7 @@ export default function AppRoutes() {
             <Route path="/mon-cours/:ueId" element={<DetailMonCoursPage />} />
             <Route path="/mes-ues" element={<MesUEsPage />} />
             <Route path="/ma-seance" element={<MaSeancePage />} />
+            <Route path="/mon-qr" element={<MonQrPage />} />
           </Route>
 
           <Route
@@ -254,18 +258,27 @@ export default function AppRoutes() {
               />
             }
           >
+            <Route path="/presences/saisie" element={<SaisiePresencesPage />} />
+            <Route path="/scanner-enseignant" element={<ScanEnseignantPage />} />
+            <Route
+              path="/seances/saisie-manuelle"
+              element={<SaisieManuellePage />}
+            />
+          </Route>
+
+          <Route
+            element={
+              <RoleRoute allowedRoles={['administrateur', 'responsable']} />
+            }
+          >
             <Route path="/fiches-presence" element={<FichesPresencePage />} />
             <Route path="/fiches-controle" element={<FichesControlePage />} />
             <Route path="/fiches-arrivee" element={<FichesArriveePage />} />
             <Route path="/lecture-fiches" element={<LecturePresencesPage />} />
             <Route path="/presences" element={<ConsulterPresencesPage />} />
-            <Route path="/presences/saisie" element={<SaisiePresencesPage />} />
             <Route path="/codes-journaliers" element={<ListeCodesPage />} />
             <Route path="/qr-ouverture" element={<EcranQrPage />} />
-            <Route
-              path="/seances/saisie-manuelle"
-              element={<SaisieManuellePage />}
-            />
+            <Route path="/qr-enseignants" element={<QrEnseignantsAdminPage />} />
             <Route path="/heures" element={<EtatHeuresPage />} />
             <Route
               path="/heures/:enseignantId"
