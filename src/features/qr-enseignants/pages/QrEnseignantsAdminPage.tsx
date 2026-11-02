@@ -75,59 +75,73 @@ export default function QrEnseignantsAdminPage() {
     }
   }
 
-  // Ouvre WhatsApp sur le numéro de l'enseignant avec le message prêt. WhatsApp
-  // ne permet pas de joindre une image par lien : la carte QR est donc
-  // téléchargée en même temps, il suffit de la joindre dans la conversation.
-  // Sans numéro en base, on propose le menu de partage du téléphone.
-  async function envoyerWhatsApp(q: QrEnseignant) {
+  function texteMessage(q: QrEnseignant): string {
+    return [
+      `Bonjour Monsieur/Madame ${q.nom},`,
+      '',
+      'Veuillez trouver ci-joint votre QR personnel CENULAPP.',
+      '',
+      "⚠️ Ce QR est à utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école (réseau, application ou téléphone qui ne fonctionne pas). Dans les autres cas, continuez à ouvrir votre cours normalement depuis « Ma séance ».",
+      '',
+      'Procédure :',
+      "1. Avant votre cours, présentez-vous à l'administration ou au secrétariat.",
+      '2. Montrez ce QR (sur votre téléphone ou imprimé).',
+      "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre immédiatement à l'heure du scan. À la fin du cours, faites de même pour la fermeture.",
+      "4. Si le QR n'est pas reconnu, l'administration est automatiquement alertée.",
+      '',
+      `Vous retrouvez aussi ce QR à tout moment dans l'application, menu « Mon QR » : ${window.location.origin}/mon-qr`,
+      '',
+      "Ce QR est strictement personnel : ne le partagez avec personne. En cas de perte ou de doute, informez-nous pour qu'il soit remplacé.",
+      '',
+      'Merci.',
+    ].join('\n');
+  }
+
+  const [lienWeb, setLienWeb] = useState<string | null>(null);
+
+  // Ouvre directement l'application WhatsApp (schéma whatsapp://, sans passer par
+  // la page WhatsApp Web) sur le numéro de l'enseignant, message prêt. WhatsApp ne
+  // permet pas de joindre une image par lien : la carte QR est téléchargée en même
+  // temps (à joindre), et le message contient le lien « Mon QR ». Pour envoyer
+  // l'image elle-même, utiliser « Partager l'image ».
+  function ouvrirWhatsApp(q: QrEnseignant) {
     setInfo(null);
     setErreur(null);
-    const chiffres = q.numeroWhatsapp ? numeroWhatsappFormate(q.numeroWhatsapp) : '';
-    // Fenêtre ouverte tout de suite (clic utilisateur) pour ne pas être bloquée
-    // par le navigateur pendant la génération de l'image.
-    const fenetre = chiffres ? window.open('about:blank', '_blank') : null;
+    setLienWeb(null);
+    if (!q.numeroWhatsapp) {
+      setErreur(`Aucun numéro WhatsApp enregistré pour ${q.nom} : renseignez-le dans sa fiche enseignant.`);
+      return;
+    }
+    const chiffres = numeroWhatsappFormate(q.numeroWhatsapp);
+    const texte = encodeURIComponent(texteMessage(q));
+    const imagePromise = genererImageQr(q); // lancée avant la navigation
+    window.location.href = `whatsapp://send?phone=${chiffres}&text=${texte}`;
+    setLienWeb(`https://web.whatsapp.com/send?phone=${chiffres}&text=${texte}`);
+    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom}. Joignez l'image du QR (téléchargée) à la conversation.`);
+    imagePromise.then((blob) => telecharger(blob, nomFichierQr(q.nom))).catch(() => {});
+  }
+
+  // Menu de partage du téléphone : envoie l'image du QR + le message (le contact
+  // se choisit dans WhatsApp).
+  async function partagerImage(q: QrEnseignant) {
+    setInfo(null);
+    setErreur(null);
+    setLienWeb(null);
     setOccupe(q.enseignantId);
     try {
       const blob = await genererImageQr(q);
-      const texte = [
-        `Bonjour Monsieur/Madame ${q.nom},`,
-        '',
-        'Veuillez trouver ci-joint votre QR personnel CENULAPP.',
-        '',
-        "⚠️ Ce QR est à utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école (réseau, application ou téléphone qui ne fonctionne pas). Dans les autres cas, continuez à ouvrir votre cours normalement depuis « Ma séance ».",
-        '',
-        'Procédure :',
-        "1. Avant votre cours, présentez-vous à l'administration ou au secrétariat.",
-        '2. Montrez ce QR (sur votre téléphone ou imprimé).',
-        "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre immédiatement à l'heure du scan. À la fin du cours, faites de même pour la fermeture.",
-        "4. Si le QR n'est pas reconnu, l'administration est automatiquement alertée.",
-        '',
-        "Ce QR est strictement personnel : ne le partagez avec personne. En cas de perte ou de doute, informez-nous pour qu'il soit remplacé.",
-        '',
-        'Merci.',
-      ].join('\n');
-
-      if (chiffres) {
-        telecharger(blob, nomFichierQr(q.nom));
-        const lien = `https://wa.me/${chiffres}?text=${encodeURIComponent(texte)}`;
-        if (fenetre) fenetre.location.href = lien;
-        else window.location.href = lien;
-        setInfo(`WhatsApp ouvert sur le numéro de ${q.nom}. L'image du QR vient d'être téléchargée : joignez-la à la conversation.`);
-        return;
-      }
-
       const fichier = new File([blob], nomFichierQr(q.nom), { type: 'image/png' });
       const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
       if (nav.canShare?.({ files: [fichier] })) {
         try {
-          await nav.share({ files: [fichier], text: texte, title: 'QR personnel' });
+          await nav.share({ files: [fichier], text: texteMessage(q), title: 'QR personnel' });
           return;
         } catch (e) {
           if ((e as Error).name === 'AbortError') return;
         }
       }
       telecharger(blob, nomFichierQr(q.nom));
-      setErreur(`Aucun numéro WhatsApp enregistré pour ${q.nom} : renseignez-le dans sa fiche enseignant. L'image a été téléchargée.`);
+      setInfo("Le partage d'image n'est pas disponible sur cet appareil : l'image a été téléchargée.");
     } finally {
       setOccupe(null);
     }
@@ -169,7 +183,14 @@ export default function QrEnseignantsAdminPage() {
       </div>
 
       {erreur && <p style={{ color: '#b91c1c', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{erreur}</p>}
-      {info && <p style={{ color: '#15803d', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>{info}</p>}
+      {info && (
+        <p style={{ color: '#15803d', fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+          {info}
+          {lienWeb && (
+            <> <a href={lienWeb} target="_blank" rel="noreferrer" style={{ color: '#dc2626', textDecoration: 'underline' }}>Si rien ne s'ouvre, utiliser WhatsApp Web</a></>
+          )}
+        </p>
+      )}
 
       {chargement ? (
         <div style={{ textAlign: 'center', padding: 30 }}><Loader2 className="animate-spin" /></div>
@@ -184,7 +205,8 @@ export default function QrEnseignantsAdminPage() {
               <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', opacity: occupe === q.enseignantId ? 0.5 : 1, pointerEvents: occupe === q.enseignantId ? 'none' : 'auto' }}>
                 <button type="button" style={bouton()} onClick={() => voir(q)}>Voir</button>
                 <button type="button" style={bouton()} onClick={() => telechargerQr(q)}><Download size={14} /> PNG</button>
-                <button type="button" style={bouton(true)} onClick={() => envoyerWhatsApp(q)}><MessageCircle size={14} /> WhatsApp</button>
+                <button type="button" style={bouton(true)} onClick={() => ouvrirWhatsApp(q)}><MessageCircle size={14} /> WhatsApp</button>
+                <button type="button" style={bouton()} onClick={() => partagerImage(q)}>Partager l'image</button>
                 <button type="button" style={{ ...bouton(), borderColor: '#d1d5db', color: '#6b7280' }} title="Régénérer" onClick={() => regenerer(q)}><RefreshCw size={14} /></button>
               </div>
             </div>
