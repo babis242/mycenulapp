@@ -75,15 +75,20 @@ export default function QrEnseignantsAdminPage() {
     }
   }
 
-  // Partage de l'image via le menu de partage du téléphone (WhatsApp y figure) ;
-  // à défaut (ordinateur) : l'image est téléchargée et la conversation WhatsApp
-  // s'ouvre — il ne reste qu'à y joindre le fichier.
+  // Ouvre WhatsApp sur le numéro de l'enseignant avec le message prêt. WhatsApp
+  // ne permet pas de joindre une image par lien : la carte QR est donc
+  // téléchargée en même temps, il suffit de la joindre dans la conversation.
+  // Sans numéro en base, on propose le menu de partage du téléphone.
   async function envoyerWhatsApp(q: QrEnseignant) {
-    setOccupe(q.enseignantId);
     setInfo(null);
+    setErreur(null);
+    const chiffres = q.numeroWhatsapp ? numeroWhatsappFormate(q.numeroWhatsapp) : '';
+    // Fenêtre ouverte tout de suite (clic utilisateur) pour ne pas être bloquée
+    // par le navigateur pendant la génération de l'image.
+    const fenetre = chiffres ? window.open('about:blank', '_blank') : null;
+    setOccupe(q.enseignantId);
     try {
       const blob = await genererImageQr(q);
-      const fichier = new File([blob], nomFichierQr(q.nom), { type: 'image/png' });
       const texte = [
         `Bonjour Monsieur/Madame ${q.nom},`,
         '',
@@ -97,10 +102,21 @@ export default function QrEnseignantsAdminPage() {
         "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre immédiatement à l'heure du scan. À la fin du cours, faites de même pour la fermeture.",
         "4. Si le QR n'est pas reconnu, l'administration est automatiquement alertée.",
         '',
-        'Ce QR est strictement personnel : ne le partagez avec personne. En cas de perte ou de doute, informez-nous pour qu\'il soit remplacé.',
+        "Ce QR est strictement personnel : ne le partagez avec personne. En cas de perte ou de doute, informez-nous pour qu'il soit remplacé.",
         '',
         'Merci.',
       ].join('\n');
+
+      if (chiffres) {
+        telecharger(blob, nomFichierQr(q.nom));
+        const lien = `https://wa.me/${chiffres}?text=${encodeURIComponent(texte)}`;
+        if (fenetre) fenetre.location.href = lien;
+        else window.location.href = lien;
+        setInfo(`WhatsApp ouvert sur le numéro de ${q.nom}. L'image du QR vient d'être téléchargée : joignez-la à la conversation.`);
+        return;
+      }
+
+      const fichier = new File([blob], nomFichierQr(q.nom), { type: 'image/png' });
       const nav = navigator as Navigator & { canShare?: (d: ShareData) => boolean };
       if (nav.canShare?.({ files: [fichier] })) {
         try {
@@ -111,9 +127,7 @@ export default function QrEnseignantsAdminPage() {
         }
       }
       telecharger(blob, nomFichierQr(q.nom));
-      const base = q.numeroWhatsapp ? `https://wa.me/${numeroWhatsappFormate(q.numeroWhatsapp)}` : 'https://wa.me/';
-      window.open(`${base}?text=${encodeURIComponent(texte)}`, '_blank');
-      setInfo(`Image téléchargée pour ${q.nom} : joignez-la dans la conversation WhatsApp qui vient de s'ouvrir.`);
+      setErreur(`Aucun numéro WhatsApp enregistré pour ${q.nom} : renseignez-le dans sa fiche enseignant. L'image a été téléchargée.`);
     } finally {
       setOccupe(null);
     }
