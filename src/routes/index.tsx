@@ -27,6 +27,7 @@ import FichesArriveePage from '@/features/fiches-presence/pages/FichesArriveePag
 import SondageAdminPage from '@/features/sondage/pages/SondageAdminPage';
 import RapportSondagePage from '@/features/sondage/pages/RapportSondagePage';
 import RetoursEnseignantsPage from '@/features/sondage/pages/RetoursEnseignantsPage';
+import QrPublicPage from '@/features/qr-enseignants/pages/QrPublicPage';
 import SondagePublicPage from '@/features/sondage/pages/SondagePublicPage';
 import FichesControlePage from '@/features/fiches-presence/pages/FichesControlePage';
 import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
@@ -88,6 +89,7 @@ export default function AppRoutes() {
           element={<MotDePasseOubliePage />}
         />
         <Route path="/sondage" element={<SondagePublicPage />} />
+        <Route path="/qr/:token" element={<QrPublicPage />} />
         <Route
           path="/inscription-enseignant"
           element={<InscriptionEnseignantPage />}

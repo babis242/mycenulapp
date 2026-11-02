@@ -79,13 +79,20 @@ export default function QrEnseignantsAdminPage() {
     return [
       `Bonjour Monsieur/Madame ${q.nom},`,
       '',
-      'Voici votre QR personnel CENULAPP (procédure d\'utilisation sur l\'image).',
+      'Voici votre QR personnel CENULAPP pour ouvrir/fermer vos cours.',
       '',
-      "⚠️ À utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école. Sinon, ouvrez votre cours normalement depuis « Ma séance ».",
+      "⚠️ À utiliser UNIQUEMENT EN CAS D'INDISPONIBILITÉ des codes d'ouverture/fermeture et du scan du QR de l'école (réseau, application ou téléphone en panne). Sinon, ouvrez votre cours normalement depuis « Ma séance ».",
       '',
-      "Procédure : présentez ce QR à l'administration ou au secrétariat avant votre cours ; ils le scannent et votre cours s'ouvre (idem pour la fermeture). QR strictement personnel, ne le partagez pas.",
+      'Procédure :',
+      "1. Avant votre cours, présentez-vous à l'administration ou au secrétariat.",
+      '2. Montrez votre QR (sur votre téléphone ou imprimé).',
+      "3. L'administration le scanne : si le QR est valide, votre cours s'ouvre à l'heure du scan. À la fin du cours, même chose pour la fermeture.",
+      "4. Si le QR n'est pas reconnu, l'administration est alertée.",
       '',
-      `Vous le retrouvez aussi dans l'application, menu « Mon QR » : ${window.location.origin}/mon-qr`,
+      '👉 Ouvrez ce lien pour afficher et enregistrer votre QR :',
+      `${window.location.origin}/qr/${q.token}`,
+      '',
+      'Ce QR est strictement personnel : ne partagez pas ce lien. En cas de perte, prévenez-nous pour le remplacer.',
       '',
       'Merci.',
     ].join('\n');
@@ -107,10 +114,8 @@ export default function QrEnseignantsAdminPage() {
     }
     const chiffres = numeroWhatsappFormate(q.numeroWhatsapp);
     const texte = encodeURIComponent(texteMessage(q));
-    const imagePromise = genererImageQr(q); // lancée avant la navigation
     window.open(`https://wa.me/${chiffres}?text=${texte}`, '_blank');
-    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom} (si l'onglet est bloqué, autorisez les fenêtres pop-up pour ce site). Joignez l'image du QR (téléchargée, elle contient aussi la procédure) à la conversation.`);
-    imagePromise.then((blob) => telecharger(blob, nomFichierQr(q.nom))).catch(() => {});
+    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom} avec le message et le lien de son QR : il ne reste qu'à envoyer (si rien ne s'ouvre, autorisez les pop-up pour ce site).`);
   }
 
   // Menu de partage du téléphone : envoie l'image du QR + le message (le contact
