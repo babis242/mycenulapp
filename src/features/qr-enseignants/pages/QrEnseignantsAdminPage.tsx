@@ -93,8 +93,7 @@ export default function QrEnseignantsAdminPage() {
 
   const [lienWeb, setLienWeb] = useState<string | null>(null);
 
-  // Ouvre directement l'application WhatsApp (schéma whatsapp://, sans passer par
-  // la page WhatsApp Web) sur le numéro de l'enseignant, message prêt. WhatsApp ne
+  // Ouvre WhatsApp (lien wa.me : WhatsApp Web ou application selon l'appareil) sur le numéro de l'enseignant, message prêt. WhatsApp ne
   // permet pas de joindre une image par lien : la carte QR est téléchargée en même
   // temps (à joindre), et le message contient le lien « Mon QR ». Pour envoyer
   // l'image elle-même, utiliser « Partager l'image ».
@@ -109,9 +108,8 @@ export default function QrEnseignantsAdminPage() {
     const chiffres = numeroWhatsappFormate(q.numeroWhatsapp);
     const texte = encodeURIComponent(texteMessage(q));
     const imagePromise = genererImageQr(q); // lancée avant la navigation
-    window.location.href = `whatsapp://send?phone=${chiffres}&text=${texte}`;
-    setLienWeb(`https://web.whatsapp.com/send?phone=${chiffres}&text=${texte}`);
-    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom}. Joignez l'image du QR (téléchargée, elle contient aussi la procédure) à la conversation.`);
+    window.open(`https://wa.me/${chiffres}?text=${texte}`, '_blank');
+    setInfo(`WhatsApp s'ouvre sur le numéro de ${q.nom} (si l'onglet est bloqué, autorisez les fenêtres pop-up pour ce site). Joignez l'image du QR (téléchargée, elle contient aussi la procédure) à la conversation.`);
     imagePromise.then((blob) => telecharger(blob, nomFichierQr(q.nom))).catch(() => {});
   }
 
