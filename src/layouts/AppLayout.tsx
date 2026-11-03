@@ -15,6 +15,7 @@ import {
   PlayCircle,
   ClipboardEdit,
   BarChart3,
+  AlertTriangle,
   Clock,
   FileCheck,
   Gauge,
@@ -181,6 +182,18 @@ const NAV_ITEMS: {
     label: 'Scanner un enseignant',
     icon: QrCode,
     roles: ['administrateur', 'responsable', 'secretaire'],
+  },
+  {
+    to: '/signaler',
+    label: 'Signaler absence / retard',
+    icon: AlertTriangle,
+    roles: ['enseignant'],
+  },
+  {
+    to: '/signalements',
+    label: 'Signalements enseignants',
+    icon: AlertTriangle,
+    roles: ['administrateur', 'responsable'],
   },
   {
     to: '/mon-qr',

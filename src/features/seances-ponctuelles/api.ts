@@ -174,7 +174,7 @@ export async function programmerCoursVolant(
   const jour = JOURS_SEMAINE[new Date(input.date + 'T00:00:00').getDay()];
   const semaine = lundiDeLaSemaineDe(input.date);
 
-  const { data: emploi, error: emploiError } = await supabase
+  let { data: emploi, error: emploiError } = await supabase
     .from('emplois_du_temps')
     .select('id, statut')
     .eq('specialite_id', input.specialiteId)
@@ -182,10 +182,28 @@ export async function programmerCoursVolant(
     .maybeSingle();
   if (emploiError) throw emploiError;
 
+  // Aucun emploi du temps pour cette semaine (non généré) : on le crée, déjà
+  // validé, pour porter ce cours programmé à la volée. Les autres cours de la
+  // semaine restent à programmer par l'écran « Emploi du temps » si besoin.
   if (!emploi) {
-    throw new Error(
-      `Aucun emploi du temps trouvé pour cette spécialité la semaine du ${semaine} — valide d'abord l'emploi du temps de cette semaine (écran "Emploi du temps").`
-    );
+    const { data: cree, error: creationError } = await supabase
+      .from('emplois_du_temps')
+      .insert({ specialite_id: input.specialiteId, semaine, statut: 'valide' })
+      .select('id, statut')
+      .single();
+    if (creationError) {
+      // Créé entre-temps par quelqu'un d'autre : on le relit.
+      const { data: relu } = await supabase
+        .from('emplois_du_temps')
+        .select('id, statut')
+        .eq('specialite_id', input.specialiteId)
+        .eq('semaine', semaine)
+        .maybeSingle();
+      if (!relu) throw creationError;
+      emploi = relu;
+    } else {
+      emploi = cree;
+    }
   }
   if (emploi.statut !== 'valide') {
     throw new Error(

@@ -27,6 +27,7 @@ import FichesArriveePage from '@/features/fiches-presence/pages/FichesArriveePag
 import SondageAdminPage from '@/features/sondage/pages/SondageAdminPage';
 import RapportSondagePage from '@/features/sondage/pages/RapportSondagePage';
 import RetoursEnseignantsPage from '@/features/sondage/pages/RetoursEnseignantsPage';
+import QrPublicPage from '@/features/qr-enseignants/pages/QrPublicPage';
 import SondagePublicPage from '@/features/sondage/pages/SondagePublicPage';
 import FichesControlePage from '@/features/fiches-presence/pages/FichesControlePage';
 import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
@@ -66,6 +67,9 @@ import CreneauxPage from '@/features/referentiel/creneaux/pages/CreneauxPage';
 import AjouterSallePage from '@/features/referentiel/salles/pages/AjouterSallePage';
 import ImporterSallesPage from '@/features/referentiel/salles/pages/ImporterSallesPage';
 import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
+import SignalerPage from '@/features/signalements/pages/SignalerPage';
+import SignalementsAdminPage from '@/features/signalements/pages/SignalementsAdminPage';
+import EtatMatieresPage from '@/features/etat-matieres/pages/EtatMatieresPage';
 import ScanEnseignantPage from '@/features/qr-enseignants/pages/ScanEnseignantPage';
 import QrEnseignantsAdminPage from '@/features/qr-enseignants/pages/QrEnseignantsAdminPage';
 import MonQrPage from '@/features/qr-enseignants/pages/MonQrPage';
@@ -88,6 +92,7 @@ export default function AppRoutes() {
           element={<MotDePasseOubliePage />}
         />
         <Route path="/sondage" element={<SondagePublicPage />} />
+        <Route path="/qr/:token" element={<QrPublicPage />} />
         <Route
           path="/inscription-enseignant"
           element={<InscriptionEnseignantPage />}
@@ -249,6 +254,7 @@ export default function AppRoutes() {
             <Route path="/mes-ues" element={<MesUEsPage />} />
             <Route path="/ma-seance" element={<MaSeancePage />} />
             <Route path="/mon-qr" element={<MonQrPage />} />
+            <Route path="/signaler" element={<SignalerPage />} />
           </Route>
 
           <Route
@@ -280,6 +286,8 @@ export default function AppRoutes() {
             <Route path="/qr-ouverture" element={<EcranQrPage />} />
             <Route path="/qr-enseignants" element={<QrEnseignantsAdminPage />} />
             <Route path="/heures" element={<EtatHeuresPage />} />
+            <Route path="/etat-matieres" element={<EtatMatieresPage />} />
+            <Route path="/signalements" element={<SignalementsAdminPage />} />
             <Route
               path="/heures/:enseignantId"
               element={<DetailHeuresEnseignantPage />}
