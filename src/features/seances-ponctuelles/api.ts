@@ -337,4 +337,4 @@ export async function programmerCoursVolant(
   }
 
   return { seanceId, codeOuverture, codeFermeture };
-}
+} 
