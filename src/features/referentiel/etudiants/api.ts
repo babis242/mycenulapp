@@ -9,6 +9,7 @@ export interface Etudiant {
   nom_complet: string;
   specialite_id: string;
   semestre: string;
+  niveau?: string;
   created_at: string;
 }
 
@@ -18,7 +19,7 @@ export async function listEtudiants(
 ): Promise<Etudiant[]> {
   const { data, error } = await supabase
     .from('etudiants')
-    .select('id, matricule, nom_complet, specialite_id, semestre, created_at')
+    .select('id, matricule, nom_complet, specialite_id, semestre, niveau, created_at')
     .eq('specialite_id', specialiteId)
     .eq('semestre', semestre)
     .order('nom_complet', { ascending: true });
@@ -91,4 +92,52 @@ export async function ajouterEtudiants(
 export async function supprimerEtudiant(id: string): Promise<void> {
   const { error } = await supabase.from('etudiants').delete().eq('id', id);
   if (error) throw error;
+}
+export interface ModificationEtudiant {
+  matricule: string;
+  nom_complet: string;
+  specialite_id: string;
+  semestre: string;
+  niveau: string;
+}
+
+// Modifie la fiche d'un étudiant (nom, matricule, spécialité, semestre,
+// niveau). Les présences déjà saisies restent rattachées à la classe où elles
+// ont été faites. En cas de doublon (même matricule, même spécialité et même
+// niveau), renvoie un message clair plutôt que l'erreur brute de la base.
+export async function modifierEtudiant(
+  id: string,
+  m: ModificationEtudiant
+): Promise<void> {
+  const patch = {
+    matricule: m.matricule.trim(),
+    nom_complet: m.nom_complet.trim(),
+    specialite_id: m.specialite_id,
+    semestre: m.semestre,
+    niveau: m.niveau,
+  };
+  const { data, error } = await supabase
+    .from('etudiants')
+    .update(patch)
+    .eq('id', id)
+    .select('id');
+  if (error) {
+    if ((error as any).code === '23505') {
+      throw new Error(
+        'Un étudiant avec ce matricule existe déjà dans cette spécialité et ce niveau.'
+      );
+    }
+    throw error;
+  }
+  if (!data || data.length === 0) {
+    throw new Error(
+      "La modification n'a pas été enregistrée (droits insuffisants ou étudiant introuvable)."
+    );
+  }
+  // Met aussi à jour la copie locale (hors-ligne), sans bloquer en cas d'échec.
+  try {
+    await db.etudiants.update(id, patch);
+  } catch {
+    /* le prochain rafraîchissement corrigera le cache */
+  }
 }

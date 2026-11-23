@@ -144,6 +144,7 @@ export default function ListeEnseignantsPage() {
                   </td>
                   <td className="px-5 py-3.5 font-bold text-gray-900">
                     {e.nom}
+                    {e.provisoire && <span className="ml-2 text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700">Provisoire</span>}
                   </td>
                   <td className="px-5 py-3.5 text-gray-500">{e.email}</td>
                   <td className="px-5 py-3.5">

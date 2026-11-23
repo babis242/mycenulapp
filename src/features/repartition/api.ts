@@ -193,53 +193,61 @@ export interface EnseignantOption {
   id: string;
   nom: string;
   matricule: string;
+  // Enseignant provisoire : enregistré par son nom seul (pas de compte, pas
+  // de matricule) — peut recevoir un cours sans syllabus.
+  provisoire: boolean;
 }
 
 export async function listEnseignantsOptions(): Promise<EnseignantOption[]> {
+  const tout: EnseignantOption[] = [];
+  for (let debut = 0; ; debut += 1000) {
+    const { data, error } = await supabase
+      .from('enseignants')
+      .select('id, nom, matricule, provisoire')
+      .order('nom')
+      .range(debut, debut + 999);
+    if (error) throw error;
+    for (const e of (data ?? []) as any[]) {
+      tout.push({
+        id: e.id,
+        nom: e.nom,
+        matricule: e.matricule ?? '',
+        provisoire: !!e.provisoire,
+      });
+    }
+    if ((data ?? []).length < 1000) break;
+  }
+  return tout;
+}
+
+// L'enseignant est-il provisoire ? (sert à lever l'obligation de syllabus et
+// à ne pas chercher de compte à notifier.)
+async function estEnseignantProvisoire(enseignantId: string): Promise<boolean> {
   const { data, error } = await supabase
     .from('enseignants')
-    .select('id, nom, matricule')
-    .order('nom');
+    .select('provisoire')
+    .eq('id', enseignantId)
+    .maybeSingle();
   if (error) throw error;
-  return data ?? [];
+  return !!(data as any)?.provisoire;
 }
 
 // Attribue (ou réattribue) une seule offre à un enseignant, sans toucher au
 // reste d'un éventuel tronc commun — utilisé en interne par
-// attribuerCoursEtGroupe ci-dessous. Refuse si l'UE n'a pas de syllabus
-// (Scénario 12) — un enseignant ne doit jamais recevoir un cours sans le
-// document qui le décrit.
+// attribuerCoursEtGroupe ci-dessous. Aucune condition de syllabus : un cours
+// peut être attribué librement (le syllabus pourra être envoyé ensuite).
 async function attribuerUneOffre(
   offreId: string,
   enseignantId: string,
-  attributionExistanteId: string | null
+  attributionExistanteId: string | null,
+  provisoire = false
 ) {
   const { data: offre } = await supabase
     .from('offres')
-    .select('ue:ues(id, nom, syllabus_key)')
+    .select('ue:ues(id, nom)')
     .eq('id', offreId)
     .single();
   const ue = (offre as any)?.ue;
-
-  // Le syllabus peut être géré au niveau du tronc commun si l'UE en fait
-  // partie (refonte : source unique pour tout le groupe, plus de copie
-  // par UE) — sinon, celui de l'UE elle-même.
-  const { data: lienTronc } = await supabase
-    .from('troncs_communs_ues')
-    .select('tronc_commun:troncs_communs(nom, syllabus_key)')
-    .eq('ue_id', ue?.id)
-    .maybeSingle();
-  const tronc = (lienTronc as any)?.tronc_commun;
-  const syllabusPresent = tronc ? !!tronc.syllabus_key : !!ue?.syllabus_key;
-
-  if (!syllabusPresent) {
-    const cible = tronc
-      ? `le tronc commun "${tronc.nom}"`
-      : `"${ue?.nom ?? 'cette UE'}"`;
-    throw new Error(
-      `Impossible d'attribuer ${cible} : aucun syllabus n'a été envoyé.`
-    );
-  }
 
   if (attributionExistanteId) {
     const { error } = await supabase
@@ -258,6 +266,8 @@ async function attribuerUneOffre(
   if (error) throw error;
 
   // Notifie l'enseignant — le syllabus est accessible depuis "Mes cours".
+  // Un provisoire n'a pas de compte : rien à notifier.
+  if (provisoire) return;
   const { data: enseignant } = await supabase
     .from('enseignants')
     .select('matricule')
@@ -273,7 +283,7 @@ async function attribuerUneOffre(
       await supabase.from('notifications').insert({
         compte_id: compte.id,
         titre: 'Nouveau cours attribué',
-        message: `Tu t'es vu attribuer "${ue.nom}". Le syllabus est disponible dans "Mes cours".`,
+        message: `Tu t'es vu attribuer "${ue.nom}". Retrouve-le dans "Mes cours".`,
         lien: '/mes-cours',
       });
     }
@@ -289,24 +299,16 @@ export async function attribuerCoursEtGroupe(
   cours: CoursAAttribuer,
   enseignantId: string
 ) {
-  if (!cours.troncCommun) {
-    await attribuerUneOffre(cours.offreId, enseignantId, cours.attributionId);
-    return;
-  }
+  const provisoire = await estEnseignantProvisoire(enseignantId);
 
-  // Vérifie que le tronc commun a un syllabus avant de commencer — sinon
-  // l'attribution s'arrêterait à mi-chemin, avec certaines UEs attribuées
-  // et d'autres non. Le syllabus est partagé par tout le groupe (refonte
-  // tronc commun) : une seule vérification suffit.
-  const { data: troncData } = await supabase
-    .from('troncs_communs')
-    .select('syllabus_key')
-    .eq('id', cours.troncCommun.id)
-    .maybeSingle();
-  if (!troncData?.syllabus_key) {
-    throw new Error(
-      `Impossible d'attribuer ce tronc commun : aucun syllabus n'a été envoyé pour "${cours.troncCommun.nom}".`
+  if (!cours.troncCommun) {
+    await attribuerUneOffre(
+      cours.offreId,
+      enseignantId,
+      cours.attributionId,
+      provisoire
     );
+    return;
   }
 
   // Pour chaque UE du groupe, retrouve TOUTES ses offres (une UE de
@@ -337,7 +339,8 @@ export async function attribuerCoursEtGroupe(
       await attribuerUneOffre(
         offre.id,
         enseignantId,
-        attributionActive?.id ?? null
+        attributionActive?.id ?? null,
+        provisoire
       );
     }
   }

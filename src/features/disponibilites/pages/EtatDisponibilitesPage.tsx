@@ -21,6 +21,7 @@ import {
   listSuiviCampagne,
   arreterCampagne,
   annulerCampagne,
+  retirerEnseignantDeCampagne,
   resumerCampagne,
   enregistrerDisponibiliteManuelle,
   getDisponibilitesEnseignant,
@@ -104,6 +105,29 @@ export default function EtatDisponibilitesPage() {
       await charger();
     } finally {
       setArret(false);
+    }
+  }
+
+  const [retrait, setRetrait] = useState<string | null>(null);
+  const [erreurRetrait, setErreurRetrait] = useState<string | null>(null);
+
+  async function handleRetirer(e: EnseignantSuivi) {
+    if (!campagne) return;
+    const ok = window.confirm(
+      `Supprimer la demande de disponibilités de ${e.nom} ?\n\n` +
+        (e.aRepondu ? 'Ses disponibilités déjà saisies seront SUPPRIMÉES définitivement.\n' : '') +
+        `Il ne figurera plus dans cette campagne ; elle continue pour les autres enseignants.`
+    );
+    if (!ok) return;
+    setErreurRetrait(null);
+    setRetrait(e.id);
+    try {
+      await retirerEnseignantDeCampagne(campagne.id, e.id);
+      setSuivi((prev) => prev.filter((x) => x.id !== e.id));
+    } catch (err: any) {
+      setErreurRetrait(err?.message || 'Suppression impossible.');
+    } finally {
+      setRetrait(null);
     }
   }
 
@@ -332,6 +356,9 @@ export default function EtatDisponibilitesPage() {
         </div>
       ) : (
         <div className="bg-white rounded-[20px] overflow-hidden">
+          {erreurRetrait && (
+            <p className="px-5 py-3 text-sm font-bold text-red-600 bg-red-50">{erreurRetrait}</p>
+          )}
           {listeAffichee.map((e) => {
             const whatsapp = lienWhatsApp(e.numeroWhatsapp, e.nom, e.estHND);
             return (
@@ -369,6 +396,18 @@ export default function EtatDisponibilitesPage() {
                   >
                     <Plus size={13} />{' '}
                     {e.aRepondu ? 'Voir / modifier' : 'Saisir manuellement'}
+                  </button>
+                  <button
+                    onClick={(ev) => {
+                      ev.stopPropagation();
+                      handleRetirer(e);
+                    }}
+                    disabled={retrait === e.id}
+                    title="Supprimer la demande de disponibilités de cet enseignant"
+                    className="flex items-center gap-1.5 bg-white border border-red-200 text-red-600 rounded-full px-3 py-1.5 text-xs font-bold hover:bg-red-50 disabled:opacity-50"
+                  >
+                    {retrait === e.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                    Supprimer
                   </button>
                 </div>
               </div>

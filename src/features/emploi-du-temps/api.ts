@@ -781,7 +781,8 @@ export async function getHeuresTotalesValideesParOffre(
 // dans les écrans du référentiel — contrairement à la génération
 // automatique, qui garde les heures programmées pour ne pas dépasser le quota.
 export async function getHeuresReellesParOffre(
-  offreIds: string[]
+  offreIds: string[],
+  jusquau?: string // AAAA-MM-JJ inclus : ne compte que les séances ouvertes jusqu'à cette date
 ): Promise<Map<string, number>> {
   const resultat = new Map<string, number>(offreIds.map((id) => [id, 0]));
   if (offreIds.length === 0) return resultat;
@@ -794,6 +795,7 @@ export async function getHeuresReellesParOffre(
         .select('offre_id, jour, creneau, semaine, heure_ouverture, heure_fermeture')
         .in('offre_id', lot)
         .not('heure_ouverture', 'is', null)
+        .lte('heure_ouverture', jusquau ? `${jusquau}T23:59:59+01:00` : '9999-12-31')
         .order('id', { ascending: true })
         .range(debut, debut + PAGE - 1);
       if (error) throw error;
@@ -812,7 +814,8 @@ export async function getHeuresReellesParOffre(
 
 // Idem pour un tronc commun (clé = tronc_commun_id).
 export async function getHeuresReellesParTronc(
-  troncCommunIds: string[]
+  troncCommunIds: string[],
+  jusquau?: string
 ): Promise<Map<string, number>> {
   const resultat = new Map<string, number>(troncCommunIds.map((id) => [id, 0]));
   if (troncCommunIds.length === 0) return resultat;
@@ -825,6 +828,7 @@ export async function getHeuresReellesParTronc(
         .select('tronc_commun_id, jour, creneau, semaine, heure_ouverture, heure_fermeture')
         .in('tronc_commun_id', lot)
         .not('heure_ouverture', 'is', null)
+        .lte('heure_ouverture', jusquau ? `${jusquau}T23:59:59+01:00` : '9999-12-31')
         .order('id', { ascending: true })
         .range(debut, debut + PAGE - 1);
       if (error) throw error;
@@ -3700,12 +3704,17 @@ export async function trouverOuCreerEmploi(
 // écoles, toutes spécialités, tronc commun compris), créneau par
 // créneau : attribuer cycle par cycle créait des conflits, chaque cycle
 // ignorant ce que les autres avaient déjà pris. Pour chaque créneau :
-//  0) les troncs de PLUS de 9 filières prennent l'amphi (salle de plus
-//     grande capacité), puis la plus grande libre suivante s'il est pris ;
+//  0) les troncs dont l'EFFECTIF (étudiants de toutes les spécialités et
+//     semestres concernés) ne tient que dans l'amphi (salle de plus grande
+//     capacité) le prennent, puis la plus grande libre suivante s'il est
+//     pris. Sans effectif connu, l'ancienne règle s'applique (plus de 9
+//     filières = amphi) ;
 //  1) chaque UE de spécialité reçoit la salle PAR DÉFAUT de sa
 //     spécialité, si elle est libre ;
-//  2) les autres troncs, du plus grand regroupement de filières au plus
-//     petit, prennent la plus grande salle libre (amphi exclu) ;
+//  2) les autres troncs, du plus gros effectif au plus petit, prennent la
+//     PLUS PETITE salle libre dont la capacité couvre leur effectif (amphi
+//     exclu) ; si aucune ne suffit, la plus grande salle libre est prise et
+//     le cas est signalé (capacité insuffisante) ;
 //  3) une UE de spécialité dont la salle par défaut est prise reçoit la
 //     plus petite salle libre (amphi exclu).
 // Les séances déjà ouvertes par l'enseignant (heure_ouverture connue) ne
@@ -3715,6 +3724,14 @@ export interface ResultatAttributionSalles {
   nbSeancesTraitees: number;
   nbModifiees: number;
   sansSalle: { nom: string; jour: string; creneau: string }[];
+  // Troncs placés dans une salle trop petite pour leur effectif.
+  capaciteInsuffisante: {
+    nom: string;
+    jour: string;
+    creneau: string;
+    effectif: number;
+    capacite: number;
+  }[];
 }
 
 async function lireParLotsApi<T>(
@@ -3742,6 +3759,7 @@ export async function attribuerSallesPourSemaine(
     nbSeancesTraitees: 0,
     nbModifiees: 0,
     sansSalle: [],
+    capaciteInsuffisante: [],
   };
 
   // 1) Toutes les séances de la semaine (tri stable pour la pagination).
@@ -3786,7 +3804,7 @@ export async function attribuerSallesPourSemaine(
       supabase.from('ues').select('id, nom').in('id', lot)
     ),
     lireParLotsApi<any>(ueIdsTroncs, (lot) =>
-      supabase.from('offres').select('ue_id, specialite_id').in('ue_id', lot)
+      supabase.from('offres').select('ue_id, specialite_id, semestre').in('ue_id', lot)
     ),
   ]);
   const specialiteIdsTous = Array.from(
@@ -3827,6 +3845,41 @@ export async function attribuerSallesPourSemaine(
     return filieres.size;
   };
 
+  // Effectifs : nombre d'étudiants de chaque classe (spécialité + semestre)
+  // concernée par un tronc ; l'effectif d'un tronc est la somme de ses classes
+  // (chaque couple spécialité/semestre n'est compté qu'une fois).
+  const specialitesConcernees = Array.from(
+    new Set(offresDesTroncs.map((o) => o.specialite_id as string))
+  );
+  const effectifParClasse = new Map<string, number>(); // "specialiteId|semestre"
+  for (let i = 0; i < specialitesConcernees.length; i += 100) {
+    const lot = specialitesConcernees.slice(i, i + 100);
+    const lignes = await recupererToutesLesLignes<any>((debut, fin) =>
+      supabase
+        .from('etudiants')
+        .select('id, specialite_id, semestre')
+        .in('specialite_id', lot)
+        .order('id')
+        .range(debut, fin)
+    );
+    for (const e of lignes) {
+      const k = `${e.specialite_id}|${e.semestre}`;
+      effectifParClasse.set(k, (effectifParClasse.get(k) ?? 0) + 1);
+    }
+  }
+  const classesParTronc = new Map<string, Set<string>>();
+  for (const o of offresDesTroncs) {
+    const troncId = troncParUe.get(o.ue_id);
+    if (!troncId) continue;
+    if (!classesParTronc.has(troncId)) classesParTronc.set(troncId, new Set());
+    classesParTronc.get(troncId)!.add(`${o.specialite_id}|${o.semestre}`);
+  }
+  const effectifDuTronc = (troncId: string): number => {
+    let total = 0;
+    for (const k of classesParTronc.get(troncId) ?? []) total += effectifParClasse.get(k) ?? 0;
+    return total;
+  };
+
   // 3) Salles.
   const { data: sallesData, error: sallesError } = await supabase
     .from('salles')
@@ -3842,6 +3895,16 @@ export async function attribuerSallesPourSemaine(
   if (salles.length === 0) throw new Error('Aucune salle enregistrée.');
   const sallesParCapaciteDesc = [...salles].sort((a, b) => b.capacite - a.capacite);
   const amphiId = sallesParCapaciteDesc[0].id;
+  // Plus grande capacité hors amphi : un tronc qui la dépasse ne tient que
+  // dans l'amphi.
+  const capaciteMaxHorsAmphi = sallesParCapaciteDesc[1]?.capacite ?? 0;
+  const capaciteDe = new Map(salles.map((x) => [x.id, x.capacite]));
+  const gros = (troncId: string): boolean => {
+    const effectif = effectifDuTronc(troncId);
+    return effectif > 0
+      ? effectif > capaciteMaxHorsAmphi
+      : nbFilieresDuTronc(troncId) > SEUIL_FILIERES_AMPHI;
+  };
   // Salle par défaut par (spécialité, niveau) ; sans niveau = tous niveaux.
   const salleParDefautNiveau = new Map<string, string>();
   const salleParDefaut = new Map<string, string>();
@@ -3899,6 +3962,16 @@ export async function attribuerSallesPourSemaine(
     return (bornesCreneau(a[0].creneau)?.debut ?? CRENEAU_ORDRE[a[0].creneau] ?? 0) - (bornesCreneau(b[0].creneau)?.debut ?? CRENEAU_ORDRE[b[0].creneau] ?? 0);
   });
 
+  const capaciteInsuffisante: ResultatAttributionSalles['capaciteInsuffisante'] = [];
+  const signalerCapacite = (s: any, salleId: string | null) => {
+    if (!salleId || !s.tronc_commun_id) return;
+    const effectif = effectifDuTronc(s.tronc_commun_id);
+    const capacite = capaciteDe.get(salleId) ?? 0;
+    if (effectif > 0 && capacite < effectif) {
+      capaciteInsuffisante.push({ nom: nomDe(s), jour: s.jour, creneau: s.creneau, effectif, capacite });
+    }
+  };
+
   for (const liste of creneauxOrdonnes) {
     // Séances déjà ouvertes : figées, leur salle reste prise.
     const figees = liste.filter((s) => !!s.heure_ouverture);
@@ -3911,17 +3984,14 @@ export async function attribuerSallesPourSemaine(
       .filter((s) => s.tronc_commun_id)
       .sort(
         (a, b) =>
+          effectifDuTronc(b.tronc_commun_id) - effectifDuTronc(a.tronc_commun_id) ||
           nbFilieresDuTronc(b.tronc_commun_id) - nbFilieresDuTronc(a.tronc_commun_id) ||
           (specialitesParTronc.get(b.tronc_commun_id)?.size ?? 0) -
             (specialitesParTronc.get(a.tronc_commun_id)?.size ?? 0) ||
           nomDe(a).localeCompare(nomDe(b))
       );
-    const troncsAmphi = troncs.filter(
-      (s) => nbFilieresDuTronc(s.tronc_commun_id) > SEUIL_FILIERES_AMPHI
-    );
-    const troncsNormaux = troncs.filter(
-      (s) => nbFilieresDuTronc(s.tronc_commun_id) <= SEUIL_FILIERES_AMPHI
-    );
+    const troncsAmphi = troncs.filter((s) => gros(s.tronc_commun_id));
+    const troncsNormaux = troncs.filter((s) => !gros(s.tronc_commun_id));
     const parSpecialite = aTraiter.filter((s) => !s.tronc_commun_id);
 
     const poser = (s: any, salleId: string | null) => {
@@ -3931,7 +4001,9 @@ export async function attribuerSallesPourSemaine(
 
     // 0) Amphi pour les gros troncs.
     for (const s of troncsAmphi) {
-      poser(s, sallesParCapaciteDesc.find((x) => !prises.has(x.id))?.id ?? null);
+      const choisie = sallesParCapaciteDesc.find((x) => !prises.has(x.id))?.id ?? null;
+      poser(s, choisie);
+      signalerCapacite(s, choisie);
     }
     // 1) Salle de la classe : d'abord la salle par défaut du niveau ; si elle
     // est prise, celle déjà utilisée le même jour, puis dans la semaine.
@@ -3980,11 +4052,18 @@ export async function attribuerSallesPourSemaine(
       } else sansDefaut.push(s);
     }
     // 2) Autres troncs : plus grande salle libre hors amphi.
+    // Effectif connu : plus petite salle libre qui le couvre ; sinon (ou si
+    // aucune ne suffit) la plus grande salle libre, et on le signale.
+    const sallesCroissantes = [...sallesParCapaciteDesc].reverse();
     for (const s of troncsNormaux) {
-      poser(
-        s,
-        sallesParCapaciteDesc.find((x) => x.id !== amphiId && !prises.has(x.id))?.id ?? null
-      );
+      const effectif = effectifDuTronc(s.tronc_commun_id);
+      const libres = sallesCroissantes.filter((x) => x.id !== amphiId && !prises.has(x.id));
+      const choisie =
+        (effectif > 0 ? libres.find((x) => x.capacite >= effectif) : undefined)?.id ??
+        libres[libres.length - 1]?.id ??
+        null;
+      poser(s, choisie);
+      signalerCapacite(s, choisie);
     }
     // 3) UE de spécialité sans salle préférée libre : plus petite salle libre,
     // qui devient la salle de la classe pour la suite de la journée.
@@ -4041,7 +4120,7 @@ export async function attribuerSallesPourSemaine(
   // Toutes les grilles en cache de cette semaine sont périmées.
   cacheSeancesGroupees.clear();
 
-  return { nbSeancesTraitees: nbTraitees, nbModifiees, sansSalle };
+  return { nbSeancesTraitees: nbTraitees, nbModifiees, sansSalle, capaciteInsuffisante };
 }
 
 

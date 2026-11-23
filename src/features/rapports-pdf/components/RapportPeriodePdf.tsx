@@ -17,7 +17,7 @@ import {
   Sparkles,
   ShieldCheck,
 } from 'lucide-react';
-import type { LigneEnseignant, RapportPeriode } from '../api';
+import type { LigneEnseignant, RapportPeriode, StatutJustification } from '../api';
 import { CourbesLissees, Donut, formaterNombre } from './graphiques';
 import { COULEURS, Carte, EnteteCompact, EnteteHero, PageA4, PiedDePage } from './marque';
 
@@ -106,6 +106,32 @@ function initiales(nom: string): string {
     .slice(0, 2)
     .map((m) => m[0]?.toUpperCase() ?? '')
     .join('');
+}
+
+function MarqueJustification({ statut }: { statut: StatutJustification }) {
+  const cfg =
+    statut === 'justifiee'
+      ? { texte: 'Justifiée', fond: '#d1fae5', encre: '#047857' }
+      : statut === 'en_attente'
+      ? { texte: 'Justificatif en attente', fond: '#fef3c7', encre: '#b45309' }
+      : { texte: 'Non justifiée', fond: '#ffe4e6', encre: '#be123c' };
+  return (
+    <span
+      style={{
+        display: 'inline-block',
+        background: cfg.fond,
+        color: cfg.encre,
+        fontSize: '8px',
+        fontWeight: 900,
+        borderRadius: '3mm',
+        padding: '0.2mm 1.8mm',
+        marginLeft: '1.2mm',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {cfg.texte}
+    </span>
+  );
 }
 
 function ListeEnseignants({
@@ -198,10 +224,22 @@ function ListeEnseignants({
               >
                 {l.nb} {avecMinutes ? (l.nb > 1 ? 'retards' : 'retard') : l.nb > 1 ? 'absences' : 'absence'}
                 {avecMinutes ? ` · ${l.cumulMinutes} min` : ''}
+                {l.statuts ? ` · ${l.nbJustifiees ?? 0} justifiée${(l.nbJustifiees ?? 0) > 1 ? 's' : ''}` : ''}
               </span>
             </div>
             <div style={{ fontSize: '8.8px', fontWeight: 600, color: '#4b5563', marginTop: '0.8mm', lineHeight: 1.4 }}>
-              {l.details.join('  •  ')}
+              {l.statuts ? (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.6mm' }}>
+                  {l.details.map((d, i) => (
+                    <div key={i}>
+                      {d}
+                      <MarqueJustification statut={l.statuts![i] ?? 'non_justifiee'} />
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                l.details.join('  •  ')
+              )}
             </div>
           </div>
         </div>
@@ -518,7 +556,9 @@ export default function RapportPeriodePdf({ rapport }: { rapport: RapportPeriode
       <PageA4 enTete={enTeteCompact} pied={pied}>
         <Carte
           titre={`Enseignants absents (${rapport.absents.length})`}
-          sousTitre="Séances programmées, créneau terminé, jamais ouvertes ni annulées"
+          sousTitre={`Séances programmées, créneau terminé, jamais ouvertes ni annulées — ${rapport.nbAbsencesJustifiees} justifiée${
+            rapport.nbAbsencesJustifiees > 1 ? 's' : ''}, ${rapport.nbAbsences - rapport.nbAbsencesJustifiees} non justifiée${
+            rapport.nbAbsences - rapport.nbAbsencesJustifiees > 1 ? 's' : ''} ou en attente`}
           couleur={COULEURS.rose}
         >
           <ListeEnseignants

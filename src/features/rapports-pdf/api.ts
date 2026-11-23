@@ -326,12 +326,17 @@ export interface PointSerie {
   absences: number;
 }
 
+export type StatutJustification = 'justifiee' | 'en_attente' | 'non_justifiee';
+
 export interface LigneEnseignant {
   enseignantId: string;
   nom: string;
   nb: number;
   cumulMinutes: number;
   details: string[];
+  // Absences uniquement : une entrée par détail, dans le même ordre.
+  statuts?: StatutJustification[];
+  nbJustifiees?: number;
 }
 
 export interface RapportPeriode {
@@ -349,6 +354,7 @@ export interface RapportPeriode {
   heuresAVenir: number;
   nbRetards: number;
   nbAbsences: number;
+  nbAbsencesJustifiees: number;
   // Heures validées / heures des séances déjà échues (null s'il n'y en a pas)
   tauxValidation: number | null;
   serie: PointSerie[];
@@ -396,6 +402,52 @@ export async function genererRapportPeriode(
   const lignes = await lireSeancesPeriode(debut, finExclu, true);
   const ref = await lireReferentiels(lignes, false);
   const maintenant = new Date();
+
+  // Signalements d'absence des enseignants (justification) : acceptés =
+  // absence justifiée ; en attente = justificatif à traiter ; refusés ou
+  // inexistants = non justifiée. Lien par séance, à défaut par
+  // enseignant + date + créneau.
+  const idsSeances = lignes.map((l) => l.id);
+  const signalements: {
+    seance_edt_id: string | null;
+    enseignant_id: string;
+    date_cours: string | null;
+    creneau: string | null;
+    statut: string;
+  }[] = [];
+  for (let i = 0; i < idsSeances.length; i += 100) {
+    const lot = idsSeances.slice(i, i + 100);
+    const { data, error } = await supabase
+      .from('signalements_enseignants')
+      .select('seance_edt_id, enseignant_id, date_cours, creneau, statut')
+      .eq('type', 'absence')
+      .in('seance_edt_id', lot);
+    if (error) throw error;
+    signalements.push(...(data ?? []));
+  }
+  const { data: sansSeance, error: errSans } = await supabase
+    .from('signalements_enseignants')
+    .select('seance_edt_id, enseignant_id, date_cours, creneau, statut')
+    .eq('type', 'absence')
+    .is('seance_edt_id', null)
+    .gte('date_cours', debut)
+    .lt('date_cours', finExclu);
+  if (errSans) throw errSans;
+  signalements.push(...(sansSeance ?? []));
+  const rang = (st: string) => (st === 'accepte' ? 2 : st === 'en_attente' ? 1 : 0);
+  const statutParSeance = new Map<string, string>();
+  const statutParCle = new Map<string, string>();
+  for (const sg of signalements) {
+    if (sg.seance_edt_id) {
+      const a = statutParSeance.get(sg.seance_edt_id);
+      if (a === undefined || rang(sg.statut) > rang(a)) statutParSeance.set(sg.seance_edt_id, sg.statut);
+    } else if (sg.date_cours && sg.creneau) {
+      const k = `${sg.enseignant_id}|${sg.date_cours}|${sg.creneau}`;
+      const a = statutParCle.get(k);
+      if (a === undefined || rang(sg.statut) > rang(a)) statutParCle.set(k, sg.statut);
+    }
+  }
+  let nbAbsencesJustifiees = 0;
 
   // Points de la série : un par jour (semaine) ou par semaine (mois).
   const serie: PointSerie[] = [];
@@ -518,9 +570,20 @@ export async function genererRapportPeriode(
           nb: 0,
           cumulMinutes: 0,
           details: [],
+          statuts: [],
+          nbJustifiees: 0,
         };
+        const brut =
+          statutParSeance.get(s.id) ?? statutParCle.get(`${s.enseignant_id}|${date}|${s.creneau}`);
+        const statut: StatutJustification =
+          brut === 'accepte' ? 'justifiee' : brut === 'en_attente' ? 'en_attente' : 'non_justifiee';
+        if (statut === 'justifiee') {
+          l.nbJustifiees = (l.nbJustifiees ?? 0) + 1;
+          nbAbsencesJustifiees++;
+        }
         l.nb++;
         l.details.push(`${nomUe} — ${quand}`);
+        l.statuts!.push(statut);
         absentsParEns.set(s.enseignant_id, l);
       }
     }
@@ -549,6 +612,7 @@ export async function genererRapportPeriode(
     heuresAVenir,
     nbRetards,
     nbAbsences,
+    nbAbsencesJustifiees,
     tauxValidation: heuresEchues > 0 ? heuresValidees / heuresEchues : null,
     serie,
     absents: trier(absentsParEns),

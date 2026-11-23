@@ -6,7 +6,7 @@ export async function listEnseignants(): Promise<Enseignant[]> {
   const { data, error } = await supabase
     .from('enseignants')
     .select(
-      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, date_creation:created_at'
+      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, provisoire, date_creation:created_at'
     )
     .order('nom', { ascending: true });
 
@@ -18,7 +18,7 @@ export async function getEnseignant(id: string): Promise<Enseignant | null> {
   const { data, error } = await supabase
     .from('enseignants')
     .select(
-      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, date_creation:created_at'
+      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, provisoire, date_creation:created_at'
     )
     .eq('id', id)
     .maybeSingle();
@@ -32,7 +32,7 @@ export async function getEnseignantParMatricule(
   const { data, error } = await supabase
     .from('enseignants')
     .select(
-      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, date_creation:created_at'
+      'id, matricule, nom, email, numero_whatsapp, numero_cellulaire, statut, provisoire, date_creation:created_at'
     )
     .eq('matricule', matricule)
     .maybeSingle();

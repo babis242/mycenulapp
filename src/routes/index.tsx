@@ -33,6 +33,8 @@ import FichesControlePage from '@/features/fiches-presence/pages/FichesControleP
 import LecturePresencesPage from '@/features/fiches-presence/pages/LecturePresencesPage';
 import SaisiePresencesPage from '@/features/fiches-presence/pages/SaisiePresencesPage';
 import ConsulterPresencesPage from '@/features/fiches-presence/pages/ConsulterPresencesPage';
+import RapportGlobalPresencesPage from '@/features/fiches-presence/pages/RapportGlobalPresencesPage';
+import ConseilDisciplinePage from '@/features/fiches-presence/pages/ConseilDisciplinePage';
 import ListeRapportsPage from '@/features/rapports/pages/ListeRapportsPage';
 import DetailRapportPage from '@/features/rapports/pages/DetailRapportPage';
 import DetailMonCoursPage from '@/features/seances/pages/DetailMonCoursPage';
@@ -67,6 +69,8 @@ import CreneauxPage from '@/features/referentiel/creneaux/pages/CreneauxPage';
 import AjouterSallePage from '@/features/referentiel/salles/pages/AjouterSallePage';
 import ImporterSallesPage from '@/features/referentiel/salles/pages/ImporterSallesPage';
 import ListeCodesPage from '@/features/codes-journaliers/pages/ListeCodesPage';
+import ExamensPage from '@/features/examens/pages/ExamensPage';
+import ExamenEditeurPage from '@/features/examens/pages/ExamenEditeurPage';
 import SignalerPage from '@/features/signalements/pages/SignalerPage';
 import SignalementsAdminPage from '@/features/signalements/pages/SignalementsAdminPage';
 import EtatMatieresPage from '@/features/etat-matieres/pages/EtatMatieresPage';
@@ -282,12 +286,16 @@ export default function AppRoutes() {
             <Route path="/fiches-arrivee" element={<FichesArriveePage />} />
             <Route path="/lecture-fiches" element={<LecturePresencesPage />} />
             <Route path="/presences" element={<ConsulterPresencesPage />} />
+            <Route path="/presences/rapport" element={<RapportGlobalPresencesPage />} />
+            <Route path="/conseil-discipline" element={<ConseilDisciplinePage />} />
             <Route path="/codes-journaliers" element={<ListeCodesPage />} />
             <Route path="/qr-ouverture" element={<EcranQrPage />} />
             <Route path="/qr-enseignants" element={<QrEnseignantsAdminPage />} />
             <Route path="/heures" element={<EtatHeuresPage />} />
             <Route path="/etat-matieres" element={<EtatMatieresPage />} />
             <Route path="/signalements" element={<SignalementsAdminPage />} />
+            <Route path="/examens" element={<ExamensPage />} />
+            <Route path="/examens/:id" element={<ExamenEditeurPage />} />
             <Route
               path="/heures/:enseignantId"
               element={<DetailHeuresEnseignantPage />}

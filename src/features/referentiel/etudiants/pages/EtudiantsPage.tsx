@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import * as XLSX from 'xlsx';
 import {
   Loader2,
+  Pencil,
   Plus,
   Trash2,
   UploadCloud,
@@ -24,6 +25,7 @@ import {
   type Etudiant,
   type NouvelEtudiant,
 } from '../api';
+import ModifierEtudiantModal from '../components/ModifierEtudiantModal';
 
 interface Ecole {
   id: string;
@@ -68,6 +70,7 @@ export default function EtudiantsPage() {
   // Étudiants lus dans le fichier Excel, en attente de confirmation.
   const [apercu, setApercu] = useState<NouvelEtudiant[] | null>(null);
   const [nomFichier, setNomFichier] = useState('');
+  const [aModifier, setAModifier] = useState<Etudiant | null>(null);
 
   useEffect(() => {
     if (navigator.onLine) {
@@ -794,10 +797,18 @@ export default function EtudiantsPage() {
                       <td className="px-5 py-3.5 font-bold text-gray-900">
                         {e.nom_complet}
                       </td>
-                      <td className="px-5 py-3.5 text-right">
+                      <td className="px-5 py-3.5 text-right whitespace-nowrap">
+                        <button
+                          onClick={() => setAModifier(e)}
+                          className="text-gray-300 hover:text-gray-700 mr-3"
+                          title="Modifier"
+                        >
+                          <Pencil size={15} />
+                        </button>
                         <button
                           onClick={() => handleSupprimer(e.id)}
                           className="text-gray-300 hover:text-red-600"
+                          title="Retirer"
                         >
                           <Trash2 size={15} />
                         </button>
@@ -809,6 +820,17 @@ export default function EtudiantsPage() {
             )}
           </div>
         </>
+      )}
+      {aModifier && (
+        <ModifierEtudiantModal
+          etudiant={aModifier}
+          onFermer={() => setAModifier(null)}
+          onEnregistre={() => {
+            setAModifier(null);
+            setMessageAjout('Étudiant modifié.');
+            charger();
+          }}
+        />
       )}
     </div>
   );

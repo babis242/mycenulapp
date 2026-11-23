@@ -12,6 +12,7 @@ import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { createEnseignant } from '../api';
+import BoutonWhatsAppIdentifiants from '../components/BoutonWhatsAppIdentifiants';
 
 // Écran 1.2 / 1.7 — Ajouter un enseignant, mode manuel (ecrans_ui.md)
 // Le matricule est généré par la base. Une fois la fiche créée, on appelle
@@ -31,6 +32,10 @@ export default function AjouterEnseignantPage() {
   const [succes, setSucces] = useState<{
     matricule: string | null;
     emailEnvoye: boolean;
+    enseignantId?: string;
+    nom?: string;
+    whatsapp?: string | null;
+    cellulaire?: string | null;
     horsLigne: boolean;
   } | null>(null);
 
@@ -63,12 +68,20 @@ export default function AjouterEnseignantPage() {
 
         if (fnError || data?.error) {
           setSucces({
+            enseignantId: enseignant.id,
+            nom: enseignant.nom,
+            whatsapp: whatsapp.trim() || null,
+            cellulaire: cellulaire.trim() || null,
             matricule: enseignant.matricule,
             emailEnvoye: false,
             horsLigne: false,
           });
         } else {
           setSucces({
+            enseignantId: enseignant.id,
+            nom: enseignant.nom,
+            whatsapp: whatsapp.trim() || null,
+            cellulaire: cellulaire.trim() || null,
             matricule: enseignant.matricule,
             emailEnvoye: true,
             horsLigne: false,
@@ -156,6 +169,15 @@ export default function AjouterEnseignantPage() {
               a échoué.
             </p>
           </>
+        )}
+        {succes.enseignantId && !succes.horsLigne && (
+          <BoutonWhatsAppIdentifiants
+            className="mb-5 flex flex-col items-center"
+            enseignantId={succes.enseignantId}
+            nom={succes.nom ?? ''}
+            numeroWhatsapp={succes.whatsapp}
+            numeroCellulaire={succes.cellulaire}
+          />
         )}
         <button
           onClick={() => navigate('/referentiel/enseignants')}

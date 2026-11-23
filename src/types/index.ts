@@ -1,3 +1,4 @@
+// src/types/index.ts
 export type Role =
   | 'administrateur'
   | 'responsable'
@@ -65,6 +66,7 @@ export interface Enseignant {
   numero_whatsapp?: string;
   numero_cellulaire?: string;
   statut: StatutCompte;
+  provisoire?: boolean;
   date_creation: string;
 }
 

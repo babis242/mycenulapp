@@ -16,6 +16,7 @@ import {
   DoorOpen,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
+import CreerMatiereModal from '@/features/matieres-rapides/components/CreerMatiereModal';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
 import { JOURS, tousLesCreneaux, SEMESTRES_PAR_TYPE_CURSUS } from '@/constants/enums';
 import { synchroniserCreneaux } from '@/lib/creneaux';
@@ -123,6 +124,48 @@ type ChangementCellule =
       creneau: string;
       specialiteId: string;
     };
+
+// Palette de charge : du blanc rosé (beaucoup de salles libres) au rouge
+// profond (salles presque toutes prises). Ne tient pas compte de
+// l'affectation des salles — seulement du nombre de cours.
+const PALETTE_CHARGE: [number, number, number][] = [
+  [250, 250, 252],
+  [254, 226, 226],
+  [252, 165, 165],
+  [239, 68, 68],
+  [127, 29, 29],
+];
+function couleurCharge(r: number, alpha = 1): string {
+  const x = Math.min(1, Math.max(0, r)) * (PALETTE_CHARGE.length - 1);
+  const i = Math.min(PALETTE_CHARGE.length - 2, Math.floor(x));
+  const t = x - i;
+  const [a, b] = [PALETTE_CHARGE[i], PALETTE_CHARGE[i + 1]];
+  const c = a.map((v, k) => Math.round(v + (b[k] - v) * t));
+  return `rgba(${c[0]},${c[1]},${c[2]},${alpha})`;
+}
+const DEGRADE_LEGENDE = `linear-gradient(to right, ${[0, 0.25, 0.5, 0.75, 1]
+  .map((r) => couleurCharge(r))
+  .join(', ')})`;
+
+function styleCharge(nbCours: number, nbSalles: number): {
+  fond: string;
+  ratio: number;
+  pastille: string;
+  libelle: string;
+} {
+  if (nbSalles <= 0) return { fond: '', ratio: 0, pastille: '#9ca3af', libelle: '' };
+  const r = Math.min(1, Math.max(0, nbCours / nbSalles));
+  const restantes = nbSalles - nbCours;
+  return {
+    fond: `linear-gradient(150deg, ${couleurCharge(r + 0.07)} 0%, ${couleurCharge(r - 0.07)} 100%)`,
+    ratio: r,
+    pastille: r < 0.5 ? '#22c55e' : r < 0.8 ? '#f59e0b' : '#ef4444',
+    libelle:
+      restantes < 0
+        ? `Saturé +${-restantes}`
+        : `${restantes} salle${restantes > 1 ? 's' : ''} libre${restantes > 1 ? 's' : ''}`,
+  };
+}
 
 // Applique un changement local à la liste groupée — sert à la fois pour
 // l'affichage optimiste immédiat et pour rejouer un brouillon retrouvé
@@ -247,6 +290,7 @@ export default function GenererEDTPage() {
 
   const [specialites, setSpecialites] = useState<SpecialiteGroupe[]>([]);
   const [specialiteAffichee, setSpecialiteAffichee] = useState('');
+  const [creationMatiere, setCreationMatiere] = useState(false);
 
   const [seances, setSeances] = useState<SeanceGroupee[]>([]);
   const [heuresEffectuees, setHeuresEffectuees] = useState<
@@ -1073,6 +1117,30 @@ export default function GenererEDTPage() {
         seanceDuSemestre(s, specialiteAffichee, semestre, troncSemestres))
   );
 
+  // Charge de chaque créneau : nombre de cours programmés dans TOUT l'emploi
+  // du temps de la semaine (toutes spécialités). Les séances des autres
+  // groupes viennent du snapshot ; celles du groupe affiché viennent de l'état
+  // courant (brouillon non enregistré compris). Un tronc commun compte une fois.
+  const chargeParCreneau = (() => {
+    const ids = new Map<string, Set<string>>();
+    const ajouter = (id: string, jour: string, creneau: string) => {
+      const k = `${jour}|${creneau}`;
+      let e = ids.get(k);
+      if (!e) {
+        e = new Set();
+        ids.set(k, e);
+      }
+      e.add(id);
+    };
+    const snap = snapshotRef.current;
+    const idsDuGroupe = new Set((snap?.seances ?? []).map((x) => x.id));
+    for (const o of snap?.sallesOccupees ?? []) {
+      if (!idsDuGroupe.has(o.id)) ajouter(o.id, o.jour, o.creneau);
+    }
+    for (const x of seances) ajouter(x.id, x.jour, x.creneau);
+    return new Map(Array.from(ids.entries()).map(([k, v]) => [k, v.size] as [string, number]));
+  })();
+
   // Cours choisi dans le panneau de droite + dernier créneau cliqué dans la
   // grille : servent à afficher les disponibilités de l'enseignant.
   const [coursSelectionne, setCoursSelectionne] = useState<string | null>(null);
@@ -1469,6 +1537,16 @@ export default function GenererEDTPage() {
                     ))}
                   </ul>
                 )}
+                {resultatSalles.capaciteInsuffisante?.length > 0 && (
+                  <ul className="text-xs font-semibold text-amber-600 mt-1.5 list-disc list-inside">
+                    {resultatSalles.capaciteInsuffisante.map((n, i) => (
+                      <li key={i}>
+                        {n.nom} ({n.jour} {n.creneau}) — {n.effectif} étudiants
+                        pour une salle de {n.capacite} places.
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
               <button
                 onClick={() => setResultatSalles(null)}
@@ -1547,6 +1625,29 @@ export default function GenererEDTPage() {
 
           <div className="flex flex-col xl:flex-row gap-4 items-start">
           <div className="flex-1 min-w-0 w-full">
+          {toutesSalles.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 mb-2 text-[11px] font-semibold text-gray-500">
+              <span className="font-extrabold text-gray-700">Occupation des salles</span>
+              <span className="inline-flex items-center gap-1.5">
+                Peu de cours
+                <span
+                  style={{
+                    display: 'inline-block',
+                    width: 110,
+                    height: 10,
+                    borderRadius: 6,
+                    border: '1px solid #e5e7eb',
+                    background: DEGRADE_LEGENDE,
+                  }}
+                />
+                Beaucoup de cours
+              </span>
+              <span className="text-gray-400">
+                Plus le fond est foncé, moins il reste de salles. Compte tous les cours programmés cette semaine (toutes spécialités)
+                sur {toutesSalles.length} salles, sans tenir compte de l’affectation des salles.
+              </span>
+            </div>
+          )}
           <div className="bg-white rounded-[20px] overflow-x-auto mb-6">
             <table className="w-full text-sm border-collapse">
               <thead>
@@ -1578,11 +1679,43 @@ export default function GenererEDTPage() {
                       const modifieeEnAttente = changements.some(
                         (c) => c.jour === jour && c.creneau === creneau
                       );
+                      const nbCours = chargeParCreneau.get(`${jour}|${creneau}`) ?? 0;
+                      const charge = styleCharge(nbCours, toutesSalles.length);
                       return (
                         <td
                           key={creneau}
-                          className="px-2 py-2 border-b border-gray-50 align-top relative"
+                          className="p-1.5 border-b border-gray-50 align-top relative"
                         >
+                          <div
+                            style={{
+                              background: charge.fond || '#fafafa',
+                              borderRadius: 16,
+                              padding: 8,
+                              minHeight: 96,
+                              boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.04)',
+                            }}
+                          >
+                          {charge.libelle && (
+                            <div
+                              title={`${nbCours} cours programmé${nbCours > 1 ? 's' : ''} sur ${toutesSalles.length} salle${toutesSalles.length > 1 ? 's' : ''} (toutes spécialités)`}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: 6,
+                                background: 'rgba(255,255,255,0.92)',
+                                borderRadius: 999,
+                                padding: '3px 9px 3px 7px',
+                                marginBottom: 6,
+                                boxShadow: '0 1px 2px rgba(0,0,0,0.08)',
+                              }}
+                            >
+                              <span style={{ width: 8, height: 8, borderRadius: 999, background: charge.pastille, flexShrink: 0 }} />
+                              <span style={{ fontSize: 10.5, fontWeight: 800, color: '#374151', whiteSpace: 'nowrap' }}>{charge.libelle}</span>
+                              <span style={{ width: 26, height: 4, borderRadius: 4, background: '#e5e7eb', overflow: 'hidden' }}>
+                                <span style={{ display: 'block', height: '100%', width: `${Math.round(charge.ratio * 100)}%`, background: charge.pastille }} />
+                              </span>
+                            </div>
+                          )}
                           {modifieeEnAttente && (
                             <span
                               title="Modification non encore enregistrée"
@@ -1609,7 +1742,7 @@ export default function GenererEDTPage() {
                             <button
                               onClick={() => ouvrirModal(jour, creneau)}
                               title="Programmer ce créneau"
-                              className="w-8 h-8 flex items-center justify-center rounded-lg border border-dashed border-gray-200 text-gray-300 hover:text-red-600 hover:border-red-300 hover:bg-red-50 transition-colors"
+                              className="w-8 h-8 flex items-center justify-center rounded-lg border border-dashed border-gray-200 bg-white text-gray-300 hover:text-red-600 hover:border-red-300 hover:bg-red-50 transition-colors"
                             >
                               <Plus size={14} />
                             </button>
@@ -1629,7 +1762,7 @@ export default function GenererEDTPage() {
                                       ? 'bg-red-50 border border-red-200'
                                       : depasse
                                         ? ''
-                                        : 'bg-gray-50'
+                                        : 'bg-white shadow-sm'
                                   }`}
                                 >
                                   <p className="font-bold text-xs text-gray-900 truncate">
@@ -1682,6 +1815,7 @@ export default function GenererEDTPage() {
                               })}
                             </div>
                           )}
+                          </div>
                         </td>
                       );
                     })}
@@ -1694,7 +1828,19 @@ export default function GenererEDTPage() {
 
           <aside className="w-full xl:w-80 shrink-0 xl:sticky xl:top-4 mb-6">
             <div className="bg-white rounded-[20px] p-4">
-              <p className="font-extrabold text-sm text-gray-900">Cours de la spécialité</p>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                <p className="font-extrabold text-sm text-gray-900">Cours de la spécialité</p>
+                {specialiteCourante && enLigne && (
+                  <button
+                    type="button"
+                    onClick={() => setCreationMatiere(true)}
+                    title="Créer une matière pour cette spécialité"
+                    style={{ border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626', borderRadius: 999, padding: '3px 10px', fontSize: 11, fontWeight: 800, cursor: 'pointer' }}
+                  >
+                    + Matière
+                  </button>
+                )}
+              </div>
               <p className="text-[11px] text-gray-400 mb-3 truncate">
                 {specialiteCourante?.nom} · {semestre}
               </p>
@@ -2162,6 +2308,18 @@ export default function GenererEDTPage() {
             </button>
           </div>
         </div>
+      )}
+      {creationMatiere && specialiteCourante && (
+        <CreerMatiereModal
+          specialiteId={specialiteCourante.id}
+          specialiteNom={specialiteCourante.nom}
+          semestre={semestre}
+          onClose={() => setCreationMatiere(false)}
+          onCree={async () => {
+            const offres = await listOffresDeSpecialite(specialiteCourante.id);
+            setOffresParSpecialite((prev) => new Map(prev).set(specialiteCourante.id, offres));
+          }}
+        />
       )}
     </div>
   );

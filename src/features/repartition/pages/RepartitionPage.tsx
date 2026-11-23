@@ -218,7 +218,7 @@ export default function RepartitionPage() {
   const enseignantsFiltres = enseignants.filter(
     (e) =>
       e.nom.toLowerCase().includes(recherche.toLowerCase()) ||
-      e.matricule.toLowerCase().includes(recherche.toLowerCase())
+      (e.matricule ?? '').toLowerCase().includes(recherche.toLowerCase())
   );
 
   return (
@@ -463,10 +463,17 @@ export default function RepartitionPage() {
                       <div className="min-w-0">
                         <p className="text-sm font-bold text-gray-900 truncate">
                           {e.nom}
+                          {e.provisoire && (
+                            <span className="ml-2 align-middle text-[10px] font-extrabold uppercase tracking-wide text-amber-700 bg-amber-100 rounded-full px-2 py-0.5">
+                              Provisoire
+                            </span>
+                          )}
                         </p>
-                        <p className="text-xs text-gray-400 font-mono">
-                          {e.matricule}
-                        </p>
+                        {!e.provisoire && (
+                          <p className="text-xs text-gray-400 font-mono">
+                            {e.matricule}
+                          </p>
+                        )}
                       </div>
                       <button
                         onClick={() => handleAttribuer(e)}

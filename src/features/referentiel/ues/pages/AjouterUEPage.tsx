@@ -606,12 +606,6 @@ export default function AjouterUEPage() {
       setError("Le nom de l'UE est obligatoire.");
       return;
     }
-    if (enseignantId && !fichierSyllabus) {
-      setError(
-        "Pour attribuer un enseignant maintenant, importe d'abord le syllabus (un cours ne s'attribue jamais sans syllabus)."
-      );
-      return;
-    }
     if (enseignantId && !navigator.onLine) {
       setError("L'attribution d'un enseignant nécessite une connexion Internet.");
       return;
@@ -1311,7 +1305,7 @@ export default function AjouterUEPage() {
           </p>
           <p className="text-xs text-gray-400 mb-3">
             Attribue l'enseignant tout de suite, sans repasser par la
-            Répartition. Nécessite le syllabus
+            Répartition. Le syllabus n'est pas obligatoire
             {modeTronc ? ' ; il sera attribué à tout le tronc commun' : ''}.
           </p>
           {!enLigne ? (
@@ -1344,16 +1338,10 @@ export default function AjouterUEPage() {
                   })
                   .map((en) => (
                     <option key={en.id} value={en.id}>
-                      {en.nom} ({en.matricule})
+                      {en.nom} {en.provisoire ? '(provisoire)' : `(${en.matricule})`}
                     </option>
                   ))}
               </select>
-              {enseignantId && !fichierSyllabus && (
-                <p className="text-xs font-semibold text-red-600 mt-2">
-                  Importe le syllabus plus haut pour pouvoir attribuer cet
-                  enseignant.
-                </p>
-              )}
             </>
           )}
         </div>

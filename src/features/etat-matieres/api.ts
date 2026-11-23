@@ -5,6 +5,7 @@
 // RÉELLEMENT effectuées (séances ouvertes) / volume horaire de l'UE.
 import { supabase } from '@/lib/supabase';
 import { listUEsPourCampagne } from '@/features/disponibilites/api';
+import { getHeuresReellesParOffre, getHeuresReellesParTronc } from '@/features/emploi-du-temps/api';
 
 export interface LigneEtatMatiere {
   offreId: string;
@@ -26,7 +27,8 @@ export interface EtatMatieres {
 
 export async function calculerEtatMatieres(
   specialites: { id: string; nom: string }[],
-  semestre: string
+  semestre: string,
+  options?: { jusquau?: string; troncParOffre?: Map<string, string> }
 ): Promise<EtatMatieres> {
   if (specialites.length === 0) return { lignes: [], sansVolume: 0 };
   const brut = await listUEsPourCampagne(
@@ -49,6 +51,21 @@ export async function calculerEtatMatieres(
     for (const e of (data ?? []) as any[]) if (e.numero_whatsapp) whatsapp.set(e.id, e.numero_whatsapp);
   }
 
+  // « À une date donnée » : on recompte les heures effectuées jusqu'à cette date.
+  let heuresA: Map<string, number> | null = null;
+  if (options?.jusquau) {
+    const offreIds = retenues.map((u) => u.offreId);
+    const parOffre = await getHeuresReellesParOffre(offreIds, options.jusquau);
+    const troncIds = Array.from(new Set(offreIds.map((o) => options.troncParOffre?.get(o)).filter((x): x is string => !!x)));
+    const parTronc = await getHeuresReellesParTronc(troncIds, options.jusquau);
+    heuresA = new Map(
+      offreIds.map((o) => {
+        const t = options.troncParOffre?.get(o);
+        return [o, Math.max(parOffre.get(o) ?? 0, t ? parTronc.get(t) ?? 0 : 0)] as const;
+      })
+    );
+  }
+
   const lignes: LigneEtatMatiere[] = [];
   let sansVolume = 0;
   for (const u of retenues) {
@@ -64,8 +81,8 @@ export async function calculerEtatMatieres(
       enseignantNom: u.enseignantNom,
       enseignantWhatsapp: u.enseignantId ? whatsapp.get(u.enseignantId) ?? null : null,
       volumeHoraire: u.volumeHoraire,
-      heuresEffectuees: u.heuresEffectuees,
-      pourcentage: Math.round((u.heuresEffectuees / u.volumeHoraire) * 1000) / 10,
+      heuresEffectuees: heuresA ? heuresA.get(u.offreId) ?? 0 : u.heuresEffectuees,
+      pourcentage: Math.round((((heuresA ? heuresA.get(u.offreId) ?? 0 : u.heuresEffectuees)) / u.volumeHoraire) * 1000) / 10,
     });
   }
   return { lignes, sansVolume };

@@ -20,6 +20,7 @@ import {
   FileCheck,
   Gauge,
   FileBarChart,
+  Gavel,
   ClipboardList,
   ClipboardCheck,
   AlarmClock,
@@ -160,6 +161,18 @@ const NAV_ITEMS: {
     roles: ['administrateur', 'responsable'],
   },
   {
+    to: '/presences/rapport',
+    label: 'Rapport de présence',
+    icon: FileBarChart,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
+    to: '/conseil-discipline',
+    label: 'Conseil de discipline',
+    icon: Gavel,
+    roles: ['administrateur', 'responsable'],
+  },
+  {
     to: '/codes-journaliers',
     label: 'Codes journaliers',
     icon: KeyRound,
@@ -188,6 +201,12 @@ const NAV_ITEMS: {
     label: 'Signaler absence / retard',
     icon: AlertTriangle,
     roles: ['enseignant'],
+  },
+  {
+    to: '/examens',
+    label: "Programmes d'examens",
+    icon: FileBarChart,
+    roles: ['administrateur', 'responsable'],
   },
   {
     to: '/signalements',

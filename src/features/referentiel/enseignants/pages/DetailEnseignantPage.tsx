@@ -10,6 +10,8 @@ import {
   enseignantEstUtilise,
 } from '../api';
 import type { Enseignant } from '@/types';
+import BoutonWhatsAppIdentifiants from '../components/BoutonWhatsAppIdentifiants';
+import PanneauProvisoire from '@/features/matieres-rapides/components/PanneauProvisoire';
 
 export default function DetailEnseignantPage() {
   const { id } = useParams<{ id: string }>();
@@ -357,6 +359,16 @@ export default function DetailEnseignantPage() {
           </p>
         )}
 
+        {!editing && !enseignant.provisoire && enseignant.matricule && (
+          <BoutonWhatsAppIdentifiants
+            className="pt-2"
+            enseignantId={enseignant.id}
+            nom={enseignant.nom}
+            numeroWhatsapp={enseignant.numero_whatsapp}
+            numeroCellulaire={enseignant.numero_cellulaire}
+          />
+        )}
+
         {editing && (
           <div className="flex gap-2 pt-2">
             <button
@@ -381,6 +393,13 @@ export default function DetailEnseignantPage() {
           </div>
         )}
       </div>
+      {enseignant?.provisoire && (
+        <PanneauProvisoire
+          id={enseignant.id}
+          nom={enseignant.nom}
+          onTermine={(supprime) => (supprime ? navigate('/referentiel/enseignants') : window.location.reload())}
+        />
+      )}
     </div>
   );
 }

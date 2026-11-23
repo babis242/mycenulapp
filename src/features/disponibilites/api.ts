@@ -582,7 +582,7 @@ export async function resumerCampagne(campagneId: string): Promise<ResumeCampagn
 }
 
 const MSG_RLS =
-  "La base a refusé la suppression (droits insuffisants). Exécute une fois le fichier sql/annuler_campagne_disponibilites.sql dans Supabase, puis réessaie.";
+  "La base a refusé la suppression (droits insuffisants). Exécute une fois le fichier sql/suppression_disponibilites.sql dans Supabase, puis réessaie.";
 
 async function supprimerLignes(table: string, colonne: string, valeur: string): Promise<void> {
   const { count: avant, error: e0 } = await supabase
@@ -597,6 +597,36 @@ async function supprimerLignes(table: string, colonne: string, valeur: string): 
     .eq(colonne, valeur);
   if (error) throw error;
   if ((supprimees ?? 0) < avant) throw new Error(MSG_RLS);
+}
+
+// Retire UN enseignant de la campagne : sa demande de disponibilités est
+// supprimée (et ses réponses éventuelles). La campagne continue pour les autres.
+export async function retirerEnseignantDeCampagne(campagneId: string, enseignantId: string): Promise<void> {
+  async function supprimer(table: string) {
+    const { count: avant, error: e0 } = await supabase
+      .from(table)
+      .select('*', { count: 'exact', head: true })
+      .eq('campagne_id', campagneId)
+      .eq('enseignant_id', enseignantId);
+    if (e0) throw e0;
+    if (!avant) return;
+    const { count: supprimees, error } = await supabase
+      .from(table)
+      .delete({ count: 'exact' })
+      .eq('campagne_id', campagneId)
+      .eq('enseignant_id', enseignantId);
+    if (error) throw error;
+    if ((supprimees ?? 0) < avant) throw new Error(MSG_RLS);
+  }
+  // Réponses d'abord, puis la liaison : un échec au 1er pas ne perd rien.
+  await supprimer('disponibilites');
+  await supprimer('campagne_enseignants');
+  try {
+    await db.disponibilites.filter((d: any) => d.campagne_id === campagneId && d.enseignant_id === enseignantId).delete();
+    await db.campagneEnseignants.filter((l: any) => l.campagne_id === campagneId && l.enseignant_id === enseignantId).delete();
+  } catch {
+    // le cache se réalignera à la prochaine synchronisation
+  }
 }
 
 export async function annulerCampagne(campagneId: string): Promise<ResumeCampagne> {
