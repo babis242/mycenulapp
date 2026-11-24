@@ -80,8 +80,7 @@ export function ConvocationsPdf({ convoques, semaine, seuilHeures, infos }: Prop
             Madame, Monsieur,
           </p>
           <p style={{ fontSize: '12.5px', lineHeight: 1.65, margin: '0 0 4mm', textAlign: 'justify' }}>
-            Le suivi des présences fait apparaître que vous avez cumulé <b>{formatHeures(e.heures)} d’absence</b> ({e.absences} créneau
-            {e.absences > 1 ? 'x' : ''} manqué{e.absences > 1 ? 's' : ''} sur {e.total}) au cours de la semaine du{' '}
+            Le suivi des présences fait apparaître que vous avez cumulé <b>{formatHeures(e.heures)} d’absence</b> (sur {formatHeures(e.total)} de cours) au cours de la semaine du{' '}
             <b>{libelleSemaine(semaine)}</b>, soit plus de <b>{seuilHeures} heures</b>, seuil au-delà duquel un étudiant est convoqué devant le conseil
             de discipline.
           </p>
@@ -181,7 +180,7 @@ export function ListeConvoquesPdf({ convoques, semaine, seuilHeures, infos }: Pr
                 </th>
               </tr>
               <tr>
-                {['N°', 'Nom et prénoms', 'Heures d’absence', 'Créneaux manqués'].map((h, i) => (
+                {['N°', 'Nom et prénoms', 'Heures d’absence', 'Heures de cours'].map((h, i) => (
                   <th key={h} style={{ ...th, background: '#374151', textAlign: i === 1 ? 'left' : 'center' }}>
                     {h}
                   </th>
@@ -195,7 +194,7 @@ export function ListeConvoquesPdf({ convoques, semaine, seuilHeures, infos }: Pr
                   <td style={{ ...td, textAlign: 'left', fontWeight: 700 }}>{e.nom}</td>
                   <td style={{ ...td, fontWeight: 800, color: ROUGE }}>{formatHeures(e.heures)}</td>
                   <td style={td}>
-                    {e.absences} sur {e.total}
+                    {formatHeures(e.total)}
                   </td>
                 </tr>
               ))}

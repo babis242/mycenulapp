@@ -26,6 +26,7 @@ const pct = (s: Stat) => {
   return t === null ? '—' : `${t} %`;
 };
 const pluriel = (n: number, mot: string) => `${n} ${mot}${n > 1 ? 's' : ''}`;
+const heures = (n: number) => `${String(Math.round(n * 10) / 10).replace('.', ',')} h`;
 
 function nomClasse(g: GroupeRapport): string {
   const n = Number(g.semestre.replace(/[^0-9]/g, ''));
@@ -117,7 +118,7 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
     <div key={a.matricule + a.nom} style={{ display: 'flex', justifyContent: 'space-between', gap: '3mm', padding: '0.7mm 0', breakInside: 'avoid', fontSize: '9px' }}>
       <span style={{ fontWeight: 600 }}>{a.nom}</span>
       <span style={{ color: '#374151', whiteSpace: 'nowrap', fontWeight: 700 }}>
-        {pluriel(a.absences, 'absence')} sur {a.total}
+        {heures(a.absences)} d’absence sur {heures(a.total)}
       </span>
     </div>
   );
@@ -182,11 +183,11 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
         <div style={{ fontSize: '10px', fontWeight: 800, color: '#111827', marginBottom: '1mm' }}>Comment lire ce rapport</div>
         <div>
           <b>Créneau</b> : une demi-journée de cours (matin ou après-midi) sur la fiche de présence. &nbsp;
-          <b>Présence</b> : un étudiant présent à un créneau. &nbsp;
-          <b>Absence</b> : un étudiant absent à un créneau. &nbsp;
+          <b>Présence</b> : une heure de cours suivie par un étudiant. &nbsp;
+          <b>Absence</b> : une heure de cours manquée par un étudiant (cumul saisi chaque semaine). &nbsp;
           <b>Taux de présence</b> = présences ÷ (présences + absences). &nbsp;
-          <b>Absent complet</b> : absent à tous les créneaux de la semaine. &nbsp;
-          <b>« 3 absences sur 12 »</b> : 3 créneaux manqués sur 12 créneaux de cours dans la semaine.
+          <b>Absent complet</b> : absent à toutes les heures de cours de la semaine. &nbsp;
+          <b>« 3 h d’absence sur 12 h »</b> : 3 heures manquées sur 12 heures de cours dans la semaine.
         </div>
       </div>
 
@@ -197,8 +198,8 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
       <div style={{ display: 'flex', gap: '3mm' }}>
         {[
           { l: 'Étudiants inscrits', v: String(inscritsTotal), s: `avec fiche cette semaine : ${rapport.semaineEtudiants}`, c: '#111827' },
-          { l: 'Présences', v: String(total.p), s: 'créneaux présents', c: VERT },
-          { l: 'Absences', v: String(absencesDe(total)), s: 'créneaux manqués', c: ROUGE },
+          { l: 'Présences', v: heures(total.p), s: 'heures suivies', c: VERT },
+          { l: 'Absences', v: heures(absencesDe(total)), s: 'heures manquées', c: ROUGE },
           { l: 'Taux de présence', v: pct(total), s: 'de l’ensemble', c: couleurTaux(tauxDe(total)) },
         ].map((k) => (
           <div key={k.l} style={{ flex: 1, border: '0.25mm solid #e5e7eb', borderRadius: '2.5mm', padding: '2.5mm', textAlign: 'center' }}>
@@ -227,8 +228,8 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
           {semaines.map((s, i) => (
             <tr key={s} style={{ breakInside: 'avoid' }}>
               <td style={tdG}>Du {libelleSemaine(s)}</td>
-              <td style={td}>{parSemaine[i].p}</td>
-              <td style={{ ...td, color: absencesDe(parSemaine[i]) ? ROUGE : '#111827' }}>{absencesDe(parSemaine[i])}</td>
+              <td style={td}>{heures(parSemaine[i].p)}</td>
+              <td style={{ ...td, color: absencesDe(parSemaine[i]) ? ROUGE : '#111827' }}>{heures(absencesDe(parSemaine[i]))}</td>
               <td style={{ ...td, fontWeight: 800, color: couleurTaux(tauxDe(parSemaine[i])) }}>{pct(parSemaine[i])}</td>
               <td style={td}>
                 <Barre taux={tauxDe(parSemaine[i])} />
@@ -265,8 +266,8 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
                   {pct(s)}
                 </td>
               ))}
-              <td style={td}>{c.parSemaine[derniere].p}</td>
-              <td style={{ ...td, color: absencesDe(c.parSemaine[derniere]) ? ROUGE : '#111827' }}>{absencesDe(c.parSemaine[derniere])}</td>
+              <td style={td}>{heures(c.parSemaine[derniere].p)}</td>
+              <td style={{ ...td, color: absencesDe(c.parSemaine[derniere]) ? ROUGE : '#111827' }}>{heures(absencesDe(c.parSemaine[derniere]))}</td>
             </tr>
           ))}
           <tr>
@@ -276,8 +277,8 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
                 {pct(s)}
               </td>
             ))}
-            <td style={{ ...td, fontWeight: 800, borderTop: '0.4mm solid #111827' }}>{total.p}</td>
-            <td style={{ ...td, fontWeight: 800, borderTop: '0.4mm solid #111827', color: ROUGE }}>{absencesDe(total)}</td>
+            <td style={{ ...td, fontWeight: 800, borderTop: '0.4mm solid #111827' }}>{heures(total.p)}</td>
+            <td style={{ ...td, fontWeight: 800, borderTop: '0.4mm solid #111827', color: ROUGE }}>{heures(absencesDe(total))}</td>
           </tr>
         </tbody>
       </Tableau>
@@ -306,8 +307,8 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
                 <tr key={g.cle} style={{ breakInside: 'avoid' }}>
                   <td style={tdG}>{nomClasse(g)}</td>
                   <td style={td}>{g.inscrits}</td>
-                  <td style={td}>{g.semaine.p}</td>
-                  <td style={{ ...td, color: absencesDe(g.semaine) ? ROUGE : '#111827' }}>{absencesDe(g.semaine)}</td>
+                  <td style={td}>{heures(g.semaine.p)}</td>
+                  <td style={{ ...td, color: absencesDe(g.semaine) ? ROUGE : '#111827' }}>{heures(absencesDe(g.semaine))}</td>
                   <td style={{ ...td, fontWeight: 800, color: couleurTaux(tauxDe(g.semaine)) }}>{pct(g.semaine)}</td>
                 </tr>
               ))}
@@ -317,7 +318,7 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
       ))}
 
       {/* 5. Absents par spécialité */}
-      <Titre n="5" aide="Pour chaque spécialité : les étudiants qui ont manqué au moins un créneau cette semaine, du plus absent au moins absent.">
+      <Titre n="5" aide="Pour chaque spécialité : les étudiants qui ont manqué au moins une heure de cours cette semaine, du plus absent au moins absent.">
         Qui est absent ? Liste par spécialité
       </Titre>
       {cycles.map((c) => (
@@ -344,7 +345,7 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
       {/* 6. Synthèse */}
       <Titre
         n="6"
-        aide={`Les étudiants absents cette semaine, tous cycles confondus, rangés selon la gravité. Seuil utilisé : ${seuil} absence${seuil > 1 ? 's' : ''}.`}
+        aide={`Les étudiants absents cette semaine, tous cycles confondus, rangés selon la gravité. Seuil utilisé : ${seuil} h d’absence.`}
       >
         Synthèse des absences de la semaine
       </Titre>
@@ -357,23 +358,23 @@ export default function RapportGlobalPdf({ rapport, perimetre }: { rapport: Rapp
         </thead>
         <tbody>
           <tr>
-            <td style={tdG}>Absents complets (absents à tous les créneaux)</td>
+            <td style={tdG}>Absents complets (absents à toutes les heures)</td>
             <td style={{ ...td, fontWeight: 800, color: ROUGE }}>{nbCat('complet')}</td>
           </tr>
           <tr>
-            <td style={tdG}>{seuil} absence{seuil > 1 ? 's' : ''} ou plus, mais pas complet</td>
+            <td style={tdG}>{seuil} h d’absence ou plus, mais pas complet</td>
             <td style={{ ...td, fontWeight: 800, color: AMBRE }}>{nbCat('eleve')}</td>
           </tr>
           <tr>
-            <td style={tdG}>Moins de {seuil} absence{seuil > 1 ? 's' : ''}</td>
+            <td style={tdG}>Moins de {seuil} h d’absence</td>
             <td style={{ ...td, fontWeight: 800 }}>{nbCat('faible')}</td>
           </tr>
         </tbody>
       </Tableau>
       <div style={{ height: '4mm' }} />
-      {bloc('complet', 'Absents complets', 'Ces étudiants ont manqué TOUS les créneaux de la semaine.', ROUGE)}
-      {bloc('eleve', `${seuil} absence${seuil > 1 ? 's' : ''} ou plus (pas complet)`, `Ces étudiants ont manqué au moins ${seuil} créneau${seuil > 1 ? 'x' : ''}, mais sont venus au moins une fois.`, AMBRE)}
-      {bloc('faible', `Moins de ${seuil} absence${seuil > 1 ? 's' : ''}`, `Ces étudiants ont manqué entre 1 et ${Math.max(seuil - 1, 0)} créneau${seuil - 1 > 1 ? 'x' : ''}.`, '#6b7280')}
+      {bloc('complet', 'Absents complets', 'Ces étudiants ont manqué TOUTES les heures de cours de la semaine.', ROUGE)}
+      {bloc('eleve', `${seuil} h d’absence ou plus (pas complet)`, `Ces étudiants ont manqué au moins ${seuil} h de cours, mais sont venus au moins une fois.`, AMBRE)}
+      {bloc('faible', `Moins de ${seuil} h d’absence`, `Ces étudiants ont manqué moins de ${seuil} h de cours.`, '#6b7280')}
 
     </div>
   );

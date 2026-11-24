@@ -140,7 +140,7 @@ export default function RapportGlobalPresencesPage() {
               </select>
             </label>
             <label className="text-xs font-bold text-gray-500">
-              Seuil d’absences
+              Seuil d’absences (heures)
               <input
                 type="number"
                 min={1}

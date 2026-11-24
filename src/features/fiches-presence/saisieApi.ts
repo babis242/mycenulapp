@@ -1,8 +1,8 @@
 // src/features/fiches-presence/saisieApi.ts
 //
-// Saisie MANUELLE des présences : créneaux réellement programmés pour une
-// classe (spécialité + semestre) sur une semaine, et enregistrement dans la
-// même table que la lecture des fiches (presences_etudiants).
+// Saisie HEBDOMADAIRE des absences : créneaux réellement programmés pour une classe
+// (spécialité + semestre) sur une semaine (pour connaître le total d'heures de cours),
+// et enregistrement du cumul d'heures d'absence de chaque étudiant.
 import { supabase } from '@/lib/supabase';
 import { JOURS } from '@/constants/enums';
 import {
@@ -10,6 +10,7 @@ import {
   getSeancesGroupees,
 } from '@/features/emploi-du-temps/api';
 import { creneauxFiables } from './creneauxFiables';
+import { dureeCreneau } from './rapportGlobalApi';
 
 export interface CreneauProgramme {
   jour: string;
@@ -53,54 +54,67 @@ export async function getCreneauxProgrammes(
   );
 }
 
-// Enregistre, pour CHAQUE étudiant et chacun des créneaux donnés, l'état
-// courant (présent par défaut). Une ligne par étudiant × créneau : le taux
-// de présence cumulé de la page de consultation reste donc exact.
-export async function enregistrerSaisieManuelle(params: {
+// ── Saisie hebdomadaire : un cumul d'heures d'absence par étudiant ───────────
+// Table absences_hebdo_etudiants (sql/absences_hebdomadaires.sql). Une ligne par étudiant et
+// par semaine ; pas de ligne = pas encore saisi (compté 0 dans la page).
+
+/** Heures de cours programmées dans la semaine pour la classe (somme des créneaux). */
+export function heuresProgrammees(creneaux: CreneauProgramme[]): number {
+  return Math.round(creneaux.reduce((t, c) => t + dureeCreneau(c.creneau), 0) * 100) / 100;
+}
+
+export async function lireAbsencesHebdo(specialiteId: string, semestre: string, semaine: string): Promise<Map<string, number>> {
+  const { data, error } = await supabase
+    .from('absences_hebdo_etudiants')
+    .select('etudiant_id, heures_absence')
+    .eq('specialite_id', specialiteId)
+    .eq('semestre', semestre)
+    .eq('semaine', semaine)
+    .limit(5000);
+  if (error) {
+    if (/does not exist|schema cache/i.test(error.message)) {
+      throw new Error('Table absente : exécutez sql/absences_hebdomadaires.sql dans Supabase.');
+    }
+    throw error;
+  }
+  return new Map((data ?? []).map((r: any) => [r.etudiant_id as string, Number(r.heures_absence) || 0]));
+}
+
+// Enregistre le cumul de TOUS les étudiants de la classe (0 par défaut).
+export async function enregistrerAbsencesHebdo(params: {
   specialiteId: string;
   semestre: string;
   semaine: string;
-  creneaux: { jour: string; creneau: string }[];
-  etudiantIds: string[];
-  present: (etudiantId: string, jour: string, creneau: string) => boolean;
+  heuresProgrammees: number;
+  absences: { etudiantId: string; heures: number }[];
 }): Promise<number> {
-  const { specialiteId, semestre, semaine, creneaux, etudiantIds, present } = params;
+  const { specialiteId, semestre, semaine, heuresProgrammees: prog, absences } = params;
+  const { data: u } = await supabase.auth.getUser();
   const maintenant = new Date().toISOString();
-  const lignes: any[] = [];
-  for (const etudiantId of etudiantIds) {
-    for (const c of creneaux) {
-      lignes.push({
-        etudiant_id: etudiantId,
-        specialite_id: specialiteId,
-        semestre,
-        semaine,
-        jour: c.jour,
-        creneau: c.creneau,
-        present: present(etudiantId, c.jour, c.creneau),
-        updated_at: maintenant,
-      });
-    }
-  }
+  const lignes = absences.map((a) => ({
+    etudiant_id: a.etudiantId,
+    specialite_id: specialiteId,
+    semestre,
+    semaine,
+    heures_absence: Math.max(0, Math.round(a.heures * 100) / 100),
+    heures_programmees: prog,
+    saisi_par: u.user?.id ?? null,
+    updated_at: maintenant,
+  }));
   for (let i = 0; i < lignes.length; i += 500) {
     const lot = lignes.slice(i, i + 500);
     const { data, error } = await supabase
-      .from('presences_etudiants')
-      .upsert(lot, { onConflict: 'etudiant_id,semaine,jour,creneau' })
+      .from('absences_hebdo_etudiants')
+      .upsert(lot, { onConflict: 'etudiant_id,semaine' })
       .select('etudiant_id');
     if (error) {
       if (/row-level security|permission denied/i.test(error.message)) {
-        throw new Error(
-          "Enregistrement refusé : ce compte n'a pas les droits d'écriture sur les présences. Exécutez sql/acces_secretaire_presences.sql dans Supabase."
-        );
+        throw new Error("Enregistrement refusé : ce compte n'a pas les droits. Exécutez sql/absences_hebdomadaires.sql dans Supabase.");
       }
       throw error;
     }
-    // Une base qui refuse silencieusement (droits de lecture/écriture
-    // incomplets) renvoie moins de lignes que celles envoyées.
     if ((data?.length ?? 0) < lot.length) {
-      throw new Error(
-        `Enregistrement incomplet : ${data?.length ?? 0} ligne(s) confirmée(s) sur ${lot.length}. Le compte n'a probablement pas tous les droits sur les présences — exécutez sql/acces_secretaire_presences.sql dans Supabase.`
-      );
+      throw new Error(`Enregistrement incomplet : ${data?.length ?? 0} ligne(s) confirmée(s) sur ${lot.length}.`);
     }
   }
   return lignes.length;

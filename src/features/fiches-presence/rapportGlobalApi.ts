@@ -1,7 +1,7 @@
 // src/features/fiches-presence/rapportGlobalApi.ts
 //
 // Rapport de présence GLOBAL (toutes filières) : chargement à plat des
-// spécialités, filières, étudiants et présences des semaines demandées,
+// spécialités, étudiants et cumuls d'absences HEBDOMADAIRES (en heures) des semaines demandées,
 // puis calculs purs (taux par semaine, par filière, par spécialité et
 // classement des absents de la semaine choisie).
 import { supabase } from '@/lib/supabase';
@@ -26,6 +26,17 @@ export function semainesJusqua(fin: string, nb: number): string[] {
   return Array.from({ length: nb }, (_, i) => decalerSemaine(fin, i - (nb - 1)));
 }
 
+// Durée en heures d'un créneau « 08h-12h », « 13h30-17h », « 8h à 12h »… (4 h si illisible).
+export function dureeCreneau(label: string): number {
+  const m = label.match(/(\d{1,2})\s*h\s*(\d{2})?\s*(?:-|–|à)\s*(\d{1,2})\s*h\s*(\d{2})?/i);
+  if (!m) return 4;
+  const debut = Number(m[1]) + (m[2] ? Number(m[2]) / 60 : 0);
+  const fin = Number(m[3]) + (m[4] ? Number(m[4]) / 60 : 0);
+  return fin > debut ? fin - debut : 4;
+}
+
+const arrondi = (x: number) => Math.round(x * 100) / 100;
+
 // ── Chargement ───────────────────────────────────────────────────────
 export interface SpecialiteBrute {
   id: string;
@@ -49,10 +60,22 @@ export interface PresenceBrute {
   creneau: string;
   present: boolean;
 }
+// Cumul d'une semaine pour un étudiant, EN HEURES : heures d'absence et heures de
+// cours programmées. Vient de la saisie hebdomadaire ; pour les semaines saisies
+// avant ce système (présences case par case), il est reconstitué depuis les créneaux.
+export interface HeuresHebdo {
+  etudiant_id: string;
+  specialite_id: string;
+  semestre: string;
+  semaine: string;
+  absence: number;
+  programmees: number;
+}
 export interface DonneesBrutes {
   specialites: SpecialiteBrute[];
   etudiants: EtudiantBrut[];
   presences: PresenceBrute[];
+  hebdo: HeuresHebdo[];
 }
 
 const PAGE = 1000;
@@ -71,7 +94,7 @@ async function toutLire<T>(
 }
 
 export async function chargerDonnees(semaines: string[]): Promise<DonneesBrutes> {
-  const [specialites, etudiants, parSemaine] = await Promise.all([
+  const [specialites, etudiants, parSemaine, hebdoBrut] = await Promise.all([
     toutLire<SpecialiteBrute>((a, b) =>
       supabase.from('specialites').select('id, nom, cycle, filiere_id').order('id').range(a, b)
     ),
@@ -96,23 +119,64 @@ export async function chargerDonnees(semaines: string[]): Promise<DonneesBrutes>
         )
       )
     ),
+    Promise.all(
+      semaines.map((semaine) =>
+        toutLire<any>((a, b) =>
+          supabase
+            .from('absences_hebdo_etudiants')
+            .select('etudiant_id, specialite_id, semestre, semaine, heures_absence, heures_programmees')
+            .eq('semaine', semaine)
+            .order('etudiant_id')
+            .range(a, b)
+        ).catch((e) => {
+          // Table pas encore créée (sql/absences_hebdomadaires.sql) : on ne lit que l'ancienne saisie.
+          if (/does not exist|schema cache/i.test(String(e?.message))) return [] as any[];
+          throw e;
+        })
+      )
+    ),
   ]);
-  return { specialites, etudiants, presences: parSemaine.flat() };
+  const presences = parSemaine.flat();
+
+  const hebdo: HeuresHebdo[] = hebdoBrut.flat().map((r: any) => ({
+    etudiant_id: r.etudiant_id,
+    specialite_id: r.specialite_id,
+    semestre: r.semestre,
+    semaine: r.semaine,
+    absence: Number(r.heures_absence) || 0,
+    programmees: Number(r.heures_programmees) || 0,
+  }));
+  // Anciennes saisies (case par case) : reconstituées en heures pour les étudiants/semaines sans cumul.
+  const dejaSaisis = new Set(hebdo.map((h) => `${h.etudiant_id}|${h.semaine}`));
+  const anciens = new Map<string, HeuresHebdo>();
+  for (const pr of presences) {
+    const k = `${pr.etudiant_id}|${pr.semaine}`;
+    if (dejaSaisis.has(k)) continue;
+    let h = anciens.get(k);
+    if (!h) {
+      h = { etudiant_id: pr.etudiant_id, specialite_id: pr.specialite_id, semestre: pr.semestre, semaine: pr.semaine, absence: 0, programmees: 0 };
+      anciens.set(k, h);
+    }
+    const d = dureeCreneau(pr.creneau ?? '');
+    h.programmees += d;
+    if (!pr.present) h.absence += d;
+  }
+  return { specialites, etudiants, presences, hebdo: [...hebdo, ...anciens.values()] };
 }
 
 // ── Calculs ──────────────────────────────────────────────────────────
 export interface Stat {
-  p: number; // créneaux présents
-  t: number; // créneaux renseignés
+  p: number; // heures de présence
+  t: number; // heures de cours renseignées
 }
-export const absencesDe = (s: Stat) => s.t - s.p;
+export const absencesDe = (s: Stat) => arrondi(s.t - s.p);
 export const tauxDe = (s: Stat): number | null => (s.t ? Math.round((s.p / s.t) * 100) : null);
 
 export interface EtudiantAbsent {
   matricule: string;
   nom: string;
   absences: number;
-  total: number; // créneaux renseignés dans la semaine
+  total: number; // heures de cours renseignées dans la semaine
 }
 
 export interface GroupeRapport {
@@ -142,9 +206,10 @@ export interface Rapport {
   semaineEtudiants: number;
 }
 
-const additionner = (s: Stat, present: boolean) => {
-  s.t += 1;
-  if (present) s.p += 1;
+// Ajoute un cumul (en heures) à une statistique.
+const additionner = (s: Stat, absence: number, programmees: number) => {
+  s.t = arrondi(s.t + programmees);
+  s.p = arrondi(s.p + Math.max(0, programmees - absence));
 };
 
 const ORDRE_CYCLES = ['BTS', 'HND', 'Licence', 'Bachelor', 'Master', 'Formation courte'];
@@ -247,22 +312,22 @@ export function calculerRapport(
   const parSemaine: Stat[] = semaines.map(() => ({ p: 0, t: 0 }));
   const parEtudiant = new Map<string, { groupe: GroupeRapport; stat: Stat }>();
 
-  for (const pr of donnees.presences) {
-    const i = idxSemaine.get(pr.semaine);
-    const g = groupes.get(`${pr.specialite_id}|${pr.semestre}`); // uniquement les classes ayant des étudiants
+  for (const h of donnees.hebdo) {
+    const i = idxSemaine.get(h.semaine);
+    const g = groupes.get(`${h.specialite_id}|${h.semestre}`); // uniquement les classes ayant des étudiants
     if (i === undefined || !g) continue;
-    additionner(parSemaine[i], pr.present);
-    additionner(cycleDe(g.cycle).parSemaine[i], pr.present);
-    if (pr.semaine !== semaine) continue;
+    additionner(parSemaine[i], h.absence, h.programmees);
+    additionner(cycleDe(g.cycle).parSemaine[i], h.absence, h.programmees);
+    if (h.semaine !== semaine) continue;
     g.renseigne = true;
-    additionner(g.semaine, pr.present);
-    let e = parEtudiant.get(pr.etudiant_id);
+    additionner(g.semaine, h.absence, h.programmees);
+    let e = parEtudiant.get(h.etudiant_id);
     if (!e) {
       e = { groupe: g, stat: { p: 0, t: 0 } };
-      parEtudiant.set(pr.etudiant_id, e);
+      parEtudiant.set(h.etudiant_id, e);
       g.etudiants += 1;
     }
-    additionner(e.stat, pr.present);
+    additionner(e.stat, h.absence, h.programmees);
   }
 
   for (const [id, { groupe, stat }] of parEtudiant) {
@@ -295,9 +360,9 @@ export function calculerRapport(
 }
 
 // Classement d'un absent de la semaine :
-//  · complet  : absent à tous les créneaux renseignés ;
-//  · eleve    : au moins `seuil` absences mais pas complet ;
-//  · faible   : moins de `seuil` absences.
+//  · complet  : absent à toutes les heures de cours renseignées ;
+//  · eleve    : au moins `seuil` heures d'absence mais pas complet ;
+//  · faible   : moins de `seuil` heures d'absence.
 export type CategorieAbsence = 'complet' | 'eleve' | 'faible';
 export function categorieAbsence(a: EtudiantAbsent, seuil: number): CategorieAbsence {
   if (a.absences >= a.total) return 'complet';

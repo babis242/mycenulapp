@@ -147,11 +147,10 @@ export default function ConseilDisciplinePage() {
           {donnees && !chargement && (
             <p className="text-xs font-semibold text-gray-500 mb-3">
               Données lues : {donnees.etudiants.length} étudiant{donnees.etudiants.length > 1 ? 's' : ''} en base, {classes.length} classe
-              {classes.length > 1 ? 's' : ''}, {donnees.presences.length} case{donnees.presences.length > 1 ? 's' : ''} de présence enregistrée
-              {donnees.presences.length > 1 ? 's' : ''} pour la semaine du {libelleSemaine(semaine)}.
+              {classes.length > 1 ? 's' : ''}, {donnees.hebdo.filter((h) => h.semaine === semaine).length} cumul(s) d’étudiant enregistré(s) pour la semaine du {libelleSemaine(semaine)}.
             </p>
           )}
-          {donnees && !chargement && donnees.presences.length === 0 && (
+          {donnees && !chargement && donnees.hebdo.filter((h) => h.semaine === semaine).length === 0 && (
             <p className="bg-amber-50 text-amber-800 text-xs font-semibold rounded-xl px-3 py-2 mb-3">
               Aucune présence n’est enregistrée pour cette semaine : choisissez une autre semaine avec les boutons « Précédente / Suivante ».
             </p>
@@ -260,7 +259,7 @@ export default function ConseilDisciplinePage() {
             </div>
           </div>
           {!pret && candidats.length > 0 && <p className="text-xs font-semibold text-amber-700 mb-2">Renseignez au moins le jour et le lieu du conseil pour imprimer.</p>}
-          {!chargement && donnees && donnees.presences.length > 0 && candidats.length === 0 && (
+          {!chargement && donnees && donnees.hebdo.filter((h) => h.semaine === semaine).length > 0 && candidats.length === 0 && (
             <p className="text-sm text-gray-500">Aucun étudiant ne dépasse {seuil} h d’absence cette semaine pour les spécialités et niveaux choisis.</p>
           )}
           {candidats.length > 0 && (
@@ -273,7 +272,7 @@ export default function ConseilDisciplinePage() {
                     <th className="py-2 pr-2">Spécialité</th>
                     <th className="py-2 pr-2">Niveau</th>
                     <th className="py-2 pr-2 text-right">Heures d’absence</th>
-                    <th className="py-2 text-right">Créneaux manqués</th>
+                    <th className="py-2 text-right">Heures de cours</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -291,7 +290,7 @@ export default function ConseilDisciplinePage() {
                       <td className="py-2 pr-2 text-gray-700">{e.niveau}</td>
                       <td className="py-2 pr-2 text-right font-extrabold text-red-600">{formatHeures(e.heures)}</td>
                       <td className="py-2 text-right text-gray-600">
-                        {e.absences} sur {e.total}
+                        {formatHeures(e.total)}
                       </td>
                     </tr>
                   ))}

@@ -6,7 +6,8 @@ export type PurposeR2 =
   | 'syllabus-tronc-commun'
   | 'support-cours'
   | 'support-cours-tronc-commun'
-  | 'cahier-texte';
+  | 'cahier-texte'
+  | 'fiche-presence';
 
 // Bucket R2 en accès public (choix fait volontairement, pour simplifier :
 // pas besoin d'URL signée pour télécharger, juste l'adresse publique du

@@ -2,18 +2,12 @@
 //
 // Conseil de discipline : pour une semaine donnée, repère les étudiants dont
 // le cumul d'heures d'absence dépasse un seuil. Les heures viennent de
-// l'étiquette du créneau (« 08h-12h » = 4 h, « 14h-17h » = 3 h).
+// de la saisie hebdomadaire (heures d'absence par étudiant) ; les semaines saisies
+// case par case sont converties via l'étiquette du créneau (« 08h-12h » = 4 h).
 import type { DonneesBrutes } from './rapportGlobalApi';
 
 
-// Durée en heures d'un créneau « 08h-12h », « 13h30-17h », « 8h à 12h »… (4 h si illisible).
-export function dureeCreneau(label: string): number {
-  const m = label.match(/(\d{1,2})\s*h\s*(\d{2})?\s*(?:-|–|à)\s*(\d{1,2})\s*h\s*(\d{2})?/i);
-  if (!m) return 4;
-  const debut = Number(m[1]) + (m[2] ? Number(m[2]) / 60 : 0);
-  const fin = Number(m[3]) + (m[4] ? Number(m[4]) / 60 : 0);
-  return fin > debut ? fin - debut : 4;
-}
+export { dureeCreneau } from './rapportGlobalApi';
 
 export function formatHeures(h: number): string {
   const entier = Math.floor(h + 1e-9);
@@ -36,8 +30,7 @@ export interface EtudiantConvoque {
   semestre: string;
   niveau: string;
   heures: number; // heures d'absence dans la semaine
-  absences: number; // créneaux manqués
-  total: number; // créneaux renseignés
+  total: number; // heures de cours de la semaine
 }
 
 // `inclure` : clés « specialiteId|semestre » retenues. Un étudiant est
@@ -50,21 +43,15 @@ export function calculerConvocations(
 ): EtudiantConvoque[] {
   const specParId = new Map(donnees.specialites.map((s) => [s.id, s]));
   const etuParId = new Map(donnees.etudiants.map((e) => [e.id, e]));
-  const cumul = new Map<string, { heures: number; absences: number; total: number; specId: string; semestre: string }>();
+  const cumul = new Map<string, { heures: number; total: number; specId: string; semestre: string }>();
 
-  for (const pr of donnees.presences) {
-    if (pr.semaine !== semaine) continue;
-    if (!inclure.has(`${pr.specialite_id}|${pr.semestre}`)) continue;
-    let c = cumul.get(pr.etudiant_id);
-    if (!c) {
-      c = { heures: 0, absences: 0, total: 0, specId: pr.specialite_id, semestre: pr.semestre };
-      cumul.set(pr.etudiant_id, c);
-    }
-    c.total += 1;
-    if (!pr.present) {
-      c.absences += 1;
-      c.heures += dureeCreneau(pr.creneau ?? '');
-    }
+  for (const h of donnees.hebdo) {
+    if (h.semaine !== semaine) continue;
+    if (!inclure.has(`${h.specialite_id}|${h.semestre}`)) continue;
+    const c = cumul.get(h.etudiant_id) ?? { heures: 0, total: 0, specId: h.specialite_id, semestre: h.semestre };
+    c.heures += h.absence;
+    c.total += h.programmees;
+    cumul.set(h.etudiant_id, c);
   }
 
   const out: EtudiantConvoque[] = [];
@@ -83,7 +70,6 @@ export function calculerConvocations(
       semestre: c.semestre,
       niveau: niveauDe(c.semestre),
       heures: c.heures,
-      absences: c.absences,
       total: c.total,
     });
   }

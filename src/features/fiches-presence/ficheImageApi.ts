@@ -1,0 +1,91 @@
+// src/features/fiches-presence/ficheImageApi.ts
+//
+// Photo de la fiche de présence physique, jointe à la saisie hebdomadaire d'une classe
+// (spécialité + semestre + semaine). Le fichier est stocké sur Cloudflare R2 (Edge
+// Function r2-fichier, purpose « fiche-presence ») ; la table fiches_presence_images
+// garde sa clé. Nécessite sql/absences_hebdomadaires.sql.
+import { supabase } from '@/lib/supabase';
+import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
+
+export interface FicheImage {
+  id: string;
+  chemin: string; // clé R2
+  nomFichier: string | null;
+  creeLe: string;
+}
+
+const TAILLE_MAX = 8 * 1024 * 1024;
+
+export async function getFicheImage(specialiteId: string, semestre: string, semaine: string): Promise<FicheImage | null> {
+  const { data, error } = await supabase
+    .from('fiches_presence_images')
+    .select('id, chemin, nom_fichier, updated_at')
+    .eq('specialite_id', specialiteId)
+    .eq('semestre', semestre)
+    .eq('semaine', semaine)
+    .maybeSingle();
+  if (error) {
+    if (/does not exist|schema cache/i.test(error.message)) {
+      throw new Error('Tables absentes : exécutez sql/absences_hebdomadaires.sql dans Supabase.');
+    }
+    throw error;
+  }
+  return data ? { id: data.id, chemin: data.chemin, nomFichier: data.nom_fichier, creeLe: data.updated_at } : null;
+}
+
+// Réduit la photo (1800 px max, JPEG) : une photo de téléphone fait souvent plusieurs Mo.
+export async function compresserImage(fichier: File): Promise<File> {
+  if (!fichier.type.startsWith('image/')) throw new Error('Choisissez une image (photo de la fiche).');
+  try {
+    const bitmap = await createImageBitmap(fichier);
+    const echelle = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height));
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(bitmap.width * echelle);
+    canvas.height = Math.round(bitmap.height * echelle);
+    canvas.getContext('2d')!.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    const blob: Blob | null = await new Promise((r) => canvas.toBlob(r, 'image/jpeg', 0.82));
+    if (blob && blob.size < fichier.size) {
+      return new File([blob], fichier.name.replace(/\.[^.]+$/, '') + '.jpg', { type: 'image/jpeg' });
+    }
+  } catch {
+    // format non décodable par le navigateur : on garde l'original
+  }
+  return fichier;
+}
+
+// Envoie la photo sur R2 puis enregistre (ou remplace) sa référence pour la classe et la semaine.
+export async function enregistrerFicheImage(
+  specialiteId: string,
+  semestre: string,
+  semaine: string,
+  fichier: File
+): Promise<FicheImage> {
+  const image = await compresserImage(fichier);
+  if (image.size > TAILLE_MAX) throw new Error('La photo dépasse 8 Mo.');
+  const { key, nom } = await televerserFichier('fiche-presence', `${specialiteId}_${semestre}_${semaine}`, image);
+
+  const { data: u } = await supabase.auth.getUser();
+  const { data, error } = await supabase
+    .from('fiches_presence_images')
+    .upsert(
+      {
+        specialite_id: specialiteId,
+        semestre,
+        semaine,
+        chemin: key,
+        nom_fichier: nom || fichier.name,
+        ajoute_par: u.user?.id ?? null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'specialite_id,semestre,semaine' }
+    )
+    .select('id, chemin, nom_fichier, updated_at')
+    .single();
+  if (error) throw new Error(error.message);
+  return { id: data.id, chemin: data.chemin, nomFichier: data.nom_fichier, creeLe: data.updated_at };
+}
+
+/** Adresse publique de la photo sur R2. */
+export function urlFicheImage(chemin: string): string {
+  return urlPubliqueR2(chemin);
+}
