@@ -95,6 +95,12 @@ const NAV_ITEMS: {
     roles: ['administrateur'],
   },
   {
+    to: '/rapport-journalier',
+    label: 'Rapport journalier',
+    icon: FileBarChart,
+    roles: ['administrateur'],
+  },
+  {
     to: '/disponibilites',
     label: 'Disponibilités',
     icon: CalendarClock,
@@ -212,7 +218,7 @@ const NAV_ITEMS: {
     to: '/signalements',
     label: 'Signalements enseignants',
     icon: AlertTriangle,
-    roles: ['administrateur', 'responsable'],
+    roles: ['administrateur', 'responsable', 'secretaire'],
   },
   {
     to: '/mon-qr',

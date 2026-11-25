@@ -19,6 +19,7 @@ export default function AjouterEtudiantModal({ specialiteId, semestre, onFermer,
   const [nom, setNom] = useState('');
   const [provisoire, setProvisoire] = useState(true);
   const [matricule, setMatricule] = useState('');
+  const [inscrit, setInscrit] = useState(true);
   const [saving, setSaving] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
@@ -29,7 +30,7 @@ export default function AjouterEtudiantModal({ specialiteId, semestre, onFermer,
     if (!navigator.onLine) return setErreur("Pas de connexion internet — l'ajout nécessite d'être en ligne.");
     setSaving(true);
     try {
-      onCree(await creerEtudiant(specialiteId, semestre, nom, provisoire ? null : matricule));
+      onCree(await creerEtudiant(specialiteId, semestre, nom, provisoire ? null : matricule, inscrit));
     } catch (e) {
       setErreur(e instanceof Error ? e.message : "Erreur lors de l'ajout.");
     } finally {
@@ -64,6 +65,13 @@ export default function AjouterEtudiantModal({ specialiteId, semestre, onFermer,
             </label>
           )}
         </div>
+        <label className="text-xs font-bold text-gray-500 block mt-3">
+          Inscription
+          <select value={inscrit ? 'oui' : 'non'} onChange={(e) => setInscrit(e.target.value === 'oui')} className={`${champ} mt-1.5`}>
+            <option value="oui">Inscrit</option>
+            <option value="non">Pas inscrit</option>
+          </select>
+        </label>
         {erreur && <p className="mt-3 text-sm font-bold text-red-600 bg-red-50 rounded-xl px-3 py-2">{erreur}</p>}
         <div className="flex justify-end gap-3 mt-5">
           <button onClick={onFermer} disabled={saving} className="px-4 py-2 text-sm font-bold text-gray-500">Annuler</button>

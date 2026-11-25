@@ -26,6 +26,7 @@ import {
 } from '@/lib/calculHeures';
 import { bornesCreneau, tousLesCreneaux } from '@/lib/creneaux';
 import { JOURS } from '@/constants/enums';
+import { niveauDeSemestre } from '@/lib/niveau';
 
 // ── Dates (calcul pur sur "YYYY-MM-DD", sans fuseau) ────────────────
 
@@ -741,4 +742,223 @@ export async function genererFicheSalles(reference: string): Promise<FicheSalles
     nbSansSalle,
     genereLe: new Date().toISOString(),
   };
+}
+// ── Rapport journalier (envoyé par WhatsApp) ────────────────────────
+
+export interface AbsenceJour {
+  seanceId: string;
+  enseignantId: string | null;
+  enseignant: string;
+  cours: string;
+  specialite: string;
+  creneau: string;
+  statut: StatutJustification;
+  motif: string | null;
+}
+
+export interface RetardJour {
+  enseignant: string;
+  cours: string;
+  specialite: string; // « Génie Logiciel N1 »
+  creneau: string;
+  minutes: number;
+}
+
+export interface RapportJournalier {
+  date: string; // YYYY-MM-DD
+  libelle: string; // « Lundi 25 novembre 2026 »
+  nbProgrammes: number; // cours programmés (hors annulés)
+  nbAnnules: number;
+  nbEffectues: number; // cours ouverts (réellement tenus)
+  nbAVenir: number; // pas encore terminés et pas encore ouverts
+  nbAbsences: number;
+  nbJustifiees: number;
+  nbNonJustifiees: number; // y compris justificatif « en attente »
+  absences: AbsenceJour[];
+  retards: RetardJour[];
+}
+
+/**
+ * Bilan d'UNE journée (emplois du temps validés) : cours programmés, effectués, absences
+ * justifiées / non justifiées. Une absence = créneau terminé, jamais ouvert, non annulé ; elle
+ * est justifiée si un signalement d'absence a été accepté pour ce cours.
+ */
+export async function genererRapportJournalier(date: string): Promise<RapportJournalier> {
+  const lignes = await lireSeancesPeriode(date, ajouterJours(date, 1), true);
+  const ref = await lireReferentiels(lignes, true);
+  const maintenant = new Date();
+
+  const ids = lignes.map((l) => l.id);
+  const statuts = new Map<string, { statut: string; motif: string | null }>();
+  const rang = (st: string) => (st === 'accepte' ? 2 : st === 'en_attente' ? 1 : 0);
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data, error } = await supabase
+      .from('signalements_enseignants')
+      .select('seance_edt_id, statut, raison, commentaire_admin')
+      .eq('type', 'absence')
+      .in('seance_edt_id', ids.slice(i, i + 100));
+    if (error) throw error;
+    for (const sg of data ?? []) {
+      const a = statuts.get(sg.seance_edt_id);
+      if (!a || rang(sg.statut) > rang(a.statut)) {
+        statuts.set(sg.seance_edt_id, { statut: sg.statut, motif: sg.commentaire_admin || sg.raison || null });
+      }
+    }
+  }
+
+  // Classes (spécialité + niveau) de chaque séance.
+  const offreIds = Array.from(new Set(lignes.map((l) => l.offre_id).filter((v): v is string => !!v)));
+  const offresSem = new Map<string, { ue_id: string; specialite_id: string; semestre: string | null }>();
+  for (const o of await lireParLots<any>(offreIds, (lot) =>
+    supabase.from('offres').select('id, ue_id, specialite_id, semestre').in('id', lot))) {
+    offresSem.set(o.id, o);
+  }
+  const troncIds = Array.from(new Set(lignes.map((l) => l.tronc_commun_id).filter((v): v is string => !!v)));
+  const liens = await lireParLots<any>(troncIds, (lot) =>
+    supabase.from('troncs_communs_ues').select('tronc_commun_id, ue_id').in('tronc_commun_id', lot));
+  const offresTroncs = await lireParLots<any>(
+    Array.from(new Set(liens.map((l) => l.ue_id as string))),
+    (lot) => supabase.from('offres').select('ue_id, specialite_id, semestre').in('ue_id', lot));
+  const speIds = Array.from(new Set([
+    ...Array.from(offresSem.values()).map((o) => o.specialite_id),
+    ...offresTroncs.map((o) => o.specialite_id as string),
+  ]));
+  const nomSpe = new Map<string, string>();
+  for (const sp of await lireParLots<any>(speIds, (lot) => supabase.from('specialites').select('id, nom').in('id', lot))) {
+    nomSpe.set(sp.id, sp.nom);
+  }
+  const classe = (speId: string, semestre: string | null) => {
+    const n = niveauDeSemestre(semestre);
+    return `${nomSpe.get(speId) ?? 'Spécialité'}${n ? ` N${n}` : ''}`;
+  };
+  const classesTronc = new Map<string, string>();
+  for (const tid of troncIds) {
+    const ues = new Set(liens.filter((l) => l.tronc_commun_id === tid).map((l) => l.ue_id as string));
+    const set = new Set<string>();
+    for (const o of offresTroncs) if (ues.has(o.ue_id)) set.add(classe(o.specialite_id, o.semestre));
+    const l = Array.from(set).sort();
+    classesTronc.set(tid, l.length <= 4 ? l.join(', ') : `${l.slice(0, 4).join(', ')} +${l.length - 4} autres`);
+  }
+  const classeDe = (s: LigneSeanceBrute): string => {
+    if (s.tronc_commun_id) return classesTronc.get(s.tronc_commun_id) || 'Tronc commun';
+    const o = s.offre_id ? offresSem.get(s.offre_id) : undefined;
+    return o ? classe(o.specialite_id, o.semestre) : '';
+  };
+  const nomCoursDe = (s: LigneSeanceBrute): string =>
+    s.tronc_commun_id
+      ? ref.nomTroncParId.get(s.tronc_commun_id) ?? 'Tronc commun'
+      : ref.nomUeParId.get(s.offre_id ? ref.offreParId.get(s.offre_id)?.ue_id ?? '' : '') ?? 'UE';
+  const nomEns = (s: LigneSeanceBrute) =>
+    (s.enseignant_id && ref.nomEnseignantParId.get(s.enseignant_id)) || 'Enseignant non attribué';
+
+  let nbProgrammes = 0, nbAnnules = 0, nbEffectues = 0, nbAVenir = 0;
+  const absences: AbsenceJour[] = [];
+  const retards: RetardJour[] = [];
+  for (const s of lignes) {
+    if (s.annulee) { nbAnnules++; continue; }
+    nbProgrammes++;
+    if (s.heure_ouverture) {
+      nbEffectues++;
+      if (estEnRetard(s.semaine, s.jour, s.creneau, s.heure_ouverture)) {
+        retards.push({
+          enseignant: nomEns(s), cours: nomCoursDe(s), specialite: classeDe(s), creneau: s.creneau,
+          minutes: retardMinutes(s.semaine, s.jour, s.creneau, s.heure_ouverture),
+        });
+      }
+      continue;
+    }
+    if (!seanceEstTerminee(s.semaine, s.jour, s.creneau, maintenant)) { nbAVenir++; continue; }
+
+    const sg = statuts.get(s.id);
+    absences.push({
+      seanceId: s.id,
+      enseignantId: s.enseignant_id,
+      enseignant: nomEns(s),
+      cours: nomCoursDe(s),
+      specialite: classeDe(s),
+      creneau: s.creneau,
+      statut: sg?.statut === 'accepte' ? 'justifiee' : sg?.statut === 'en_attente' ? 'en_attente' : 'non_justifiee',
+      motif: sg?.statut === 'accepte' ? sg.motif : null,
+    });
+  }
+  retards.sort((a, b) => a.creneau.localeCompare(b.creneau) || a.enseignant.localeCompare(b.enseignant));
+  absences.sort((a, b) => a.creneau.localeCompare(b.creneau) || a.enseignant.localeCompare(b.enseignant));
+  const nbJustifiees = absences.filter((a) => a.statut === 'justifiee').length;
+
+  const libelle = formaterDate(date, { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  return {
+    date,
+    libelle: libelle.charAt(0).toUpperCase() + libelle.slice(1),
+    nbProgrammes,
+    nbAnnules,
+    nbEffectues,
+    nbAVenir,
+    nbAbsences: absences.length,
+    nbJustifiees,
+    nbNonJustifiees: absences.length - nbJustifiees,
+    absences,
+    retards,
+  };
+}
+
+/** Justifie une absence (motif obligatoire). Nécessite sql/justification_absences_admin.sql. */
+export async function justifierAbsence(seanceId: string, motif: string): Promise<void> {
+  const { error } = await supabase.rpc('justifier_absence', { p_seance_id: seanceId, p_motif: motif });
+  if (error) {
+    if (/could not find the function|schema cache/i.test(error.message)) {
+      throw new Error('Fonction absente : exécutez sql/justification_absences_admin.sql dans Supabase.');
+    }
+    throw new Error(error.message);
+  }
+}
+
+export async function retirerJustificationAbsence(seanceId: string): Promise<void> {
+  const { error } = await supabase.rpc('retirer_justification_absence', { p_seance_id: seanceId });
+  if (error) throw new Error(error.message);
+}
+
+/** Texte du message WhatsApp du rapport journalier. */
+export function messageRapportJournalier(r: RapportJournalier): string {
+  const L: string[] = [];
+  L.push(`*RAPPORT JOURNALIER — ${r.libelle}*`, 'CENULAPE', '');
+  L.push('*Bilan de la journée*');
+  L.push(`📚 Cours programmés : *${r.nbProgrammes}*`);
+  L.push(`✅ Cours effectués : *${r.nbEffectues}*`);
+  L.push(`❌ Cours non tenus (absences) : *${r.nbAbsences}*`);
+  if (r.retards.length > 0) L.push(`⏰ Enseignants en retard : *${r.retards.length}*`);
+  if (r.nbAVenir > 0) L.push(`⏳ Pas encore tenus (à venir / en cours) : ${r.nbAVenir}`);
+  if (r.nbAnnules > 0) L.push(`➖ Cours annulés : ${r.nbAnnules}`);
+
+  const detail = (nom: string, cours: string, classe: string, creneau: string) =>
+    [`• *${nom}*`, `   Cours : ${cours}`, ...(classe ? [`   Classe : ${classe}`] : []), `   Créneau : ${creneau}`];
+
+  if (r.retards.length > 0) {
+    L.push('', `*⏰ ENSEIGNANTS EN RETARD (${r.retards.length})*`);
+    for (const t of r.retards) {
+      const d = detail(t.enseignant, t.cours, t.specialite, t.creneau);
+      d.push(`   Retard : ${t.minutes} min`);
+      L.push(...d);
+    }
+  }
+  const oui = r.absences.filter((a) => a.statut === 'justifiee');
+  const non = r.absences.filter((a) => a.statut !== 'justifiee');
+  if (oui.length > 0) {
+    L.push('', `*✔ ABSENTS JUSTIFIÉS (${oui.length})*`);
+    for (const a of oui) {
+      const d = detail(a.enseignant, a.cours, a.specialite, a.creneau);
+      if (a.motif) d.push(`   Motif : ${a.motif}`);
+      L.push(...d);
+    }
+  }
+  if (non.length > 0) {
+    L.push('', `*✖ ABSENTS NON JUSTIFIÉS (${non.length})*`);
+    for (const a of non) {
+      const d = detail(a.enseignant, a.cours, a.specialite, a.creneau);
+      if (a.statut === 'en_attente') d.push('   _Justificatif en attente de validation_');
+      L.push(...d);
+    }
+  }
+  if (r.nbProgrammes === 0) L.push('', 'Aucun cours programmé ce jour.');
+  else if (r.retards.length === 0 && r.absences.length === 0) L.push('', '👍 Aucun retard ni absence.');
+  return L.join('\n');
 }

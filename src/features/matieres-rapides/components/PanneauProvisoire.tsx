@@ -17,12 +17,19 @@ export default function PanneauProvisoire({ id, nom, onTermine }: { id: string; 
   const [erreur, setErreur] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
-  useEffect(() => { listEnseignantsPourChoix().then((l) => setReels(l.filter((e) => !e.provisoire))).catch(() => {}); }, []);
+  const [chargement, setChargement] = useState(true);
+  useEffect(() => {
+    listEnseignantsPourChoix()
+      .then((l) => setReels(l.filter((e) => !e.provisoire)))
+      .catch((e) => setErreur(`Liste des enseignants indisponible : ${e?.message ?? 'erreur de chargement'}`))
+      .finally(() => setChargement(false));
+  }, []);
   const filtres = reels.filter((e) => e.nom.toLowerCase().includes(recherche.toLowerCase()) || (e.matricule ?? '').toLowerCase().includes(recherche.toLowerCase()));
 
   async function remplacer() {
     const cible = reels.find((e) => e.id === reelId);
-    if (!cible) return setErreur('Choisissez le véritable enseignant.');
+    setInfo(null);
+    if (!cible) return setErreur('Choisissez d’abord le véritable enseignant dans la liste ci-dessus (cliquez sur son nom).');
     if (!window.confirm(`Remplacer « ${nom} » par « ${cible.nom} » ?\n\nSes matières, séances, heures et rapports seront transférés à ${cible.nom}, puis la fiche provisoire sera supprimée. Cette action est définitive.`)) return;
     setOccupe(true); setErreur(null);
     try { const n = await remplacerProvisoire(id, reelId); setInfo(`${n} élément(s) transféré(s).`); onTermine(true); }
@@ -31,6 +38,9 @@ export default function PanneauProvisoire({ id, nom, onTermine }: { id: string; 
   }
 
   async function convertir() {
+    setInfo(null);
+    if (!email.trim()) return setErreur('Saisissez l’email de l’enseignant avant de continuer.');
+    if (!/^\S+@\S+\.\S+$/.test(email.trim())) return setErreur('L’email saisi n’est pas valide.');
     setOccupe(true); setErreur(null);
     try {
       setPromu(await promouvoirProvisoire(id, nom, { email, numero_whatsapp: whatsapp, numero_cellulaire: cellulaire }));
@@ -62,10 +72,13 @@ export default function PanneauProvisoire({ id, nom, onTermine }: { id: string; 
 
       <p style={{ fontWeight: 800, fontSize: 13, margin: '0 0 6px' }}>Le remplacer par un véritable enseignant</p>
       <input style={{ ...champ, marginBottom: 6 }} placeholder="Rechercher (nom ou matricule)…" value={recherche} onChange={(e) => setRecherche(e.target.value)} />
-      <select style={champ} size={5} value={reelId} onChange={(e) => setReelId(e.target.value)}>
+      <select style={champ} size={5} value={reelId} onChange={(e) => { setReelId(e.target.value); setErreur(null); }}>
         {filtres.map((e) => <option key={e.id} value={e.id}>{e.nom}{e.matricule ? ` (${e.matricule})` : ''}</option>)}
       </select>
-      <button style={{ ...btn, marginTop: 8 }} disabled={occupe || !reelId} onClick={remplacer}>{occupe ? <Loader2 size={14} className="animate-spin" /> : 'Remplacer et transférer son historique'}</button>
+      <p style={{ fontSize: 12, fontWeight: 700, margin: '6px 0 0', color: reelId ? '#166534' : '#92400e' }}>
+        {chargement ? 'Chargement de la liste…' : filtres.length === 0 ? 'Aucun enseignant trouvé.' : reelId ? `Sélectionné : ${reels.find((e) => e.id === reelId)?.nom ?? ''}` : 'Cliquez sur un nom dans la liste pour le sélectionner.'}
+      </p>
+      <button style={{ ...btn, marginTop: 8, opacity: occupe ? 0.6 : 1 }} disabled={occupe} onClick={remplacer}>{occupe ? <Loader2 size={14} className="animate-spin" /> : 'Remplacer et transférer son historique'}</button>
 
       <hr style={{ border: 0, borderTop: '1px solid #fde68a', margin: '16px 0' }} />
 
@@ -75,7 +88,7 @@ export default function PanneauProvisoire({ id, nom, onTermine }: { id: string; 
         <input style={champ} placeholder="Numéro WhatsApp" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} />
         <input style={champ} placeholder="Numéro cellulaire" value={cellulaire} onChange={(e) => setCellulaire(e.target.value)} />
       </div>
-      <button style={{ ...btn, background: '#111827' }} disabled={occupe || !email.trim()} onClick={convertir}>{occupe ? <Loader2 size={14} className="animate-spin" /> : 'Créer l’enseignant et envoyer ses identifiants'}</button>
+      <button style={{ ...btn, background: '#111827', opacity: occupe ? 0.6 : 1 }} disabled={occupe} onClick={convertir}>{occupe ? <Loader2 size={14} className="animate-spin" /> : 'Créer l’enseignant et envoyer ses identifiants'}</button>
 
       {erreur && <p style={{ background: '#fef2f2', color: '#b91c1c', borderRadius: 12, padding: '10px 12px', fontSize: 13, fontWeight: 700, margin: '12px 0 0' }}>{erreur}</p>}
       {info && <p style={{ fontSize: 12, color: '#166534', fontWeight: 700, margin: '8px 0 0' }}>{info}</p>}

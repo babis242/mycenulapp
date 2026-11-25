@@ -40,6 +40,7 @@ export default function ModifierEtudiantModal({
   const [niveau, setNiveau] = useState(
     etudiant.niveau || niveauDeSemestre('standard', etudiant.semestre) || ''
   );
+  const [inscrit, setInscrit] = useState(etudiant.inscrit !== false);
   const [saving, setSaving] = useState(false);
   const [erreur, setErreur] = useState<string | null>(null);
 
@@ -111,6 +112,7 @@ export default function ModifierEtudiantModal({
         specialite_id: specialiteId,
         semestre,
         niveau,
+        inscrit,
       });
       onEnregistre();
     } catch (err) {
@@ -154,6 +156,13 @@ export default function ModifierEtudiantModal({
                   {s.nom} ({s.cycle})
                 </option>
               ))}
+            </select>
+          </label>
+          <label className="text-xs font-bold text-gray-500">
+            Inscription
+            <select value={inscrit ? 'oui' : 'non'} onChange={(e) => setInscrit(e.target.value === 'oui')} className={`${champ} mt-1.5`}>
+              <option value="oui">Inscrit</option>
+              <option value="non">Pas inscrit</option>
             </select>
           </label>
           <div className="grid grid-cols-2 gap-3">

@@ -10,6 +10,7 @@ export interface Etudiant {
   specialite_id: string;
   semestre: string;
   niveau?: string;
+  inscrit?: boolean; // inscrit / pas inscrit (sql/etudiants_inscription.sql) ; absent = inscrit
   created_at: string;
 }
 
@@ -17,14 +18,19 @@ export async function listEtudiants(
   specialiteId: string,
   semestre: string
 ): Promise<Etudiant[]> {
-  const { data, error } = await supabase
-    .from('etudiants')
-    .select('id, matricule, nom_complet, specialite_id, semestre, niveau, created_at')
-    .eq('specialite_id', specialiteId)
-    .eq('semestre', semestre)
-    .order('nom_complet', { ascending: true });
+  const lire = (colonnes: string) =>
+    supabase
+      .from('etudiants')
+      .select(colonnes)
+      .eq('specialite_id', specialiteId)
+      .eq('semestre', semestre)
+      .order('nom_complet', { ascending: true });
+  const base = 'id, matricule, nom_complet, specialite_id, semestre, niveau, created_at';
+  let { data, error } = await lire(`${base}, inscrit`);
+  // Colonne « inscrit » pas encore créée (sql/etudiants_inscription.sql) : on lit sans elle.
+  if (error && /inscrit/i.test(error.message)) ({ data, error } = await lire(base));
   if (error) throw error;
-  return data ?? [];
+  return (data ?? []) as unknown as Etudiant[];
 }
 
 // Lecture hors-ligne — même filtre, depuis Dexie.
@@ -99,6 +105,7 @@ export interface ModificationEtudiant {
   specialite_id: string;
   semestre: string;
   niveau: string;
+  inscrit?: boolean;
 }
 
 // Modifie la fiche d'un étudiant (nom, matricule, spécialité, semestre,
@@ -115,6 +122,7 @@ export async function modifierEtudiant(
     specialite_id: m.specialite_id,
     semestre: m.semestre,
     niveau: m.niveau,
+    ...(m.inscrit === undefined ? {} : { inscrit: m.inscrit }),
   };
   const { data, error } = await supabase
     .from('etudiants')
@@ -172,7 +180,8 @@ export async function creerEtudiant(
   specialiteId: string,
   semestre: string,
   nomComplet: string,
-  matricule: string | null
+  matricule: string | null,
+  inscrit = true
 ): Promise<Etudiant> {
   const nom = nomComplet.trim();
   if (!nom) throw new Error('Le nom est obligatoire.');
@@ -184,7 +193,7 @@ export async function creerEtudiant(
     const m = fourni || `${PREFIXE_PROVISOIRE}${String(numero).padStart(4, '0')}`;
     const { data, error } = await supabase
       .from('etudiants')
-      .insert({ matricule: m, nom_complet: nom, specialite_id: specialiteId, semestre, niveau })
+      .insert({ matricule: m, nom_complet: nom, specialite_id: specialiteId, semestre, niveau, ...(inscrit ? {} : { inscrit: false }) })
       .select('id, matricule, nom_complet, specialite_id, semestre, niveau, created_at')
       .single();
     if (!error) return data as Etudiant;
@@ -199,4 +208,64 @@ export async function creerEtudiant(
     throw error;
   }
   throw new Error('Impossible de générer un matricule provisoire unique.');
+}
+
+/** Change le statut d'inscription d'un étudiant (inscrit / pas inscrit). */
+export async function definirInscription(id: string, inscrit: boolean): Promise<void> {
+  const { data, error } = await supabase.from('etudiants').update({ inscrit }).eq('id', id).select('id');
+  if (error) {
+    if (/inscrit/i.test(error.message)) throw new Error('Colonne absente : exécutez sql/etudiants_inscription.sql dans Supabase.');
+    throw error;
+  }
+  if ((data ?? []).length === 0) throw new Error('Modification refusée par la base (droits insuffisants).');
+}
+
+// ── Recherche générale (toute l'école) ───────────────────────────────────────
+export interface EtudiantTrouve extends Etudiant {
+  specialite_nom: string;
+  specialite_cycle: string;
+}
+
+/**
+ * Cherche des étudiants par nom ou matricule dans TOUTES les classes. Chaque mot saisi doit
+ * apparaître dans le nom ou le matricule (« kamga paul » trouve « PAUL KAMGA »). 50 résultats au plus.
+ */
+export async function rechercherEtudiants(terme: string): Promise<{ resultats: EtudiantTrouve[]; tronque: boolean }> {
+  const mots = terme
+    .trim()
+    .split(/\s+/)
+    .map((m) => m.replace(/[,()%*\\]/g, ''))
+    .filter(Boolean);
+  if (mots.length === 0) return { resultats: [], tronque: false };
+
+  const LIMITE = 50;
+  const base = 'id, matricule, nom_complet, specialite_id, semestre, niveau, created_at';
+  const lancer = (colonnes: string) => {
+    let q: any = supabase.from('etudiants').select(colonnes);
+    for (const m of mots) q = q.or(`nom_complet.ilike.%${m}%,matricule.ilike.%${m}%`);
+    return q.order('nom_complet', { ascending: true }).limit(LIMITE + 1);
+  };
+  let { data, error } = await lancer(`${base}, inscrit`);
+  if (error && /inscrit/i.test(error.message)) ({ data, error } = await lancer(base));
+  if (error) throw error;
+
+  const lignes = (data ?? []) as unknown as Etudiant[];
+  const tronque = lignes.length > LIMITE;
+  const utiles = lignes.slice(0, LIMITE);
+
+  const ids = Array.from(new Set(utiles.map((e) => e.specialite_id)));
+  const noms = new Map<string, { nom: string; cycle: string }>();
+  if (ids.length > 0) {
+    const { data: sp, error: errSp } = await supabase.from('specialites').select('id, nom, cycle').in('id', ids);
+    if (errSp) throw errSp;
+    for (const x of sp ?? []) noms.set(x.id, { nom: x.nom, cycle: x.cycle });
+  }
+  return {
+    tronque,
+    resultats: utiles.map((e) => ({
+      ...e,
+      specialite_nom: noms.get(e.specialite_id)?.nom ?? '—',
+      specialite_cycle: noms.get(e.specialite_id)?.cycle ?? '',
+    })),
+  };
 }

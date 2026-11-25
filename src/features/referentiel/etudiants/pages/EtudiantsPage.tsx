@@ -1,7 +1,9 @@
 // src/features/referentiel/etudiants/pages/EtudiantsPage.tsx
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import * as XLSX from 'xlsx';
 import {
+  FileDown,
   Loader2,
   Pencil,
   Plus,
@@ -22,10 +24,12 @@ import {
   lireEtudiantsDepuisCache,
   ajouterEtudiants,
   supprimerEtudiant,
+  definirInscription,
   type Etudiant,
   type NouvelEtudiant,
 } from '../api';
 import ModifierEtudiantModal from '../components/ModifierEtudiantModal';
+import RechercheGeneraleEtudiants from '../components/RechercheGeneraleEtudiants';
 
 interface Ecole {
   id: string;
@@ -59,6 +63,7 @@ export default function EtudiantsPage() {
   const [chargement, setChargement] = useState(false);
   const [depuisCache, setDepuisCache] = useState(false);
   const [recherche, setRecherche] = useState('');
+  const [filtreInscription, setFiltreInscription] = useState<'tous' | 'inscrits' | 'non_inscrits'>('tous');
 
   const [modeAjout, setModeAjout] = useState<'manuel' | 'excel' | null>(null);
   const [lignesManuelles, setLignesManuelles] = useState<NouvelEtudiant[]>([
@@ -262,12 +267,30 @@ export default function EtudiantsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [specialiteId, semestre]);
 
-  const filtres = etudiants.filter((e) =>
-    recherche.trim()
-      ? e.nom_complet.toLowerCase().includes(recherche.toLowerCase()) ||
-        e.matricule.toLowerCase().includes(recherche.toLowerCase())
-      : true
-  );
+  const nbInscrits = etudiants.filter((e) => e.inscrit !== false).length;
+  const nbNonInscrits = etudiants.length - nbInscrits;
+  const filtres = etudiants
+    .filter((e) =>
+      filtreInscription === 'tous' ? true : filtreInscription === 'inscrits' ? e.inscrit !== false : e.inscrit === false
+    )
+    .filter((e) =>
+      recherche.trim()
+        ? e.nom_complet.toLowerCase().includes(recherche.toLowerCase()) ||
+          e.matricule.toLowerCase().includes(recherche.toLowerCase())
+        : true
+    );
+
+  // Bascule inscrit / pas inscrit directement depuis la liste (mise à jour immédiate, annulée en cas d'erreur).
+  async function basculerInscription(e: Etudiant) {
+    const nouveau = e.inscrit === false;
+    setEtudiants((p) => p.map((x) => (x.id === e.id ? { ...x, inscrit: nouveau } : x)));
+    try {
+      await definirInscription(e.id, nouveau);
+    } catch (err) {
+      setEtudiants((p) => p.map((x) => (x.id === e.id ? { ...x, inscrit: e.inscrit } : x)));
+      setMessageAjout(err instanceof Error ? err.message : 'Modification impossible.');
+    }
+  }
 
   function ajouterLigne() {
     setLignesManuelles((prev) => [...prev, { matricule: '', nom_complet: '' }]);
@@ -417,11 +440,21 @@ export default function EtudiantsPage() {
 
   return (
     <div>
-      <p className="font-extrabold text-2xl text-gray-900 mb-1">Étudiants</p>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <p className="font-extrabold text-2xl text-gray-900 mb-1">Étudiants</p>
+        <Link
+          to="/referentiel/etudiants/export-pdf"
+          className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+        >
+          <FileDown size={15} /> Exporter en PDF
+        </Link>
+      </div>
       <p className="text-sm text-gray-400 mb-6">
         Liste des étudiants par spécialité et semestre — utilisée pour
         l'appel (Scénario 13).
       </p>
+
+      <RechercheGeneraleEtudiants />
 
       <div className="mb-4">
         <RechercheSpecialite onSelect={handleSelectionRecherche} />
@@ -755,7 +788,7 @@ export default function EtudiantsPage() {
             </div>
           )}
 
-          <div className="flex mb-4">
+          <div className="flex flex-wrap items-center gap-3 mb-4">
             <div className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 w-full sm:w-72">
               <Search size={15} className="text-gray-300 shrink-0" />
               <input
@@ -764,6 +797,24 @@ export default function EtudiantsPage() {
                 placeholder="Rechercher un étudiant..."
                 className="w-full text-sm font-semibold outline-none placeholder:text-gray-300"
               />
+            </div>
+            <div className="inline-flex gap-1.5">
+              {([
+                ['tous', `Tous (${etudiants.length})`],
+                ['inscrits', `Inscrits (${nbInscrits})`],
+                ['non_inscrits', `Pas inscrits (${nbNonInscrits})`],
+              ] as const).map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => setFiltreInscription(id)}
+                  className={`rounded-full px-3.5 py-2 text-xs font-bold ${
+                    filtreInscription === id ? 'bg-gray-900 text-white' : 'bg-white text-gray-500'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -782,6 +833,7 @@ export default function EtudiantsPage() {
                   <tr className="border-b border-gray-50 text-left text-xs font-bold text-gray-400 uppercase tracking-wide">
                     <th className="px-5 py-3">Matricule</th>
                     <th className="px-5 py-3">Nom complet</th>
+                    <th className="px-5 py-3">Inscription</th>
                     <th className="px-5 py-3"></th>
                   </tr>
                 </thead>
@@ -796,6 +848,18 @@ export default function EtudiantsPage() {
                       </td>
                       <td className="px-5 py-3.5 font-bold text-gray-900">
                         {e.nom_complet}
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <button
+                          type="button"
+                          onClick={() => basculerInscription(e)}
+                          title="Cliquer pour changer"
+                          className={`rounded-full px-3 py-1 text-xs font-extrabold ${
+                            e.inscrit === false ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'
+                          }`}
+                        >
+                          {e.inscrit === false ? 'Pas inscrit' : 'Inscrit'}
+                        </button>
                       </td>
                       <td className="px-5 py-3.5 text-right whitespace-nowrap">
                         <button

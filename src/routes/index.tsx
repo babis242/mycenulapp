@@ -10,6 +10,7 @@ import MotDePasseOubliePage from '@/features/auth/pages/MotDePasseOubliePage';
 import InscriptionEnseignantPage from '@/features/inscriptions/pages/InscriptionEnseignantPage';
 import ListeInscriptionsPage from '@/features/inscriptions/pages/ListeInscriptionsPage';
 import EtudiantsPage from '@/features/referentiel/etudiants/pages/EtudiantsPage';
+import ExporterEtudiantsPdfPage from '@/features/referentiel/etudiants/pages/ExporterEtudiantsPdfPage';
 import DashboardPage from '@/features/dashboard/pages/DashboardPage';
 
 import ReferentielLayout from '@/features/referentiel/ReferentielLayout';
@@ -22,6 +23,7 @@ import RepartitionPage from '@/features/repartition/pages/RepartitionPage';
 import SuiviSupportsCoursPage from '@/features/repartition/pages/SuiviSupportsCoursPage';
 import EtatCouverturePage from '@/features/repartition/pages/EtatCouverturePage';
 import RapportsPdfPage from '@/features/rapports-pdf/pages/RapportsPdfPage';
+import RapportJournalierPage from '@/features/rapports-pdf/pages/RapportJournalierPage';
 import FichesPresencePage from '@/features/fiches-presence/pages/FichesPresencePage';
 import FichesArriveePage from '@/features/fiches-presence/pages/FichesArriveePage';
 import SondageAdminPage from '@/features/sondage/pages/SondageAdminPage';
@@ -136,6 +138,7 @@ export default function AppRoutes() {
                 element={<ListeInscriptionsPage />}
               />
               <Route path="etudiants" element={<EtudiantsPage />} />
+              <Route path="etudiants/export-pdf" element={<ExporterEtudiantsPdfPage />} />
 
               <Route path="responsables" element={<ListeResponsablesPage />} />
               <Route
@@ -170,6 +173,7 @@ export default function AppRoutes() {
 
           <Route element={<RoleRoute allowedRoles={['administrateur']} />}>
             <Route path="/rapports-pdf" element={<RapportsPdfPage />} />
+            <Route path="/rapport-journalier" element={<RapportJournalierPage />} />
           </Route>
 
           <Route
@@ -268,6 +272,7 @@ export default function AppRoutes() {
               />
             }
           >
+            <Route path="/signalements" element={<SignalementsAdminPage />} />
             <Route path="/presences/saisie" element={<SaisiePresencesPage />} />
             <Route path="/scanner-enseignant" element={<ScanEnseignantPage />} />
             <Route
@@ -293,7 +298,6 @@ export default function AppRoutes() {
             <Route path="/qr-enseignants" element={<QrEnseignantsAdminPage />} />
             <Route path="/heures" element={<EtatHeuresPage />} />
             <Route path="/etat-matieres" element={<EtatMatieresPage />} />
-            <Route path="/signalements" element={<SignalementsAdminPage />} />
             <Route path="/examens" element={<ExamensPage />} />
             <Route path="/examens/:id" element={<ExamenEditeurPage />} />
             <Route
