@@ -141,3 +141,62 @@ export async function modifierEtudiant(
     /* le prochain rafraîchissement corrigera le cache */
   }
 }
+
+// ── Matricule provisoire ─────────────────────────────────────────────────────
+// Un étudiant sans matricule officiel reçoit « PROV-0001 », « PROV-0002 »… (numéro
+// suivant dans la spécialité). Il suffit ensuite de modifier sa fiche pour y mettre le vrai matricule.
+export const PREFIXE_PROVISOIRE = 'PROV-';
+export const estMatriculeProvisoire = (m: string) => m.trim().toUpperCase().startsWith(PREFIXE_PROVISOIRE);
+
+async function numeroProvisoireSuivant(specialiteId: string): Promise<number> {
+  const { data, error } = await supabase
+    .from('etudiants')
+    .select('matricule')
+    .eq('specialite_id', specialiteId)
+    .ilike('matricule', `${PREFIXE_PROVISOIRE}%`)
+    .limit(5000);
+  if (error) throw error;
+  let max = 0;
+  for (const e of data ?? []) {
+    const n = Number(String(e.matricule).slice(PREFIXE_PROVISOIRE.length));
+    if (Number.isFinite(n) && n > max) max = n;
+  }
+  return max + 1;
+}
+
+/**
+ * Crée UN étudiant dans une classe (spécialité + semestre). `matricule` vide ou null =
+ * matricule provisoire généré automatiquement. Renvoie l'étudiant créé.
+ */
+export async function creerEtudiant(
+  specialiteId: string,
+  semestre: string,
+  nomComplet: string,
+  matricule: string | null
+): Promise<Etudiant> {
+  const nom = nomComplet.trim();
+  if (!nom) throw new Error('Le nom est obligatoire.');
+  const niveau = niveauDeSemestre('standard', semestre) ?? 'Niveau 1';
+  const fourni = (matricule ?? '').trim();
+
+  let numero = fourni ? 0 : await numeroProvisoireSuivant(specialiteId);
+  for (let essai = 0; essai < 5; essai++) {
+    const m = fourni || `${PREFIXE_PROVISOIRE}${String(numero).padStart(4, '0')}`;
+    const { data, error } = await supabase
+      .from('etudiants')
+      .insert({ matricule: m, nom_complet: nom, specialite_id: specialiteId, semestre, niveau })
+      .select('id, matricule, nom_complet, specialite_id, semestre, niveau, created_at')
+      .single();
+    if (!error) return data as Etudiant;
+    if ((error as any).code === '23505') {
+      if (fourni) throw new Error('Un étudiant avec ce matricule existe déjà dans cette spécialité et ce niveau.');
+      numero += 1; // numéro provisoire déjà pris (autre niveau, saisie simultanée) : on prend le suivant
+      continue;
+    }
+    if (/row-level security|permission denied/i.test(error.message)) {
+      throw new Error("Ajout refusé : exécutez sql/gestion_etudiants_saisie.sql dans Supabase pour autoriser ce compte.");
+    }
+    throw error;
+  }
+  throw new Error('Impossible de générer un matricule provisoire unique.');
+}

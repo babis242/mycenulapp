@@ -4,8 +4,10 @@
 // chaque étudiant son cumul d'heures d'absence de la semaine (0 par défaut) et on joint
 // la photo de la fiche de présence physique (stockée sur Cloudflare R2).
 import { useEffect, useMemo, useState } from 'react';
-import { Camera, CheckCircle2, Eye, Loader2, Save, Search } from 'lucide-react';
-import { listEtudiants, type Etudiant } from '@/features/referentiel/etudiants/api';
+import { Camera, CheckCircle2, Eye, Loader2, Pencil, Plus, Save, Search, Trash2 } from 'lucide-react';
+import { estMatriculeProvisoire, listEtudiants, supprimerEtudiant, type Etudiant } from '@/features/referentiel/etudiants/api';
+import AjouterEtudiantModal from '@/features/referentiel/etudiants/components/AjouterEtudiantModal';
+import ModifierEtudiantModal from '@/features/referentiel/etudiants/components/ModifierEtudiantModal';
 import SelecteurGroupe, { lundiCourant, type ChoixGroupe } from '../components/SelecteurGroupe';
 import { enregistrerFicheImage, getFicheImage, urlFicheImage, type FicheImage } from '../ficheImageApi';
 import {
@@ -40,6 +42,8 @@ export default function SaisiePresencesPage() {
   const [ficheExistante, setFicheExistante] = useState<FicheImage | null>(null);
   const [photo, setPhoto] = useState<File | null>(null);
   const [apercu, setApercu] = useState<string | null>(null);
+  const [ajout, setAjout] = useState(false);
+  const [aModifier, setAModifier] = useState<Etudiant | null>(null);
 
   useEffect(() => {
     setErreur(null); setSucces(null); setModifie(false); setPhoto(null); setFicheExistante(null);
@@ -82,6 +86,31 @@ export default function SaisiePresencesPage() {
   const heuresDe = (id: string) => Math.max(0, Number((valeurs[id] ?? '0').replace(',', '.')) || 0);
   const nbAvecAbsence = etudiants.filter((e) => heuresDe(e.id) > 0).length;
   const depassent = etudiants.filter((e) => progH > 0 && heuresDe(e.id) > progH + 1e-9);
+
+  // Recharge la liste après un ajout / une modification / une suppression, en gardant les heures déjà saisies.
+  async function rechargerEtudiants(message?: string) {
+    try {
+      const e = await listEtudiants(choix.specialiteId, choix.semestre);
+      setEtudiants(e);
+      setValeurs((p) => Object.fromEntries(e.map((x) => [x.id, p[x.id] ?? '0'])));
+      if (message) setSucces(message);
+    } catch (err: any) {
+      setErreur(err?.message ?? 'Rechargement impossible.');
+    }
+  }
+
+  async function retirer(e: Etudiant) {
+    if (!window.confirm(`Supprimer « ${e.nom_complet} » (${e.matricule}) ? Ses absences enregistrées seront aussi supprimées.`)) return;
+    setErreur(null); setSucces(null);
+    try {
+      await supprimerEtudiant(e.id);
+      await rechargerEtudiants(`« ${e.nom_complet} » a été supprimé.`);
+    } catch (err: any) {
+      setErreur(/row-level security|permission denied/i.test(err?.message ?? '')
+        ? 'Suppression refusée : exécutez sql/gestion_etudiants_saisie.sql dans Supabase.'
+        : err?.message ?? 'Suppression impossible.');
+    }
+  }
 
   function saisir(id: string, v: string) {
     setValeurs((p) => ({ ...p, [id]: v }));
@@ -144,7 +173,11 @@ export default function SaisiePresencesPage() {
       {chargement && <Loader2 className="animate-spin text-red-600 mx-auto" />}
 
       {prete && etudiants.length === 0 && (
-        <div style={carte}><p className="text-sm text-gray-500">Aucun étudiant inscrit dans cette classe pour ce semestre. (Si la classe a bien des étudiants, ce compte n'a peut-être pas le droit de les lire : exécutez sql/acces_secretaire_presences.sql dans Supabase.)</p></div>
+        <div style={carte}>
+          <button type="button" onClick={() => setAjout(true)} style={{ ...pastille(true), display: 'inline-flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+            <Plus size={15} /> Ajouter un étudiant
+          </button>
+          <p className="text-sm text-gray-500">Aucun étudiant inscrit dans cette classe pour ce semestre. (Si la classe a bien des étudiants, ce compte n'a peut-être pas le droit de les lire : exécutez sql/acces_secretaire_presences.sql dans Supabase.)</p></div>
       )}
 
       {prete && etudiants.length > 0 && (
@@ -179,6 +212,9 @@ export default function SaisiePresencesPage() {
                 <input value={recherche} onChange={(e) => setRecherche(e.target.value)} placeholder="Rechercher un étudiant…"
                   style={{ border: 0, outline: 'none', background: 'transparent', fontSize: 14, fontWeight: 600, width: '100%' }} />
               </div>
+              <button type="button" onClick={() => setAjout(true)} style={{ ...pastille(true), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                <Plus size={15} /> Ajouter un étudiant
+              </button>
             </div>
             <p style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 10 }}>
               {etudiants.length} étudiant(s) · {nbAvecAbsence} avec des absences
@@ -189,13 +225,26 @@ export default function SaisiePresencesPage() {
               const trop = progH > 0 && h > progH + 1e-9;
               return (
                 <div key={e.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, borderBottom: '1px solid #f3f4f6', background: h > 0 ? '#fef2f2' : 'transparent', padding: '8px 8px' }}>
-                  <span style={{ fontSize: 14, fontWeight: 700, color: '#111827' }}>{e.nom_complet}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: '#111827', minWidth: 0 }}>
+                    {e.nom_complet}
+                    {estMatriculeProvisoire(e.matricule) && (
+                      <span style={{ marginLeft: 8, background: '#fef3c7', color: '#b45309', borderRadius: 999, padding: '1px 8px', fontSize: 10, fontWeight: 800 }}>
+                        {e.matricule}
+                      </span>
+                    )}
+                  </span>
                   <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
                     <input type="number" min={0} step={0.5} inputMode="decimal" value={valeurs[e.id] ?? '0'}
                       onChange={(ev) => saisir(e.id, ev.target.value)}
                       onFocus={(ev) => ev.target.select()}
                       style={{ width: 80, border: `1px solid ${trop ? '#dc2626' : '#e5e7eb'}`, borderRadius: 10, padding: '7px 10px', fontSize: 15, fontWeight: 800, textAlign: 'center', color: h > 0 ? '#dc2626' : '#111827' }} />
                     <span style={{ fontSize: 12, fontWeight: 700, color: '#9ca3af' }}>h</span>
+                    <button type="button" title="Modifier l’étudiant" onClick={() => setAModifier(e)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: '#9ca3af', padding: 6 }}>
+                      <Pencil size={15} />
+                    </button>
+                    <button type="button" title="Supprimer l’étudiant" onClick={() => retirer(e)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: '#f87171', padding: 6 }}>
+                      <Trash2 size={15} />
+                    </button>
                   </span>
                 </div>
               );
@@ -212,6 +261,28 @@ export default function SaisiePresencesPage() {
             {succes && <span style={{ fontSize: 13, fontWeight: 700, color: '#15803d', display: 'inline-flex', gap: 6, alignItems: 'center', background: '#fff', borderRadius: 999, padding: '6px 12px' }}><CheckCircle2 size={15} />{succes}</span>}
           </div>
         </>
+      )}
+
+      {ajout && (
+        <AjouterEtudiantModal
+          specialiteId={choix.specialiteId}
+          semestre={choix.semestre}
+          onFermer={() => setAjout(false)}
+          onCree={(e) => {
+            setAjout(false);
+            rechargerEtudiants(`« ${e.nom_complet} » ajouté (matricule ${e.matricule}).`);
+          }}
+        />
+      )}
+      {aModifier && (
+        <ModifierEtudiantModal
+          etudiant={aModifier}
+          onFermer={() => setAModifier(null)}
+          onEnregistre={() => {
+            setAModifier(null);
+            rechargerEtudiants('Étudiant modifié.');
+          }}
+        />
       )}
     </div>
   );
