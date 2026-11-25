@@ -1,7 +1,7 @@
 // src/features/fiches-presence/ficheImageApi.ts
 //
 // Photo de la fiche de présence physique, jointe à la saisie hebdomadaire d'une classe
-// (spécialité + semestre + semaine). Le fichier est stocké sur Cloudflare R2 (Edge
+// (spécialité + semestre + semaine) : une ou plusieurs photos. Le fichier est stocké sur Cloudflare R2 (Edge
 // Function r2-fichier, purpose « fiche-presence ») ; la table fiches_presence_images
 // garde sa clé. Nécessite sql/absences_hebdomadaires.sql.
 import { supabase } from '@/lib/supabase';
@@ -16,21 +16,26 @@ export interface FicheImage {
 
 const TAILLE_MAX = 8 * 1024 * 1024;
 
-export async function getFicheImage(specialiteId: string, semestre: string, semaine: string): Promise<FicheImage | null> {
+function versFiche(r: any): FicheImage {
+  return { id: r.id, chemin: r.chemin, nomFichier: r.nom_fichier, creeLe: r.created_at };
+}
+
+/** Toutes les photos jointes à la classe pour la semaine (la plus ancienne d'abord). */
+export async function listerFichesImages(specialiteId: string, semestre: string, semaine: string): Promise<FicheImage[]> {
   const { data, error } = await supabase
     .from('fiches_presence_images')
-    .select('id, chemin, nom_fichier, updated_at')
+    .select('id, chemin, nom_fichier, created_at')
     .eq('specialite_id', specialiteId)
     .eq('semestre', semestre)
     .eq('semaine', semaine)
-    .maybeSingle();
+    .order('created_at', { ascending: true });
   if (error) {
     if (/does not exist|schema cache/i.test(error.message)) {
       throw new Error('Tables absentes : exécutez sql/absences_hebdomadaires.sql dans Supabase.');
     }
     throw error;
   }
-  return data ? { id: data.id, chemin: data.chemin, nomFichier: data.nom_fichier, creeLe: data.updated_at } : null;
+  return (data ?? []).map(versFiche);
 }
 
 // Réduit la photo (1800 px max, JPEG) : une photo de téléphone fait souvent plusieurs Mo.
@@ -53,36 +58,43 @@ export async function compresserImage(fichier: File): Promise<File> {
   return fichier;
 }
 
-// Envoie la photo sur R2 puis enregistre (ou remplace) sa référence pour la classe et la semaine.
-export async function enregistrerFicheImage(
+// Envoie UNE photo sur R2 puis l'ajoute à la classe pour la semaine.
+export async function ajouterFicheImage(
   specialiteId: string,
   semestre: string,
   semaine: string,
   fichier: File
 ): Promise<FicheImage> {
   const image = await compresserImage(fichier);
-  if (image.size > TAILLE_MAX) throw new Error('La photo dépasse 8 Mo.');
+  if (image.size > TAILLE_MAX) throw new Error(`« ${fichier.name} » dépasse 8 Mo.`);
   const { key, nom } = await televerserFichier('fiche-presence', `${specialiteId}_${semestre}_${semaine}`, image);
 
   const { data: u } = await supabase.auth.getUser();
   const { data, error } = await supabase
     .from('fiches_presence_images')
-    .upsert(
-      {
-        specialite_id: specialiteId,
-        semestre,
-        semaine,
-        chemin: key,
-        nom_fichier: nom || fichier.name,
-        ajoute_par: u.user?.id ?? null,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'specialite_id,semestre,semaine' }
-    )
-    .select('id, chemin, nom_fichier, updated_at')
+    .insert({
+      specialite_id: specialiteId,
+      semestre,
+      semaine,
+      chemin: key,
+      nom_fichier: nom || fichier.name,
+      ajoute_par: u.user?.id ?? null,
+    })
+    .select('id, chemin, nom_fichier, created_at')
     .single();
+  if (error) {
+    if ((error as any).code === '23505') {
+      throw new Error('Plusieurs photos impossibles : exécutez sql/fiches_presence_plusieurs_photos.sql dans Supabase.');
+    }
+    throw new Error(error.message);
+  }
+  return versFiche(data);
+}
+
+/** Retire une photo de la classe (la référence est supprimée ; le fichier reste dans le bucket R2). */
+export async function retirerFicheImage(id: string): Promise<void> {
+  const { error } = await supabase.from('fiches_presence_images').delete().eq('id', id);
   if (error) throw new Error(error.message);
-  return { id: data.id, chemin: data.chemin, nomFichier: data.nom_fichier, creeLe: data.updated_at };
 }
 
 /** Adresse publique de la photo sur R2. */

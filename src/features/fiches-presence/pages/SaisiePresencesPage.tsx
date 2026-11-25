@@ -2,14 +2,14 @@
 //
 // Saisie hebdomadaire des absences : pour une classe et une semaine, on saisit pour
 // chaque étudiant son cumul d'heures d'absence de la semaine (0 par défaut) et on joint
-// la photo de la fiche de présence physique (stockée sur Cloudflare R2).
+// les photos de la fiche de présence physique (une ou plusieurs, stockées sur Cloudflare R2).
 import { useEffect, useMemo, useState } from 'react';
 import { Camera, CheckCircle2, Eye, Loader2, Pencil, Plus, Save, Search, Trash2 } from 'lucide-react';
 import { estMatriculeProvisoire, listEtudiants, supprimerEtudiant, type Etudiant } from '@/features/referentiel/etudiants/api';
 import AjouterEtudiantModal from '@/features/referentiel/etudiants/components/AjouterEtudiantModal';
 import ModifierEtudiantModal from '@/features/referentiel/etudiants/components/ModifierEtudiantModal';
 import SelecteurGroupe, { lundiCourant, type ChoixGroupe } from '../components/SelecteurGroupe';
-import { enregistrerFicheImage, getFicheImage, urlFicheImage, type FicheImage } from '../ficheImageApi';
+import { ajouterFicheImage, listerFichesImages, retirerFicheImage, urlFicheImage, type FicheImage } from '../ficheImageApi';
 import {
   enregistrerAbsencesHebdo,
   getCreneauxProgrammes,
@@ -39,14 +39,14 @@ export default function SaisiePresencesPage() {
   const [erreur, setErreur] = useState<string | null>(null);
   const [succes, setSucces] = useState<string | null>(null);
   const [modifie, setModifie] = useState(false);
-  const [ficheExistante, setFicheExistante] = useState<FicheImage | null>(null);
-  const [photo, setPhoto] = useState<File | null>(null);
-  const [apercu, setApercu] = useState<string | null>(null);
+  const [fiches, setFiches] = useState<FicheImage[]>([]); // photos déjà jointes
+  const [photos, setPhotos] = useState<File[]>([]); // nouvelles photos, envoyées à l'enregistrement
+  const [apercus, setApercus] = useState<string[]>([]);
   const [ajout, setAjout] = useState(false);
   const [aModifier, setAModifier] = useState<Etudiant | null>(null);
 
   useEffect(() => {
-    setErreur(null); setSucces(null); setModifie(false); setPhoto(null); setFicheExistante(null);
+    setErreur(null); setSucces(null); setModifie(false); setPhotos([]); setFiches([]);
     if (!choix.specialiteId || !choix.semestre || !choix.semaine) {
       setEtudiants([]); setValeurs({}); setProgH(0);
       return;
@@ -57,14 +57,14 @@ export default function SaisiePresencesPage() {
       listEtudiants(choix.specialiteId, choix.semestre),
       getCreneauxProgrammes(choix.specialiteId, choix.semestre, choix.semaine).catch(() => []),
       lireAbsencesHebdo(choix.specialiteId, choix.semestre, choix.semaine),
-      getFicheImage(choix.specialiteId, choix.semestre, choix.semaine).catch(() => null),
+      listerFichesImages(choix.specialiteId, choix.semestre, choix.semaine).catch(() => [] as FicheImage[]),
     ])
       .then(([e, c, abs, f]) => {
         if (!actif) return;
         setEtudiants(e);
         setProgH(heuresProgrammees(c));
         setValeurs(Object.fromEntries(e.map((x) => [x.id, String(abs.get(x.id) ?? 0)])));
-        setFicheExistante(f);
+        setFiches(f);
       })
       .catch((e) => actif && setErreur(e?.message ?? 'Erreur de chargement.'))
       .finally(() => actif && setChargement(false));
@@ -72,11 +72,10 @@ export default function SaisiePresencesPage() {
   }, [choix.specialiteId, choix.semestre, choix.semaine]);
 
   useEffect(() => {
-    if (!photo) { setApercu(null); return; }
-    const url = URL.createObjectURL(photo);
-    setApercu(url);
-    return () => URL.revokeObjectURL(url);
-  }, [photo]);
+    const urls = photos.map((f) => URL.createObjectURL(f));
+    setApercus(urls);
+    return () => urls.forEach((u) => URL.revokeObjectURL(u));
+  }, [photos]);
 
   const visibles = useMemo(() => {
     const q = recherche.trim().toLowerCase();
@@ -119,8 +118,8 @@ export default function SaisiePresencesPage() {
 
   async function enregistrer() {
     setErreur(null); setSucces(null);
-    if (!photo && !ficheExistante) {
-      setErreur('Joignez la photo de la fiche de présence avant d’enregistrer.');
+    if (photos.length === 0 && fiches.length === 0) {
+      setErreur('Joignez au moins une photo de la fiche de présence avant d’enregistrer.');
       return;
     }
     if (depassent.length > 0) {
@@ -129,9 +128,11 @@ export default function SaisiePresencesPage() {
     }
     setEnvoi(true);
     try {
-      if (photo) {
-        setFicheExistante(await enregistrerFicheImage(choix.specialiteId, choix.semestre, choix.semaine, photo));
-        setPhoto(null);
+      // Une photo à la fois : celles déjà envoyées sont retirées de la file, pour ne pas les renvoyer en cas d'échec.
+      for (const f of [...photos]) {
+        const ajoutee = await ajouterFicheImage(choix.specialiteId, choix.semestre, choix.semaine, f);
+        setFiches((p) => [...p, ajoutee]);
+        setPhotos((p) => p.filter((x) => x !== f));
       }
       const n = await enregistrerAbsencesHebdo({
         specialiteId: choix.specialiteId,
@@ -141,7 +142,7 @@ export default function SaisiePresencesPage() {
         absences: etudiants.map((e) => ({ etudiantId: e.id, heures: heuresDe(e.id) })),
       });
       setModifie(false);
-      setSucces(`${n} étudiant(s) enregistré(s), photo de la fiche jointe.`);
+      setSucces(`${n} étudiant(s) enregistré(s), fiche de présence jointe.`);
     } catch (e: any) {
       setErreur(e?.message ?? 'Enregistrement impossible.');
     } finally {
@@ -149,10 +150,25 @@ export default function SaisiePresencesPage() {
     }
   }
 
-  function voirFiche() {
-    if (!ficheExistante) return;
-    try { window.open(urlFicheImage(ficheExistante.chemin), '_blank'); }
-    catch (e: any) { setErreur(e?.message ?? 'Photo introuvable.'); }
+  function voirFiche(f: FicheImage) {
+    window.open(urlFicheImage(f.chemin), '_blank');
+  }
+
+  async function retirerFiche(f: FicheImage) {
+    if (!window.confirm('Retirer cette photo de la fiche ?')) return;
+    setErreur(null);
+    try {
+      await retirerFicheImage(f.id);
+      setFiches((p) => p.filter((x) => x.id !== f.id));
+    } catch (e: any) {
+      setErreur(e?.message ?? 'Suppression impossible.');
+    }
+  }
+
+  function ajouterPhotos(liste: FileList | null) {
+    if (!liste || liste.length === 0) return;
+    setPhotos((p) => [...p, ...Array.from(liste)]);
+    setModifie(true); setSucces(null);
   }
 
   const prete = !!choix.specialiteId && !!choix.semestre && !chargement;
@@ -183,26 +199,43 @@ export default function SaisiePresencesPage() {
       {prete && etudiants.length > 0 && (
         <>
           <div style={carte}>
-            <p style={{ fontWeight: 800, fontSize: 14, color: '#111827', marginBottom: 2 }}>Fiche de présence (photo)</p>
+            <p style={{ fontWeight: 800, fontSize: 14, color: '#111827', marginBottom: 2 }}>Fiche de présence (photos)</p>
             <p style={{ fontSize: 12, color: '#6b7280', fontWeight: 600, marginBottom: 12 }}>
-              Photo de la fiche physique de la classe pour cette semaine, jointe à l'enregistrement.
+              Une ou plusieurs photos de la fiche physique de la classe pour cette semaine, jointes à l'enregistrement.
             </p>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
               <label style={{ ...pastille(false), display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                <Camera size={15} />
-                {photo || ficheExistante ? 'Remplacer la photo' : 'Prendre / choisir la photo'}
+                <Camera size={15} /> Prendre une photo
                 <input type="file" accept="image/*" capture="environment" style={{ display: 'none' }}
-                  onChange={(ev) => { setPhoto(ev.target.files?.[0] ?? null); setModifie(true); setSucces(null); ev.target.value = ''; }} />
+                  onChange={(ev) => { ajouterPhotos(ev.target.files); ev.target.value = ''; }} />
               </label>
-              {ficheExistante && !photo && (
-                <button type="button" onClick={voirFiche} style={{ ...pastille(false), display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-                  <Eye size={15} /> Voir la photo jointe
-                </button>
-              )}
-              {!photo && !ficheExistante && <span style={{ fontSize: 12, fontWeight: 800, color: '#d97706' }}>Aucune photo jointe</span>}
-              {!photo && ficheExistante && <span style={{ fontSize: 12, fontWeight: 800, color: '#15803d' }}>✓ Photo jointe</span>}
+              <label style={{ ...pastille(false), display: 'inline-flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                <Plus size={15} /> Choisir des images
+                <input type="file" accept="image/*" multiple style={{ display: 'none' }}
+                  onChange={(ev) => { ajouterPhotos(ev.target.files); ev.target.value = ''; }} />
+              </label>
+              {photos.length + fiches.length === 0 && <span style={{ fontSize: 12, fontWeight: 800, color: '#d97706' }}>Aucune photo jointe</span>}
+              {fiches.length > 0 && <span style={{ fontSize: 12, fontWeight: 800, color: '#15803d' }}>✓ {fiches.length} photo{fiches.length > 1 ? 's' : ''} jointe{fiches.length > 1 ? 's' : ''}</span>}
             </div>
-            {apercu && <img src={apercu} alt="Fiche de présence à joindre" style={{ marginTop: 12, maxHeight: 260, maxWidth: '100%', borderRadius: 12, border: '1px solid #e5e7eb' }} />}
+            {(fiches.length > 0 || photos.length > 0) && (
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginTop: 12 }}>
+                {fiches.map((f, i) => (
+                  <div key={f.id} style={{ border: '1px solid #bbf7d0', background: '#f0fdf4', borderRadius: 12, padding: '8px 10px', display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: '#15803d' }}>Photo {i + 1}</span>
+                    <button type="button" title="Voir" onClick={() => voirFiche(f)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: '#15803d', padding: 4 }}><Eye size={15} /></button>
+                    <button type="button" title="Retirer" onClick={() => retirerFiche(f)} style={{ border: 0, background: 'transparent', cursor: 'pointer', color: '#f87171', padding: 4 }}><Trash2 size={15} /></button>
+                  </div>
+                ))}
+                {photos.map((f, i) => (
+                  <div key={i} style={{ position: 'relative' }}>
+                    <img src={apercus[i]} alt={f.name} style={{ height: 110, borderRadius: 10, border: '1px solid #e5e7eb', display: 'block' }} />
+                    <button type="button" title="Ne pas joindre" onClick={() => setPhotos((p) => p.filter((_, k) => k !== i))}
+                      style={{ position: 'absolute', top: 4, right: 4, border: 0, borderRadius: 999, background: 'rgba(17,24,39,0.75)', color: '#fff', width: 22, height: 22, cursor: 'pointer', fontSize: 13, lineHeight: '22px' }}>×</button>
+                    <span style={{ position: 'absolute', bottom: 4, left: 4, background: '#fef3c7', color: '#b45309', borderRadius: 999, padding: '1px 8px', fontSize: 10, fontWeight: 800 }}>à envoyer</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <div style={carte}>
