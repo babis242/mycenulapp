@@ -167,7 +167,9 @@ export default function SaisiePresencesPage() {
 
   function ajouterPhotos(liste: FileList | null) {
     if (!liste || liste.length === 0) return;
-    setPhotos((p) => [...p, ...Array.from(liste)]);
+    // Copie IMMÉDIATE : la liste du champ est « vivante » et se vide dès qu'on réinitialise le champ.
+    const nouvelles = Array.from(liste);
+    setPhotos((p) => [...p, ...nouvelles]);
     setModifie(true); setSucces(null);
   }
 
