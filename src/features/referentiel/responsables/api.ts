@@ -41,22 +41,32 @@ export interface SpecialitePourPerimetre {
   nom: string;
   filiereNom: string;
   ecoleNom: string;
+  cycle: string;
 }
 
 export async function listSpecialitesPourPerimetre(): Promise<
   SpecialitePourPerimetre[]
 > {
-  const { data, error } = await supabase
-    .from('specialites')
-    .select('id, nom, filiere:filieres(nom, ecole:ecoles(nom))')
-    .order('nom', { ascending: true });
-  if (error) throw error;
+  // Pagination : Supabase plafonne à 1000 lignes par requête.
+  const data: any[] = [];
+  for (let debut = 0; ; debut += 1000) {
+    const { data: page, error } = await supabase
+      .from('specialites')
+      .select('id, nom, cycle, filiere:filieres(nom, ecole:ecoles(nom))')
+      .order('nom', { ascending: true })
+      .order('id', { ascending: true })
+      .range(debut, debut + 999);
+    if (error) throw error;
+    data.push(...(page ?? []));
+    if (!page || page.length < 1000) break;
+  }
 
   return ((data ?? []) as any[]).map((s) => ({
     id: s.id,
     nom: s.nom,
     filiereNom: s.filiere?.nom ?? '',
     ecoleNom: s.filiere?.ecole?.nom ?? '',
+    cycle: s.cycle ?? '',
   }));
 }
 

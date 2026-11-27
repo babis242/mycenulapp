@@ -2,40 +2,6 @@
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 
-// Déclenche l'analyse IA du support de cours juste envoyé — compare son
-// contenu aux points clés (de l'UE, ou du tronc commun si le cours est
-// partagé) et calcule un taux de couverture. Purement informatif :
-// n'empêche jamais l'envoi, ne bloque rien.
-export async function analyserSupportCours(
-  cible: { attributionId: string } | { troncCommunId: string },
-  texteSupport: string
-): Promise<{ tauxCouverture: number }> {
-  const body =
-    'attributionId' in cible
-      ? { attribution_id: cible.attributionId, texte_support: texteSupport }
-      : { tronc_commun_id: cible.troncCommunId, texte_support: texteSupport };
-
-  const { data, error } = await supabase.functions.invoke(
-    'analyser-support-cours',
-    { body }
-  );
-  if (error) {
-    let detail = error.message;
-    try {
-      const contexte = (error as any).context;
-      if (contexte && typeof contexte.json === 'function') {
-        const corps = await contexte.json();
-        if (corps?.error) detail = corps.error;
-      }
-    } catch {
-      // Pas grave.
-    }
-    throw new Error(detail);
-  }
-  if (data?.error) throw new Error(data.error);
-  return { tauxCouverture: data.taux_couverture };
-}
-
 // Une carte par cours réellement enseigné — une UE simple = un
 // attributionId ; un tronc commun = plusieurs attributions (une par
 // spécialité du groupe) mais regroupées en UNE seule carte, avec un seul
@@ -53,7 +19,9 @@ export interface MonUE {
   supportKey: string | null;
   supportNom: string | null;
   supportUploadedAt: string | null;
-  tauxCouverture: number | null;
+  ficheKey: string | null;
+  ficheNom: string | null;
+  ficheUploadedAt: string | null;
 }
 
 export async function listMesUEs(matricule: string): Promise<MonUE[]> {
@@ -69,7 +37,7 @@ export async function listMesUEs(matricule: string): Promise<MonUE[]> {
     .select(
       `
       id, support_cours_key, support_cours_nom, support_cours_uploaded_at,
-      support_cours_taux_couverture,
+      fiche_progression_key, fiche_progression_nom, fiche_progression_uploaded_at,
       offre:offres(
         specialite:specialites(nom),
         ue:ues(
@@ -79,7 +47,8 @@ export async function listMesUEs(matricule: string): Promise<MonUE[]> {
             tronc_commun:troncs_communs(
               nom, syllabus_key, syllabus_nom,
               support_cours_key, support_cours_nom, support_cours_uploaded_at,
-              support_cours_taux_couverture
+              fiche_progression_key, fiche_progression_nom,
+              fiche_progression_uploaded_at
             )
           )
         )
@@ -120,7 +89,9 @@ export async function listMesUEs(matricule: string): Promise<MonUE[]> {
           supportKey: tronc.support_cours_key,
           supportNom: tronc.support_cours_nom,
           supportUploadedAt: tronc.support_cours_uploaded_at,
-          tauxCouverture: tronc.support_cours_taux_couverture,
+          ficheKey: tronc.fiche_progression_key ?? null,
+          ficheNom: tronc.fiche_progression_nom ?? null,
+          ficheUploadedAt: tronc.fiche_progression_uploaded_at ?? null,
         });
       }
     } else {
@@ -136,7 +107,9 @@ export async function listMesUEs(matricule: string): Promise<MonUE[]> {
         supportKey: a.support_cours_key,
         supportNom: a.support_cours_nom,
         supportUploadedAt: a.support_cours_uploaded_at,
-        tauxCouverture: a.support_cours_taux_couverture,
+        ficheKey: a.fiche_progression_key ?? null,
+        ficheNom: a.fiche_progression_nom ?? null,
+        ficheUploadedAt: a.fiche_progression_uploaded_at ?? null,
       });
     }
   }
@@ -210,7 +183,9 @@ export async function lireMesUEsDepuisCache(
           supportKey: tronc.support_cours_key ?? null,
           supportNom: tronc.support_cours_nom ?? null,
           supportUploadedAt: tronc.support_cours_uploaded_at ?? null,
-          tauxCouverture: tronc.support_cours_taux_couverture ?? null,
+          ficheKey: tronc.fiche_progression_key ?? null,
+          ficheNom: tronc.fiche_progression_nom ?? null,
+          ficheUploadedAt: tronc.fiche_progression_uploaded_at ?? null,
         });
       }
     } else {
@@ -226,7 +201,9 @@ export async function lireMesUEsDepuisCache(
         supportKey: a.support_cours_key ?? null,
         supportNom: a.support_cours_nom ?? null,
         supportUploadedAt: a.support_cours_uploaded_at ?? null,
-        tauxCouverture: a.support_cours_taux_couverture ?? null,
+        ficheKey: a.fiche_progression_key ?? null,
+        ficheNom: a.fiche_progression_nom ?? null,
+        ficheUploadedAt: a.fiche_progression_uploaded_at ?? null,
       });
     }
   }

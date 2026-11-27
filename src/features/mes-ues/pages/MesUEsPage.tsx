@@ -3,17 +3,14 @@ import { useState } from 'react';
 import {
   Loader2,
   FileText,
-  UploadCloud,
-  CheckCircle2,
   WifiOff,
-  Pencil,
   ChevronDown,
   ListChecks,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 import { useCacheSupabase } from '@/hooks/useCacheSupabase';
-import { televerserFichier, urlPubliqueR2 } from '@/lib/r2';
-import { extraireTextePdf } from '@/lib/pdfExtraction';
+import { televerserFichier, urlPubliqueR2, verifierDocument } from '@/lib/r2';
+import DepotDocument from '../components/DepotDocument';
 import {
   listPointsCles,
   type PointCle,
@@ -22,13 +19,8 @@ import { listPointsClesTronc } from '@/features/referentiel/troncs-communs/api';
 import {
   listMesUEs,
   lireMesUEsDepuisCache,
-  analyserSupportCours,
   type MonUE,
 } from '../api';
-
-// Sous ce seuil, un message (non bloquant) suggère à l'enseignant
-// d'envoyer un support plus complet — jamais empêchant.
-const SEUIL_COUVERTURE_FAIBLE = 60;
 
 // Écran dédié (Scénario 12) — une carte par cours réellement enseigné :
 // une UE simple, ou un tronc commun entier (toutes ses spécialités
@@ -36,7 +28,6 @@ const SEUIL_COUVERTURE_FAIBLE = 60;
 export default function MesUEsPage() {
   const user = useAuthStore((s) => s.user);
   const [enCoursEnvoi, setEnCoursEnvoi] = useState<string | null>(null);
-  const [analyseEnCours, setAnalyseEnCours] = useState<string | null>(null);
   const [erreurParUE, setErreurParUE] = useState<Record<string, string>>({});
   const [misAJour, setMisAJour] = useState<Record<string, MonUE>>({});
   const [pointsOuverts, setPointsOuverts] = useState<
@@ -71,62 +62,63 @@ export default function MesUEsPage() {
     setPointsOuverts((prev) => ({ ...prev, [ue.cle]: points }));
   }
 
-  async function handleEnvoyerSupport(ue: MonUE, fichier: File | undefined) {
-    if (!fichier) return;
+  // Envoi d'un document (support de cours ou fiche de progression) :
+  // vérification du format, envoi, mise à jour de la carte. C'est tout.
+  async function handleEnvoyer(
+    ue: MonUE,
+    type: 'support' | 'fiche',
+    fichier: File
+  ) {
+    const id = `${ue.cle}:${type}`;
+    const refus = verifierDocument(fichier);
+    if (refus) {
+      setErreurParUE((prev) => ({ ...prev, [id]: refus }));
+      return;
+    }
     setErreurParUE((prev) => {
       const next = { ...prev };
-      delete next[ue.cle];
+      delete next[id];
       return next;
     });
-    setEnCoursEnvoi(ue.cle);
+    setEnCoursEnvoi(id);
     try {
-      const { key, nom } = ue.troncCommunId
-        ? await televerserFichier(
-            'support-cours-tronc-commun',
-            ue.troncCommunId,
-            fichier
-          )
-        : await televerserFichier(
-            'support-cours',
-            ue.attributionIds[0],
-            fichier
-          );
-      setMisAJour((prev) => ({
-        ...prev,
-        [ue.cle]: {
-          ...ue,
-          supportKey: key,
-          supportNom: nom,
-          supportUploadedAt: new Date().toISOString(),
-          tauxCouverture: null,
-        },
-      }));
-
-      // Analyse IA — purement informative, n'empêche jamais l'envoi même
-      // si elle échoue (l'enseignant garde son support quoi qu'il arrive).
-      setAnalyseEnCours(ue.cle);
-      try {
-        const texte = await extraireTextePdf(fichier);
-        const { tauxCouverture } = await analyserSupportCours(
-          ue.troncCommunId
-            ? { troncCommunId: ue.troncCommunId }
-            : { attributionId: ue.attributionIds[0] },
-          texte
-        );
-        setMisAJour((prev) => ({
+      const purpose = ue.troncCommunId
+        ? type === 'support'
+          ? 'support-cours-tronc-commun'
+          : 'fiche-progression-tronc-commun'
+        : type === 'support'
+          ? 'support-cours'
+          : 'fiche-progression';
+      const { key, nom } = await televerserFichier(
+        purpose,
+        ue.troncCommunId ?? ue.attributionIds[0],
+        fichier
+      );
+      const maintenant = new Date().toISOString();
+      setMisAJour((prev) => {
+        const base = prev[ue.cle] ?? ue;
+        return {
           ...prev,
-          [ue.cle]: { ...prev[ue.cle], tauxCouverture },
-        }));
-      } catch (err) {
-        console.warn('Analyse du support de cours indisponible :', err);
-      } finally {
-        setAnalyseEnCours(null);
-      }
+          [ue.cle]:
+            type === 'support'
+              ? {
+                  ...base,
+                  supportKey: key,
+                  supportNom: nom,
+                  supportUploadedAt: maintenant,
+                }
+              : {
+                  ...base,
+                  ficheKey: key,
+                  ficheNom: nom,
+                  ficheUploadedAt: maintenant,
+                },
+        };
+      });
     } catch (err) {
       setErreurParUE((prev) => ({
         ...prev,
-        [ue.cle]:
-          err instanceof Error ? err.message : "Erreur lors de l'envoi.",
+        [id]: err instanceof Error ? err.message : "Erreur lors de l'envoi.",
       }));
     } finally {
       setEnCoursEnvoi(null);
@@ -145,7 +137,7 @@ export default function MesUEsPage() {
     <div className="max-w-2xl mx-auto">
       <p className="font-extrabold text-2xl text-gray-900 mb-1">Mes UEs</p>
       <p className="text-sm text-gray-400 mb-2">
-        Syllabus à consulter, support de cours à envoyer.
+        Syllabus à consulter, support de cours et fiche de progression à envoyer.
       </p>
       {depuisCache && (
         <p className="flex items-center gap-1.5 text-xs font-bold text-amber-600 mb-4">
@@ -239,89 +231,28 @@ export default function MesUEsPage() {
                   </span>
                 )}
 
-                {ue.supportKey ? (
-                  <>
-                    <a
-                      href={urlPubliqueR2(ue.supportKey)}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="flex items-center gap-1.5 bg-green-50 rounded-full px-3.5 py-2 text-xs font-bold text-green-700 hover:bg-green-100"
-                    >
-                      <CheckCircle2 size={14} /> Voir mon support
-                    </a>
-                    <label className="flex items-center gap-1.5 bg-white border border-gray-200 rounded-full px-3.5 py-2 text-xs font-bold text-gray-700 hover:bg-gray-50 cursor-pointer">
-                      {enCoursEnvoi === ue.cle ? (
-                        <Loader2 size={14} className="animate-spin" />
-                      ) : (
-                        <Pencil size={14} />
-                      )}
-                      Modifier
-                      <input
-                        type="file"
-                        className="hidden"
-                        disabled={enCoursEnvoi === ue.cle}
-                        onChange={(e) =>
-                          handleEnvoyerSupport(ue, e.target.files?.[0])
-                        }
-                      />
-                    </label>
-                  </>
-                ) : (
-                  <label className="flex items-center gap-1.5 bg-red-600 rounded-full px-3.5 py-2 text-xs font-bold text-white hover:bg-red-700 cursor-pointer">
-                    {enCoursEnvoi === ue.cle ? (
-                      <Loader2 size={14} className="animate-spin" />
-                    ) : (
-                      <UploadCloud size={14} />
-                    )}
-                    Envoyer mon support de cours
-                    <input
-                      type="file"
-                      className="hidden"
-                      disabled={enCoursEnvoi === ue.cle}
-                      onChange={(e) =>
-                        handleEnvoyerSupport(ue, e.target.files?.[0])
-                      }
-                    />
-                  </label>
-                )}
               </div>
 
-              {ue.supportUploadedAt && (
-                <p className="text-[11px] text-gray-400 mt-2">
-                  Support envoyé le{' '}
-                  {new Date(ue.supportUploadedAt).toLocaleDateString('fr-FR')}
-                </p>
-              )}
-              {analyseEnCours === ue.cle && (
-                <p className="text-[11px] text-gray-400 mt-2 flex items-center gap-1.5">
-                  <Loader2 size={11} className="animate-spin" /> Analyse du
-                  contenu en cours...
-                </p>
-              )}
-              {ue.tauxCouverture != null && (
-                <div className="mt-2">
-                  <span
-                    className={`inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full ${
-                      ue.tauxCouverture >= SEUIL_COUVERTURE_FAIBLE
-                        ? 'bg-green-50 text-green-600'
-                        : 'bg-amber-50 text-amber-600'
-                    }`}
-                  >
-                    Couverture du contenu : {ue.tauxCouverture}%
-                  </span>
-                  {ue.tauxCouverture < SEUIL_COUVERTURE_FAIBLE && (
-                    <p className="text-xs font-semibold text-amber-600 mt-1.5">
-                      Ce support ne couvre qu'une partie du programme —
-                      pense à en envoyer un plus complet si possible.
-                    </p>
-                  )}
-                </div>
-              )}
-              {erreurParUE[ue.cle] && (
-                <p className="text-xs font-semibold text-red-600 mt-2">
-                  {erreurParUE[ue.cle]}
-                </p>
-              )}
+              <div className="flex flex-col gap-2 mt-3">
+                <DepotDocument
+                  titre="Support de cours"
+                  cleFichier={ue.supportKey}
+                  nomFichier={ue.supportNom}
+                  dateEnvoi={ue.supportUploadedAt}
+                  enCours={enCoursEnvoi === `${ue.cle}:support`}
+                  erreur={erreurParUE[`${ue.cle}:support`]}
+                  onChoisir={(f) => handleEnvoyer(ue, 'support', f)}
+                />
+                <DepotDocument
+                  titre="Fiche de progression"
+                  cleFichier={ue.ficheKey}
+                  nomFichier={ue.ficheNom}
+                  dateEnvoi={ue.ficheUploadedAt}
+                  enCours={enCoursEnvoi === `${ue.cle}:fiche`}
+                  erreur={erreurParUE[`${ue.cle}:fiche`]}
+                  onChoisir={(f) => handleEnvoyer(ue, 'fiche', f)}
+                />
+              </div>
             </div>
           ))}
         </div>

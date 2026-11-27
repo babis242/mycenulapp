@@ -6,12 +6,12 @@ import {
   ArrowLeft,
   CheckCircle2,
   AlertTriangle,
-  Search,
   WifiOff,
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db, enqueueSyncAction } from '@/lib/db';
 import { useOnlineStatus } from '@/hooks/useOnlineStatus';
+import SelecteurPerimetre from '../components/SelecteurPerimetre';
 import {
   createResponsable,
   listSpecialitesPourPerimetre,
@@ -68,6 +68,7 @@ export default function AjouterResponsablePage() {
                 nom: s.nom,
                 filiereNom: filiere?.nom ?? '',
                 ecoleNom: ecole?.nom ?? '',
+                cycle: s.cycle ?? '',
               };
             })
             .sort((a, b) => a.nom.localeCompare(b.nom))
@@ -76,21 +77,6 @@ export default function AjouterResponsablePage() {
       });
     }
   }, []);
-
-  function toggleSpecialite(id: string) {
-    setSpecialiteIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  }
-
-  const specialitesFiltrees = specialites.filter(
-    (s) =>
-      s.nom.toLowerCase().includes(recherche.toLowerCase()) ||
-      s.filiereNom.toLowerCase().includes(recherche.toLowerCase())
-  );
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -288,51 +274,14 @@ export default function AjouterResponsablePage() {
           <label className="block text-xs font-bold text-gray-500 mb-1.5">
             Périmètre — spécialités sous sa responsabilité
           </label>
-          <div className="border border-gray-200 rounded-xl p-3">
-            <div className="flex items-center gap-2 bg-gray-50 rounded-full px-3 py-2 mb-2">
-              <Search size={14} className="text-gray-300 shrink-0" />
-              <input
-                value={recherche}
-                onChange={(e) => setRecherche(e.target.value)}
-                placeholder="Rechercher une spécialité..."
-                className="flex-1 text-sm font-semibold outline-none bg-transparent"
-              />
-            </div>
-
-            {chargementSpecialites ? (
-              <div className="flex items-center justify-center py-8 text-gray-300">
-                <Loader2 size={18} className="animate-spin" />
-              </div>
-            ) : specialitesFiltrees.length === 0 ? (
-              <p className="text-sm text-gray-400 text-center py-6">
-                Aucune spécialité trouvée.
-              </p>
-            ) : (
-              <div className="max-h-64 overflow-y-auto flex flex-col gap-1 -mx-1 px-1">
-                {specialitesFiltrees.map((s) => (
-                  <label
-                    key={s.id}
-                    className="flex items-center gap-3 py-2 border-b border-gray-50 last:border-0 cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={specialiteIds.has(s.id)}
-                      onChange={() => toggleSpecialite(s.id)}
-                      className="shrink-0"
-                    />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-bold text-gray-900 truncate">
-                        {s.nom}
-                      </p>
-                      <p className="text-xs text-gray-400 truncate">
-                        {s.filiereNom} · {s.ecoleNom}
-                      </p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            )}
-          </div>
+          <SelecteurPerimetre
+            specialites={specialites}
+            chargement={chargementSpecialites}
+            selection={specialiteIds}
+            onChange={setSpecialiteIds}
+            recherche={recherche}
+            onRecherche={setRecherche}
+          />
           {specialiteIds.size === 0 && (
             <p className="text-xs text-amber-600 font-semibold mt-1.5">
               Aucune spécialité sélectionnée — le responsable pourra être

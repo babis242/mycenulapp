@@ -6,6 +6,8 @@ export type PurposeR2 =
   | 'syllabus-tronc-commun'
   | 'support-cours'
   | 'support-cours-tronc-commun'
+  | 'fiche-progression'
+  | 'fiche-progression-tronc-commun'
   | 'cahier-texte'
   | 'fiche-presence';
 
@@ -72,4 +74,23 @@ export async function televerserFichier(
   });
   if (!res.ok) throw new Error("Échec de l'envoi du fichier.");
   return { key, nom: nom ?? fichier.name };
+}
+
+// ── Documents PDF / Word (support de cours, fiche de progression) ───
+export const ACCEPT_DOCUMENT =
+  '.pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+export const TAILLE_MAX_DOCUMENT_MO = 25;
+
+// Vérifie un fichier avant envoi ; renvoie un message d'erreur clair, ou
+// null s'il est accepté.
+export function verifierDocument(fichier: File): string | null {
+  const ext = fichier.name.split('.').pop()?.toLowerCase() ?? '';
+  if (!['pdf', 'doc', 'docx'].includes(ext)) {
+    return 'Format non accepté : choisis un fichier PDF ou Word (.pdf, .doc, .docx).';
+  }
+  if (fichier.size === 0) return 'Ce fichier est vide.';
+  if (fichier.size > TAILLE_MAX_DOCUMENT_MO * 1024 * 1024) {
+    return `Fichier trop volumineux (maximum ${TAILLE_MAX_DOCUMENT_MO} Mo).`;
+  }
+  return null;
 }

@@ -11,8 +11,7 @@ import {
   UploadCloud,
   Search,
   X,
-  WifiOff,
-} from 'lucide-react';
+  WifiOff, ClipboardCheck } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { db } from '@/lib/db';
 import RechercheSpecialite from '@/components/shared/RechercheSpecialite';
@@ -442,12 +441,20 @@ export default function EtudiantsPage() {
     <div>
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <p className="font-extrabold text-2xl text-gray-900 mb-1">Étudiants</p>
-        <Link
-          to="/referentiel/etudiants/export-pdf"
-          className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
-        >
-          <FileDown size={15} /> Exporter en PDF
-        </Link>
+        <div className="flex items-center gap-2 flex-wrap">
+          <Link
+            to="/referentiel/etudiants/controle-pdf"
+            className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+          >
+            <ClipboardCheck size={15} /> Liste de contrôle
+          </Link>
+          <Link
+            to="/referentiel/etudiants/export-pdf"
+            className="inline-flex items-center gap-2 bg-white rounded-full px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50"
+          >
+            <FileDown size={15} /> Exporter en PDF
+          </Link>
+        </div>
       </div>
       <p className="text-sm text-gray-400 mb-6">
         Liste des étudiants par spécialité et semestre — utilisée pour

@@ -11,6 +11,7 @@ import InscriptionEnseignantPage from '@/features/inscriptions/pages/Inscription
 import ListeInscriptionsPage from '@/features/inscriptions/pages/ListeInscriptionsPage';
 import EtudiantsPage from '@/features/referentiel/etudiants/pages/EtudiantsPage';
 import ExporterEtudiantsPdfPage from '@/features/referentiel/etudiants/pages/ExporterEtudiantsPdfPage';
+import ControleEtudiantsPdfPage from '@/features/referentiel/etudiants/pages/ControleEtudiantsPdfPage';
 import DashboardPage from '@/features/dashboard/pages/DashboardPage';
 
 import ReferentielLayout from '@/features/referentiel/ReferentielLayout';
@@ -139,6 +140,7 @@ export default function AppRoutes() {
               />
               <Route path="etudiants" element={<EtudiantsPage />} />
               <Route path="etudiants/export-pdf" element={<ExporterEtudiantsPdfPage />} />
+              <Route path="etudiants/controle-pdf" element={<ControleEtudiantsPdfPage />} />
 
               <Route path="responsables" element={<ListeResponsablesPage />} />
               <Route

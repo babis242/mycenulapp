@@ -100,7 +100,9 @@ export interface SupportCoursLigne {
   supportKey: string | null;
   supportNom: string | null;
   supportUploadedAt: string | null;
-  tauxCouverture: number | null;
+  ficheKey: string | null;
+  ficheNom: string | null;
+  ficheUploadedAt: string | null;
 }
 
 // Suivi des supports de cours (Scénario 12) — regroupé par cours
@@ -113,7 +115,7 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
     .select(
       `
       id, support_cours_key, support_cours_nom, support_cours_uploaded_at,
-      support_cours_taux_couverture,
+      fiche_progression_key, fiche_progression_nom, fiche_progression_uploaded_at,
       enseignant:enseignants(nom),
       offre:offres(
         specialite:specialites(nom),
@@ -123,7 +125,9 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
             tronc_commun_id,
             tronc_commun:troncs_communs(
               nom, support_cours_key, support_cours_nom,
-              support_cours_uploaded_at, support_cours_taux_couverture
+              support_cours_uploaded_at,
+              fiche_progression_key, fiche_progression_nom,
+              fiche_progression_uploaded_at
             )
           )
         )
@@ -163,7 +167,9 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
           supportKey: tronc.support_cours_key,
           supportNom: tronc.support_cours_nom,
           supportUploadedAt: tronc.support_cours_uploaded_at,
-          tauxCouverture: tronc.support_cours_taux_couverture,
+          ficheKey: tronc.fiche_progression_key ?? null,
+          ficheNom: tronc.fiche_progression_nom ?? null,
+          ficheUploadedAt: tronc.fiche_progression_uploaded_at ?? null,
         });
       }
     } else {
@@ -179,7 +185,9 @@ export async function listSupportsCours(): Promise<SupportCoursLigne[]> {
         supportKey: a.support_cours_key,
         supportNom: a.support_cours_nom,
         supportUploadedAt: a.support_cours_uploaded_at,
-        tauxCouverture: a.support_cours_taux_couverture,
+        ficheKey: a.fiche_progression_key ?? null,
+        ficheNom: a.fiche_progression_nom ?? null,
+        ficheUploadedAt: a.fiche_progression_uploaded_at ?? null,
       });
     }
   }
@@ -362,7 +370,6 @@ export async function annulerSupportCours(
         support_cours_key: null,
         support_cours_nom: null,
         support_cours_uploaded_at: null,
-        support_cours_taux_couverture: null,
       })
       .eq('id', cible.troncCommunId);
     if (error) throw error;
@@ -378,7 +385,6 @@ export async function annulerSupportCours(
       support_cours_key: null,
       support_cours_nom: null,
       support_cours_uploaded_at: null,
-      support_cours_taux_couverture: null,
     })
     .eq('id', cible.attributionId);
   if (error) throw error;
